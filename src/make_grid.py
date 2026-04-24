@@ -1,77 +1,103 @@
+import argparse
 from pathlib import Path
+
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
 from src.io.config import load_yaml
+from src.io.paths import ensure_dir, get_grid_dir, get_grid_path
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--aoi",
+        default="configs/aoi/experimental_pallars_sobira.yaml",
+        help="Path to AOI config YAML",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=None,
+        help="Target grid resolution in meters",
+    )
+    return parser.parse_args()
+
 
 def main():
-    #load config
+    args = parse_args()
+
     project_cfg = load_yaml("configs/project.yaml")
-    aoi_cfg = load_yaml("configs/aoi/experimental_pallars_sobira.yaml")
+    aoi_cfg = load_yaml(args.aoi)
 
     crs = project_cfg["crs"]
-    resolution = project_cfg["resolution_m"]
-    nodata = project_cfg["nodata"]
+    nodata = float(project_cfg["nodata"])
 
-    #load bounds
+    available_resolutions = project_cfg["grids"]["available_resolutions_m"]
+    default_resolution = int(project_cfg["grids"]["default_resolution_m"])
+
+    resolution = args.resolution if args.resolution is not None else default_resolution
+    resolution = int(resolution)
+
+    if resolution not in available_resolutions:
+        raise ValueError(
+            f"Resolution {resolution} m is not listed in project config. "
+            f"Available: {available_resolutions}"
+        )
+
+    aoi_crs = aoi_cfg["crs"]
+    if aoi_crs != crs:
+        raise ValueError(f"AOI CRS ({aoi_crs}) does not match project CRS ({crs})")
+
     bounds = aoi_cfg["bounds"]
-    xmin = bounds["xmin"]
-    xmax = bounds["xmax"]
-    ymin = bounds["ymin"]
-    ymax = bounds["ymax"]
+    xmin = int(bounds["xmin"])
+    xmax = int(bounds["xmax"])
+    ymin = int(bounds["ymin"])
+    ymax = int(bounds["ymax"])
 
     width_m = xmax - xmin
     height_m = ymax - ymin
 
-    #Safe checks
-    if width_m%resolution != 0 or height_m%0 !=0:
+    if width_m % resolution != 0 or height_m % resolution != 0:
         raise ValueError(
             f"AOI bounds are not divisible by resolution {resolution} m: "
             f"width={width_m}, height={height_m}"
         )
-    
-    aoi_crs = aoi_cfg["crs"]
-    
-    if aoi_crs != crs:
-        raise ValueError(f"AOI CRS ({aoi_crs}) does not match project CRS ({crs})")
-        
-    #Params
+
     width = width_m // resolution
     height = height_m // resolution
 
     transform = from_origin(xmin, ymax, resolution, resolution)
-
     grid_array = np.zeros((height, width), dtype=np.float32)
 
-    #Output path and final name
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
-    grid_subdir = project_cfg["grid"]["subdir"]
-    out_dir = interim_dir / grid_subdir
+    grid_dir = get_grid_dir(project_cfg)
+    ensure_dir(grid_dir)
 
-    aoi_name = aoi_cfg["name"]
-    resolution_suffix = project_cfg["naming"]["resolution_suffix"]
-    out_path = out_dir / f"grid_base_{aoi_name}_{resolution_suffix}.tif"
+    out_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=aoi_cfg,
+        resolution_m=resolution,
+    )
 
-    #Write
     with rasterio.open(
-        out_path, 
-        "w", 
+        out_path,
+        "w",
         driver="GTiff",
-        height=height, 
-        width=width, 
-        count=1, 
-        dtype=grid_array.dtype, 
-        crs=crs, 
-        transform=transform, 
-        nodata=nodata, 
-        compress="lzw", 
+        height=height,
+        width=width,
+        count=1,
+        dtype=grid_array.dtype,
+        crs=crs,
+        transform=transform,
+        nodata=nodata,
+        compress="lzw",
     ) as dst:
         dst.write(grid_array, 1)
 
-    print("Grid created:")
+    print("Grid created successfully")
     print(f"  Path: {out_path}")
-    print(f"  AOI: {aoi_name}")
+    print(f"  AOI: {aoi_cfg['name']}")
     print(f"  CRS: {crs}")
     print(f"  Resolution: {resolution} m")
     print(f"  Width: {width} pixels")

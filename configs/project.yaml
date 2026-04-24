@@ -11,7 +11,8 @@ paths:
 
 grids:
   subdir: grids
-  default_resolutions_m: [10, 20, 100]
+  available_resolutions_m: [10, 50, 100]
+  default_resolution_m: 100
 
 alignment:
   interim_subdir: aligned
