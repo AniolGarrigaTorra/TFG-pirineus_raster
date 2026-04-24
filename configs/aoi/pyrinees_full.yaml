@@ -1,0 +1,8 @@
+name: pyrenees_full
+crs: EPSG:3035
+
+bounds:
+  xmin: null
+  xmax: null
+  ymin: null
+  ymax: null

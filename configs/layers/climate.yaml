@@ -1,0 +1,47 @@
+source:
+  name: worldclim_v2_1
+  raw_dir: data_raw/worldclim
+
+variables:
+  tmin:
+    zip_file: wc2.1_30s_tmin.zip
+    unit: celsius
+    scale_factor: 0.1
+  tmax:
+    zip_file: wc2.1_30s_tmax.zip
+    unit: celsius
+    scale_factor: 0.1
+  tavg:
+    zip_file: wc2.1_30s_tavg.zip
+    unit: celsius
+    scale_factor: 0.1
+  prec:
+    zip_file: wc2.1_30s_prec.zip
+    unit: mm
+    scale_factor: 1.0
+
+aggregation:
+  months: [5, 6, 7, 8, 9]
+  period_name: may_sep
+
+derived_layers:
+  - category: climate
+    variable: isothermality
+    metric: null
+    period: may_sep
+    output_name: climate_isothermality_may-sep_100m.tif
+
+  - category: climate
+    variable: temp_seasonality
+    metric: null
+    period: may_sep
+    output_name: climate_temp_seasonality_may-sep_100m.tif
+
+  - category: climate
+    variable: precip
+    metric: sum
+    period: may_sep
+    output_name: climate_precip_sum_may-sep_100m.tif
+
+resampling:
+  continuous: bilinear

@@ -1,0 +1,8 @@
+name: experimental_pallars_sobira
+crs: EPSG:3035
+
+bounds:
+  xmin: 3588200
+  xmax: 3611800
+  ymin: 2183400
+  ymax: 2218000

@@ -1,0 +1,23 @@
+project_name: pirineus_raster
+
+crs: EPSG:3035
+nodata: -9999.0
+
+paths:
+  raw_dir: data_raw
+  interim_dir: data_interim
+  processed_dir: data_processed
+  logs_dir: logs
+
+grids:
+  subdir: grids
+  default_resolutions_m: [10, 20, 100]
+
+alignment:
+  interim_subdir: aligned
+
+validation:
+  output_dir: data_processed/validation
+
+naming:
+  resolution_unit: m

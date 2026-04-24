@@ -1,0 +1,7 @@
+data_raw/
+data_interim/
+data_processed/
+logs/
+__pycache__/
+.ipynb_checkpoints/
+venv/
