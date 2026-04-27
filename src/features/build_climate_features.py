@@ -7,6 +7,13 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
 from src.io.config import load_yaml
+from src.io.paths import (
+    build_resolution_suffix,
+    ensure_dir,
+    get_aligned_dir,
+    get_grid_path,
+    get_processed_dir,
+)
 
 
 RESAMPLING_MAP = {
@@ -14,19 +21,6 @@ RESAMPLING_MAP = {
     "bilinear": Resampling.bilinear,
     "cubic": Resampling.cubic,
 }
-
-
-def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def get_grid_path(project_cfg: dict, aoi_cfg: dict) -> Path:
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
-    grid_subdir = project_cfg["grid"]["subdir"]
-    resolution_suffix = project_cfg["naming"]["resolution_suffix"]
-    aoi_name = aoi_cfg["name"]
-
-    return interim_dir / grid_subdir / f"grid_base_{aoi_name}_{resolution_suffix}.tif"
 
 
 def extract_zip(zip_path: Path, extract_root: Path) -> Path:
@@ -107,7 +101,12 @@ def build_valid_mask(monthly_stacks: dict[str, np.ndarray], nodata: float) -> np
     return valid_mask
 
 
-def compute_isothermality(tmin: np.ndarray, tmax: np.ndarray, valid_mask: np.ndarray, nodata: float) -> np.ndarray:
+def compute_isothermality(
+    tmin: np.ndarray,
+    tmax: np.ndarray,
+    valid_mask: np.ndarray,
+    nodata: float,
+) -> np.ndarray:
     diurnal_range = tmax - tmin
     bio2 = diurnal_range.mean(axis=0)
 
@@ -120,20 +119,49 @@ def compute_isothermality(tmin: np.ndarray, tmax: np.ndarray, valid_mask: np.nda
     return output
 
 
-def compute_temp_seasonality(tavg: np.ndarray, valid_mask: np.ndarray, nodata: float) -> np.ndarray:
+def compute_temp_seasonality(
+    tavg: np.ndarray,
+    valid_mask: np.ndarray,
+    nodata: float,
+) -> np.ndarray:
     output = np.full(tavg.shape[1:], nodata, dtype=np.float32)
     output[valid_mask] = tavg[:, valid_mask].std(axis=0) * 100.0
     return output
 
 
-def compute_precip_sum(prec: np.ndarray, valid_mask: np.ndarray, nodata: float) -> np.ndarray:
+def compute_precip_sum(
+    prec: np.ndarray,
+    valid_mask: np.ndarray,
+    nodata: float,
+) -> np.ndarray:
     output = np.full(prec.shape[1:], nodata, dtype=np.float32)
     output[valid_mask] = prec[:, valid_mask].sum(axis=0)
     return output
 
 
-def build_monthly_output_name(variable: str, month: int, resolution_suffix: str) -> str:
+def build_monthly_output_name(variable: str, month: int, resolution_m: int) -> str:
+    resolution_suffix = build_resolution_suffix(resolution_m)
     return f"climate_{variable}_{month:02d}_{resolution_suffix}.tif"
+
+
+def build_final_output_name(
+    category: str,
+    variable: str,
+    metric: str | None,
+    period: str | None,
+    resolution_m: int,
+) -> str:
+    parts = [category, variable]
+
+    if metric:
+        parts.append(metric)
+
+    if period:
+        parts.append(period)
+
+    parts.append(build_resolution_suffix(resolution_m))
+
+    return "_".join(parts) + ".tif"
 
 
 def main():
@@ -147,23 +175,31 @@ def main():
         raise ValueError(f"Project CRS ({project_crs}) does not match AOI CRS ({aoi_crs})")
 
     nodata = float(project_cfg["nodata"])
-    resolution_suffix = project_cfg["naming"]["resolution_suffix"]
 
-    raw_dir = Path(project_cfg["paths"]["raw_dir"])
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
-    processed_dir = Path(project_cfg["paths"]["processed_dir"])
+    available_resolutions = project_cfg["grids"]["available_resolutions_m"]
+    target_resolution = int(climate_cfg["processing"]["target_resolution_m"])
 
-    aligned_dir = interim_dir / project_cfg["alignment"]["interim_subdir"] / "climate"
-    climate_out_dir = processed_dir / "climate"
+    if target_resolution not in available_resolutions:
+        raise ValueError(
+            f"Target resolution {target_resolution} m is not listed in project config. "
+            f"Available: {available_resolutions}"
+        )
 
-    ensure_dir(aligned_dir)
+    aligned_dir = get_aligned_dir(project_cfg, category="climate", resolution_m=target_resolution) #DIR of the aligned tiffs?
+    climate_out_dir = get_processed_dir(project_cfg, category="climate", resolution_m=target_resolution) #DIR of the output tiffs
+
+    ensure_dir(aligned_dir) 
     ensure_dir(climate_out_dir)
 
-    grid_path = get_grid_path(project_cfg, aoi_cfg)
+    grid_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=aoi_cfg,
+        resolution_m=target_resolution,
+    )
     if not grid_path.exists():
         raise FileNotFoundError(
             f"Grid file not found: {grid_path}\n"
-            f"Run src/make_grid.py first."
+            f"Run python -m src.make_grid --resolution {target_resolution} first."
         )
 
     with rasterio.open(grid_path) as grid:
@@ -171,9 +207,6 @@ def main():
         grid_profile["nodata"] = nodata
 
     climate_source_raw_dir = Path(climate_cfg["source"]["raw_dir"])
-    if not climate_source_raw_dir.is_absolute():
-        climate_source_raw_dir = climate_source_raw_dir
-
     months = climate_cfg["aggregation"]["months"]
     variables_cfg = climate_cfg["variables"]
 
@@ -184,10 +217,7 @@ def main():
     monthly_arrays = {var_name: [] for var_name in variables_cfg.keys()}
 
     for var_name, var_cfg in variables_cfg.items():
-        zip_path = Path(var_cfg["zip_file"])
-        if not zip_path.is_absolute():
-            zip_path = climate_source_raw_dir / zip_path
-
+        zip_path = climate_source_raw_dir / var_cfg["zip_file"]
         extracted_dirs[var_name] = extract_zip(zip_path, climate_source_raw_dir)
 
     for var_name, var_cfg in variables_cfg.items():
@@ -196,6 +226,7 @@ def main():
 
         for month in months:
             month_file = find_month_file(source_folder, var_name, month)
+
             aligned_array = align_raster_to_grid(
                 src_path=month_file,
                 grid_profile=grid_profile,
@@ -210,7 +241,7 @@ def main():
             monthly_output_path = aligned_dir / build_monthly_output_name(
                 variable=var_name,
                 month=month,
-                resolution_suffix=resolution_suffix,
+                resolution_m=target_resolution,
             )
             save_raster(monthly_output_path, aligned_array, grid_profile)
 
@@ -243,24 +274,43 @@ def main():
     derived_cfg = climate_cfg["derived_layers"]
 
     save_raster(
-        climate_out_dir / derived_cfg["isothermality"]["output_name"],
+        climate_out_dir / build_final_output_name(
+            category=derived_cfg["isothermality"]["category"],
+            variable=derived_cfg["isothermality"]["variable"],
+            metric=derived_cfg["isothermality"]["metric"],
+            period=derived_cfg["isothermality"]["period"],
+            resolution_m=target_resolution,
+        ),
         isothermality,
         grid_profile,
     )
 
     save_raster(
-        climate_out_dir / derived_cfg["temp_seasonality"]["output_name"],
+        climate_out_dir / build_final_output_name(
+            category=derived_cfg["temp_seasonality"]["category"],
+            variable=derived_cfg["temp_seasonality"]["variable"],
+            metric=derived_cfg["temp_seasonality"]["metric"],
+            period=derived_cfg["temp_seasonality"]["period"],
+            resolution_m=target_resolution,
+        ),
         temp_seasonality,
         grid_profile,
     )
 
     save_raster(
-        climate_out_dir / derived_cfg["precip_sum"]["output_name"],
+        climate_out_dir / build_final_output_name(
+            category=derived_cfg["precip_sum"]["category"],
+            variable=derived_cfg["precip_sum"]["variable"],
+            metric=derived_cfg["precip_sum"]["metric"],
+            period=derived_cfg["precip_sum"]["period"],
+            resolution_m=target_resolution,
+        ),
         precip_sum,
         grid_profile,
     )
 
     print("Climate features created successfully")
+    print(f"  Target resolution: {target_resolution} m")
     print(f"  Grid: {grid_path}")
     print(f"  Monthly aligned rasters: {aligned_dir}")
     print(f"  Final climate rasters: {climate_out_dir}")

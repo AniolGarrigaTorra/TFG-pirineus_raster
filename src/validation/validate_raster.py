@@ -1,20 +1,12 @@
-from pathlib import Path
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import rasterio
 
 from src.io.config import load_yaml
-
-
-def get_grid_path(project_cfg: dict, aoi_cfg: dict) -> Path:
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
-    grid_subdir = project_cfg["grid"]["subdir"]
-    resolution_suffix = project_cfg["naming"]["resolution_suffix"]
-    aoi_name = aoi_cfg["name"]
-
-    return interim_dir / grid_subdir / f"grid_base_{aoi_name}_{resolution_suffix}.tif"
+from src.io.paths import build_resolution_suffix, ensure_dir, get_grid_path
 
 
 def parse_args():
@@ -23,6 +15,17 @@ def parse_args():
         "--raster",
         required=True,
         help="Path to raster file to validate",
+    )
+    parser.add_argument(
+        "--aoi",
+        default="configs/aoi/experimental_pallars_sobira.yaml",
+        help="Path to AOI config YAML",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=None,
+        help="Reference grid resolution in meters",
     )
     return parser.parse_args()
 
@@ -40,13 +43,28 @@ def main():
     args = parse_args()
 
     project_cfg = load_yaml("configs/project.yaml")
-    aoi_cfg = load_yaml("configs/aoi/experimental_pallars_sobira.yaml")
+    aoi_cfg = load_yaml(args.aoi)
+
+    available_resolutions = project_cfg["grids"]["available_resolutions_m"]
+    default_resolution = int(project_cfg["grids"]["default_resolution_m"])
+    resolution = args.resolution if args.resolution is not None else default_resolution
+    resolution = int(resolution)
+
+    if resolution not in available_resolutions:
+        raise ValueError(
+            f"Resolution {resolution} m is not listed in project config. "
+            f"Available: {available_resolutions}"
+        )
 
     raster_path = Path(args.raster)
     if not raster_path.exists():
         raise FileNotFoundError(f"Raster file not found: {raster_path}")
 
-    grid_path = get_grid_path(project_cfg, aoi_cfg)
+    grid_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=aoi_cfg,
+        resolution_m=resolution,
+    )
     if not grid_path.exists():
         raise FileNotFoundError(f"Grid file not found: {grid_path}")
 
@@ -69,7 +87,6 @@ def main():
         actual_bounds = src.bounds
         actual_transform = tuple(src.transform)
         actual_nodata = float(src.nodata) if src.nodata is not None else None
-
         arr = src.read(1).astype(np.float32)
 
     valid_mask = np.ones(arr.shape, dtype=bool)
@@ -109,6 +126,7 @@ def main():
     validation_results = {
         "raster_path": str(raster_path),
         "grid_path": str(grid_path),
+        "resolution_m": resolution,
         "checks": checks,
         "stats": stats,
         "summary": {
@@ -141,8 +159,8 @@ def main():
 
     all_ok = all(checks.values())
 
-    validation_dir = Path(project_cfg["validation"]["output_dir"]) / "rasters"
-    validation_dir.mkdir(parents=True, exist_ok=True)
+    validation_dir = Path(project_cfg["validation"]["output_dir"]) / "rasters" / build_resolution_suffix(resolution)
+    ensure_dir(validation_dir)
 
     out_json = validation_dir / f"{raster_path.stem}_validation.json"
     with out_json.open("w", encoding="utf-8") as f:
