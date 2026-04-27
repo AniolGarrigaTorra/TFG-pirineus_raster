@@ -14,11 +14,16 @@ grids:
   available_resolutions_m: [10, 50, 100]
   default_resolution_m: 100
 
-alignment:
-  interim_subdir: aligned
+features:
+  processed_subdir: features
+
+sources:
+  raw_subdir: sources
+  interim_subdir: sources
 
 validation:
   output_dir: data_processed/validation
 
 naming:
   resolution_unit: m
+  month_format: two_digits

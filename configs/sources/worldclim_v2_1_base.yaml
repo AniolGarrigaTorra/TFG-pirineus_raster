@@ -1,0 +1,97 @@
+source:
+  id: worldclim_v2_1_base
+  provider: worldclim
+  product: v2_1_base
+  version: "2.1"
+  description: "WorldClim v2.1 climate normals, 1970-2000"
+  base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
+  source_crs: EPSG:4326
+  source_period: "1970-2000"
+
+domain:
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: auto
+  overwrite_existing: false
+  keep_global_zip_after_clip: false
+
+processing:
+  source_resolution: 10m
+  target_resolution_m: 100
+  grid_from_project: true
+
+variables:
+  tmin:
+    enabled: true
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 50]
+
+  tmax:
+    enabled: true
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-40, 60]
+
+  tavg:
+    enabled: true
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 60]
+
+  prec:
+    enabled: true
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 20000]
+
+  srad:
+    enabled: true
+    unit: kJ m-2 day-1
+    scale_factor: 1.0
+    valid_range: [0, 40000]
+
+  wind:
+    enabled: true
+    unit: m s-1
+    scale_factor: 0.1
+    valid_range: [0, 100]
+
+  vapr:
+    enabled: true
+    unit: kPa
+    scale_factor: 0.01
+    valid_range: [0, 20]
+
+resampling:
+  default: nearest
+  by_variable:
+    tmin: nearest
+    tmax: nearest
+    tavg: nearest
+    prec: nearest
+    srad: nearest
+    wind: nearest
+    vapr: nearest
+
+temporal_aggregations:
+  - name: annual_mean
+    months: [1, 12]
+    metric: mean
+
+  - name: may_sep_mean
+    months: [5, 9]
+    metric: mean
+
+  - name: may_sep_sum
+    months: [5, 9]
+    metric: sum
+    variables: [prec]
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
