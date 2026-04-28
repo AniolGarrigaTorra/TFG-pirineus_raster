@@ -1,319 +1,118 @@
-from pathlib import Path
-import zipfile
-
-import numpy as np
-import rasterio
-from rasterio.enums import Resampling
-from rasterio.warp import reproject
+import argparse
 
 from src.io.config import load_yaml
-from src.io.paths import (
-    build_resolution_suffix,
-    ensure_dir,
-    get_aligned_dir,
-    get_grid_path,
-    get_processed_dir,
+from src.sources.worldclim.source import (
+    prepare_worldclim_raw_data,
+    prepare_worldclim_clipped_data,
+    prepare_worldclim_features,
 )
 
 
-RESAMPLING_MAP = {
-    "nearest": Resampling.nearest,
-    "bilinear": Resampling.bilinear,
-    "cubic": Resampling.cubic,
-}
-
-
-def extract_zip(zip_path: Path, extract_root: Path) -> Path:
-    if not zip_path.exists():
-        raise FileNotFoundError(f"ZIP file not found: {zip_path}")
-
-    target_dir = extract_root / zip_path.stem
-    if not target_dir.exists():
-        ensure_dir(target_dir)
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(target_dir)
-
-    return target_dir
-
-
-def find_month_file(folder: Path, variable_name: str, month: int) -> Path:
-    patterns = [
-        f"*{variable_name}*_{month:02d}.tif",
-        f"*{variable_name}*{month:02d}.tif",
-    ]
-
-    for pattern in patterns:
-        matches = sorted(folder.glob(pattern))
-        if matches:
-            return matches[0]
-
-    raise FileNotFoundError(
-        f"Monthly file not found for variable='{variable_name}', month={month}, folder='{folder}'"
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generic raster feature pipeline."
     )
 
-
-def align_raster_to_grid(
-    src_path: Path,
-    grid_profile: dict,
-    resampling_method: Resampling,
-) -> np.ndarray:
-    with rasterio.open(src_path) as src:
-        destination = np.full(
-            (grid_profile["height"], grid_profile["width"]),
-            grid_profile["nodata"],
-            dtype=np.float32,
-        )
-
-        reproject(
-            source=rasterio.band(src, 1),
-            destination=destination,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            src_nodata=src.nodata,
-            dst_transform=grid_profile["transform"],
-            dst_crs=grid_profile["crs"],
-            dst_nodata=grid_profile["nodata"],
-            resampling=resampling_method,
-        )
-
-    return destination
-
-
-def save_raster(path: Path, array: np.ndarray, profile: dict) -> None:
-    output_profile = profile.copy()
-    output_profile.update(
-        dtype="float32",
-        count=1,
-        compress="lzw",
+    parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to project config YAML.",
     )
 
-    with rasterio.open(path, "w", **output_profile) as dst:
-        dst.write(array.astype(np.float32), 1)
+    parser.add_argument(
+        "--source-config",
+        default="configs/sources/worldclim_v2_1_base.yaml",
+        help="Path to source config YAML.",
+    )
 
+    parser.add_argument(
+        "--stage",
+        choices=["download", "clip", "build"],
+        default="download",
+        help="Pipeline stage to run.",
+    )
 
-def build_valid_mask(monthly_stacks: dict[str, np.ndarray], nodata: float) -> np.ndarray:
-    valid_mask = None
-
-    for stack in monthly_stacks.values():
-        current_valid = (stack != nodata).all(axis=0)
-        valid_mask = current_valid if valid_mask is None else (valid_mask & current_valid)
-
-    return valid_mask
-
-
-def compute_isothermality(
-    tmin: np.ndarray,
-    tmax: np.ndarray,
-    valid_mask: np.ndarray,
-    nodata: float,
-) -> np.ndarray:
-    diurnal_range = tmax - tmin
-    bio2 = diurnal_range.mean(axis=0)
-
-    bio7 = tmax.max(axis=0) - tmin.min(axis=0)
-
-    output = np.full_like(bio2, nodata, dtype=np.float32)
-    ok = valid_mask & (bio7 != 0)
-    output[ok] = (bio2[ok] / bio7[ok]) * 100.0
-
-    return output
-
-
-def compute_temp_seasonality(
-    tavg: np.ndarray,
-    valid_mask: np.ndarray,
-    nodata: float,
-) -> np.ndarray:
-    output = np.full(tavg.shape[1:], nodata, dtype=np.float32)
-    output[valid_mask] = tavg[:, valid_mask].std(axis=0) * 100.0
-    return output
-
-
-def compute_precip_sum(
-    prec: np.ndarray,
-    valid_mask: np.ndarray,
-    nodata: float,
-) -> np.ndarray:
-    output = np.full(prec.shape[1:], nodata, dtype=np.float32)
-    output[valid_mask] = prec[:, valid_mask].sum(axis=0)
-    return output
-
-
-def build_monthly_output_name(variable: str, month: int, resolution_m: int) -> str:
-    resolution_suffix = build_resolution_suffix(resolution_m)
-    return f"climate_{variable}_{month:02d}_{resolution_suffix}.tif"
-
-
-def build_final_output_name(
-    category: str,
-    variable: str,
-    metric: str | None,
-    period: str | None,
-    resolution_m: int,
-) -> str:
-    parts = [category, variable]
-
-    if metric:
-        parts.append(metric)
-
-    if period:
-        parts.append(period)
-
-    parts.append(build_resolution_suffix(resolution_m))
-
-    return "_".join(parts) + ".tif"
+    return parser.parse_args()
 
 
 def main():
-    project_cfg = load_yaml("configs/project.yaml")
-    aoi_cfg = load_yaml("configs/aoi/experimental_pallars_sobira.yaml")
-    climate_cfg = load_yaml("configs/layers/climate.yaml")
+    args = parse_args()
 
-    project_crs = project_cfg["crs"]
-    aoi_crs = aoi_cfg["crs"]
-    if project_crs != aoi_crs:
-        raise ValueError(f"Project CRS ({project_crs}) does not match AOI CRS ({aoi_crs})")
+    project_cfg = load_yaml(args.project_config)
+    source_cfg = load_yaml(args.source_config)
 
-    nodata = float(project_cfg["nodata"])
+    source = source_cfg["source"]
 
-    available_resolutions = project_cfg["grids"]["available_resolutions_m"]
-    target_resolution = int(climate_cfg["processing"]["target_resolution_m"])
+    provider = source["provider"]
+    product = source["product"]
 
-    if target_resolution not in available_resolutions:
-        raise ValueError(
-            f"Target resolution {target_resolution} m is not listed in project config. "
-            f"Available: {available_resolutions}"
-        )
+    print("==============================")
+    print("Raster feature pipeline")
+    print(f"Provider: {provider}")
+    print(f"Product: {product}")
+    print(f"Stage: {args.stage}")
+    print("==============================")
 
-    aligned_dir = get_aligned_dir(project_cfg, category="climate", resolution_m=target_resolution) #DIR of the aligned tiffs?
-    climate_out_dir = get_processed_dir(project_cfg, category="climate", resolution_m=target_resolution) #DIR of the output tiffs
-
-    ensure_dir(aligned_dir) 
-    ensure_dir(climate_out_dir)
-
-    grid_path = get_grid_path(
-        project_cfg=project_cfg,
-        aoi_cfg=aoi_cfg,
-        resolution_m=target_resolution,
-    )
-    if not grid_path.exists():
-        raise FileNotFoundError(
-            f"Grid file not found: {grid_path}\n"
-            f"Run python -m src.make_grid --resolution {target_resolution} first."
-        )
-
-    with rasterio.open(grid_path) as grid:
-        grid_profile = grid.profile.copy()
-        grid_profile["nodata"] = nodata
-
-    climate_source_raw_dir = Path(climate_cfg["source"]["raw_dir"])
-    months = climate_cfg["aggregation"]["months"]
-    variables_cfg = climate_cfg["variables"]
-
-    resampling_name = climate_cfg["resampling"]["continuous"]
-    resampling_method = RESAMPLING_MAP[resampling_name]
-
-    extracted_dirs = {}
-    monthly_arrays = {var_name: [] for var_name in variables_cfg.keys()}
-
-    for var_name, var_cfg in variables_cfg.items():
-        zip_path = climate_source_raw_dir / var_cfg["zip_file"]
-        extracted_dirs[var_name] = extract_zip(zip_path, climate_source_raw_dir)
-
-    for var_name, var_cfg in variables_cfg.items():
-        scale_factor = float(var_cfg.get("scale_factor", 1.0))
-        source_folder = extracted_dirs[var_name]
-
-        for month in months:
-            month_file = find_month_file(source_folder, var_name, month)
-
-            aligned_array = align_raster_to_grid(
-                src_path=month_file,
-                grid_profile=grid_profile,
-                resampling_method=resampling_method,
+    if provider == "worldclim" and product == "v2_1_base":
+        if args.stage == "download":
+            zip_paths = prepare_worldclim_raw_data(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
             )
 
-            valid = aligned_array != nodata
-            aligned_array[valid] = aligned_array[valid] * scale_factor
+            print("==============================")
+            print("Raw files ready")
+            for path in zip_paths:
+                print(f"  - {path}")
+            print("==============================")
 
-            monthly_arrays[var_name].append(aligned_array)
+        elif args.stage == "clip":
+            domains_cfg = source_cfg["domains"]
+            clip_aoi_cfg = load_yaml(domains_cfg["clip_aoi_config"])
 
-            monthly_output_path = aligned_dir / build_monthly_output_name(
-                variable=var_name,
-                month=month,
-                resolution_m=target_resolution,
+            clipped_paths = prepare_worldclim_clipped_data(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                clip_aoi_cfg=clip_aoi_cfg,
             )
-            save_raster(monthly_output_path, aligned_array, grid_profile)
 
-    monthly_stacks = {
-        var_name: np.stack(arrays, axis=0)
-        for var_name, arrays in monthly_arrays.items()
-    }
+            print("==============================")
+            print("Clipped files ready")
+            print(f"Total files: {len(clipped_paths)}")
+            for path in clipped_paths[:10]:
+                print(f"  - {path}")
+            if len(clipped_paths) > 10:
+                print(f"  ... and {len(clipped_paths) - 10} more")
+            print("==============================")
 
-    valid_mask = build_valid_mask(monthly_stacks, nodata)
+        elif args.stage == "build":
+            domains_cfg = source_cfg["domains"]
+            clip_aoi_cfg = load_yaml(domains_cfg["clip_aoi_config"])
+            output_aoi_cfg = load_yaml(domains_cfg["output_aoi_config"])
 
-    isothermality = compute_isothermality(
-        tmin=monthly_stacks["tmin"],
-        tmax=monthly_stacks["tmax"],
-        valid_mask=valid_mask,
-        nodata=nodata,
-    )
+            feature_paths = prepare_worldclim_features(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                clip_aoi_cfg=clip_aoi_cfg,
+                output_aoi_cfg=output_aoi_cfg,
+            )
 
-    temp_seasonality = compute_temp_seasonality(
-        tavg=monthly_stacks["tavg"],
-        valid_mask=valid_mask,
-        nodata=nodata,
-    )
+            print("==============================")
+            print("Feature files ready")
+            print(f"Total files: {len(feature_paths)}")
+            for path in feature_paths[:10]:
+                print(f"  - {path}")
+            if len(feature_paths) > 10:
+                print(f"  ... and {len(feature_paths) - 10} more")
+            print("==============================")
+            
+        else:
+            raise NotImplementedError(f"Stage not implemented yet: {args.stage}")
 
-    precip_sum = compute_precip_sum(
-        prec=monthly_stacks["prec"],
-        valid_mask=valid_mask,
-        nodata=nodata,
-    )
-
-    derived_cfg = climate_cfg["derived_layers"]
-
-    save_raster(
-        climate_out_dir / build_final_output_name(
-            category=derived_cfg["isothermality"]["category"],
-            variable=derived_cfg["isothermality"]["variable"],
-            metric=derived_cfg["isothermality"]["metric"],
-            period=derived_cfg["isothermality"]["period"],
-            resolution_m=target_resolution,
-        ),
-        isothermality,
-        grid_profile,
-    )
-
-    save_raster(
-        climate_out_dir / build_final_output_name(
-            category=derived_cfg["temp_seasonality"]["category"],
-            variable=derived_cfg["temp_seasonality"]["variable"],
-            metric=derived_cfg["temp_seasonality"]["metric"],
-            period=derived_cfg["temp_seasonality"]["period"],
-            resolution_m=target_resolution,
-        ),
-        temp_seasonality,
-        grid_profile,
-    )
-
-    save_raster(
-        climate_out_dir / build_final_output_name(
-            category=derived_cfg["precip_sum"]["category"],
-            variable=derived_cfg["precip_sum"]["variable"],
-            metric=derived_cfg["precip_sum"]["metric"],
-            period=derived_cfg["precip_sum"]["period"],
-            resolution_m=target_resolution,
-        ),
-        precip_sum,
-        grid_profile,
-    )
-
-    print("Climate features created successfully")
-    print(f"  Target resolution: {target_resolution} m")
-    print(f"  Grid: {grid_path}")
-    print(f"  Monthly aligned rasters: {aligned_dir}")
-    print(f"  Final climate rasters: {climate_out_dir}")
+    else:
+        raise NotImplementedError(
+            f"No source connector implemented for provider={provider}, product={product}"
+        )
 
 
 if __name__ == "__main__":

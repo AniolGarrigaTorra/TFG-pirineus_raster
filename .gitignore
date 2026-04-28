@@ -1,5 +1,4 @@
-data_raw/
-data_processed/
+data_*
 logs/
 __pycache__/
 .ipynb_checkpoints/

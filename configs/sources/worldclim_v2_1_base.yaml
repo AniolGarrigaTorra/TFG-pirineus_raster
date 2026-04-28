@@ -8,8 +8,9 @@ source:
   source_crs: EPSG:4326
   source_period: "1970-2000"
 
-domain:
-  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 download:
   enabled: true
@@ -18,7 +19,7 @@ download:
   keep_global_zip_after_clip: false
 
 processing:
-  source_resolution: 10m
+  source_resolution: 30s
   target_resolution_m: 100
   grid_from_project: true
 
@@ -30,37 +31,37 @@ variables:
     valid_range: [-50, 50]
 
   tmax:
-    enabled: true
+    enabled: false
     unit: degC
     scale_factor: 0.1
     valid_range: [-40, 60]
 
   tavg:
-    enabled: true
+    enabled: false
     unit: degC
     scale_factor: 0.1
     valid_range: [-50, 60]
 
   prec:
-    enabled: true
+    enabled: false
     unit: mm
     scale_factor: 1.0
     valid_range: [0, 20000]
 
   srad:
-    enabled: true
+    enabled: false
     unit: kJ m-2 day-1
     scale_factor: 1.0
     valid_range: [0, 40000]
 
   wind:
-    enabled: true
+    enabled: false
     unit: m s-1
     scale_factor: 0.1
     valid_range: [0, 100]
 
   vapr:
-    enabled: true
+    enabled: false
     unit: kPa
     scale_factor: 0.01
     valid_range: [0, 20]
