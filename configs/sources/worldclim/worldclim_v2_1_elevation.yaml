@@ -1,0 +1,50 @@
+source:
+  id: worldclim_v2_1_elevation
+  provider: worldclim
+  product: v2_1_elevation
+  product_group: elevation
+  version: "2.1"
+  description: "Elevation data used to produce WorldClim v2.1, derived from SRTM"
+  base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
+  page_url: "https://www.worldclim.org/data/worldclim21.html"
+  source_crs: EPSG:4326
+  citation: "Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37(12): 4302-4315."
+
+dataset:
+  layer_structure: static_single
+  file_format: zip_geotiff
+  zip_variable_code: elev
+  zip_file_pattern: "wc2.1_{resolution}_elev.zip"
+  tif_file_pattern: "wc2.1_{resolution}_elev.tif"
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: auto
+  overwrite_existing: false
+  keep_global_zip_after_clip: false
+
+processing:
+  source_resolution: 10m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+
+variables:
+  elev:
+    enabled: true
+    description: "Elevation"
+    unit: m
+    scale_factor: 1.0
+    valid_range: [-500, 9000]
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32

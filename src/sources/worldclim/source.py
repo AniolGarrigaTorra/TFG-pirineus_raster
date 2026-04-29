@@ -4,6 +4,7 @@ from src.io.paths import get_source_raw_dir
 from src.sources.worldclim.download import download_worldclim_raw_files
 from src.sources.worldclim.clip import clip_worldclim_raw_files
 from src.pipeline.raster_pipeline import build_worldclim_features
+from src.sources.worldclim.products import get_worldclim_product
 
 
 def prepare_worldclim_raw_data(
@@ -15,6 +16,8 @@ def prepare_worldclim_raw_data(
 
     This downloads or validates raw ZIPs.
     """
+    product_info = get_worldclim_product(source_cfg["source"]["product"])
+
     source = source_cfg["source"]
     processing = source_cfg["processing"]
 
@@ -43,6 +46,7 @@ def prepare_worldclim_clipped_data(
     """
     Prepare clipped WorldClim monthly rasters for the configured clipping AOI.
     """
+    product_info = get_worldclim_product(source_cfg["source"]["product"])
     return clip_worldclim_raw_files(
         project_cfg=project_cfg,
         source_cfg=source_cfg,
@@ -59,6 +63,7 @@ def prepare_worldclim_features(
     """
     Build final grid-aligned WorldClim features.
     """
+    product_info = get_worldclim_product(source_cfg["source"]["product"])
     return build_worldclim_features(
         project_cfg=project_cfg,
         source_cfg=source_cfg,

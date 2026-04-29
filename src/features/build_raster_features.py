@@ -21,7 +21,7 @@ def parse_args():
 
     parser.add_argument(
         "--source-config",
-        default="configs/sources/worldclim_v2_1_base.yaml",
+        default="configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml",
         help="Path to source config YAML.",
     )
 
@@ -53,7 +53,7 @@ def main():
     print(f"Stage: {args.stage}")
     print("==============================")
 
-    if provider == "worldclim" and product == "v2_1_base":
+    if provider == "worldclim":
         if args.stage == "download":
             zip_paths = prepare_worldclim_raw_data(
                 project_cfg=project_cfg,

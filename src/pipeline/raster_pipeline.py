@@ -13,16 +13,18 @@ from src.io.paths import (
 from src.pipeline.aggregation import aggregate_stack, months_from_range
 from src.pipeline.metadata import (
     build_feature_metadata,
+    build_static_feature_metadata,
     metadata_to_geotiff_tags,
     write_sidecar_json,
 )
 from src.pipeline.resampling import (
+    get_resampling_method,
     get_variable_resampling_method,
     get_variable_resampling_method_name,
 )
 from src.pipeline.validation import validate_raster_matches_grid
 from src.sources.worldclim.naming import (
-    build_worldclim_clipped_month_name,
+    build_worldclim_clipped_name,
     build_worldclim_feature_name,
 )
 
@@ -99,7 +101,240 @@ def _read_and_reproject_month_to_grid(
     return destination
 
 
-def build_worldclim_features(
+def _get_enabled_indices(source_cfg: dict) -> list[tuple[str, dict]]:
+    indices_cfg = source_cfg.get("indices", {})
+
+    enabled = [
+        (index_name, cfg)
+        for index_name, cfg in indices_cfg.items()
+        if cfg.get("enabled", False)
+    ]
+
+    if not enabled:
+        raise ValueError("No enabled indices found in source config.")
+
+    return enabled
+
+
+def _get_enabled_static_variables(source_cfg: dict) -> list[tuple[str, dict]]:
+    variables_cfg = source_cfg.get("variables", {})
+
+    enabled = [
+        (variable, cfg)
+        for variable, cfg in variables_cfg.items()
+        if cfg.get("enabled", False)
+    ]
+
+    if not enabled:
+        raise ValueError("No enabled static variables found in source config.")
+
+    return enabled
+
+
+def _get_default_resampling_method(source_cfg: dict):
+    resampling_cfg = source_cfg.get("resampling", {})
+    method_name = resampling_cfg.get("default", "nearest")
+    return get_variable_resampling_method_name({"resampling": {"default": method_name}}, "__dummy__")
+
+
+def _get_static_resampling_name(source_cfg: dict, layer_name: str) -> str:
+    resampling_cfg = source_cfg.get("resampling", {})
+    default_method = resampling_cfg.get("default", "nearest")
+    by_variable = resampling_cfg.get("by_variable", {})
+    return by_variable.get(layer_name, default_method)
+
+
+def build_worldclim_static_features(
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_cfg: dict,
+    output_aoi_cfg: dict,
+) -> list[Path]:
+    """
+    Build final grid-aligned static WorldClim features.
+
+    Supports:
+      - static_index_set: bio1...bio19
+      - static_single: elev
+    """
+    source = source_cfg["source"]
+    processing = source_cfg["processing"]
+    output_cfg = source_cfg.get("output", {})
+    dataset_cfg = source_cfg.get("dataset", {})
+
+    provider = source["provider"]
+    product = source["product"]
+    source_resolution = processing["source_resolution"]
+    target_resolution_m = int(processing["target_resolution_m"])
+
+    layer_structure = dataset_cfg["layer_structure"]
+
+    clip_aoi_name = clip_aoi_cfg["name"]
+    output_aoi_name = output_aoi_cfg["name"]
+
+    nodata = float(project_cfg.get("nodata", -9999.0))
+    output_dtype = output_cfg.get("dtype", "float32")
+    compression = output_cfg.get("compression", "LZW")
+    write_sidecar = bool(output_cfg.get("write_sidecar_json", True))
+
+    grid_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=output_aoi_cfg,
+        resolution_m=target_resolution_m,
+    )
+
+    if not grid_path.exists():
+        raise FileNotFoundError(
+            f"Target grid does not exist: {grid_path}\n"
+            f"Create it first with make_grid.py for AOI={output_aoi_name}, "
+            f"resolution={target_resolution_m}m."
+        )
+
+    with rasterio.open(grid_path) as grid:
+        grid_profile = grid.profile.copy()
+        grid_transform = grid.transform
+        grid_crs = grid.crs
+        grid_height = grid.height
+        grid_width = grid.width
+
+    print("[build-static] Output AOI:", output_aoi_name)
+    print("[build-static] Clip AOI:", clip_aoi_name)
+    print("[build-static] Grid:", grid_path)
+    print("[build-static] Grid CRS:", grid_crs)
+    print("[build-static] Grid shape:", grid_width, grid_height)
+    print("[build-static] Target resolution:", target_resolution_m)
+    print("[build-static] Layer structure:", layer_structure)
+
+    if layer_structure == "static_index_set":
+        layers = _get_enabled_indices(source_cfg)
+    elif layer_structure == "static_single":
+        layers = _get_enabled_static_variables(source_cfg)
+    else:
+        raise NotImplementedError(
+            f"Unsupported static layer_structure: {layer_structure}"
+        )
+
+    output_dir = get_feature_output_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        domain_name=output_aoi_name,
+        target_resolution_m=target_resolution_m,
+    )
+    ensure_dir(output_dir)
+
+    written_paths: list[Path] = []
+
+    for layer_name, layer_cfg in layers:
+        scale_factor = float(layer_cfg.get("scale_factor", 1.0))
+        resampling_name = _get_static_resampling_name(source_cfg, layer_name)
+        resampling = get_resampling_method(resampling_name)
+
+        clipped_dir = get_source_clipped_dir(
+            project_cfg=project_cfg,
+            provider=provider,
+            product=product,
+            domain_name=clip_aoi_name,
+            source_resolution=source_resolution,
+            variable=layer_name,
+        )
+
+        clipped_name = build_worldclim_clipped_name(
+            source_cfg=source_cfg,
+            layer_name=layer_name,
+            domain_name=clip_aoi_name,
+        )
+
+        clipped_path = clipped_dir / clipped_name
+
+        if not clipped_path.exists():
+            raise FileNotFoundError(
+                f"Missing clipped static raster: {clipped_path}"
+            )
+
+        print("==============================")
+        print(f"[build-static] Layer: {layer_name}")
+        print(f"[build-static] Description: {layer_cfg.get('description', '')}")
+        print(f"[build-static] Scale factor: {scale_factor}")
+        print(f"[build-static] Resampling: {resampling_name}")
+        print(f"[build-static] Clipped path: {clipped_path}")
+
+        grid_array = _read_and_reproject_month_to_grid(
+            source_path=clipped_path,
+            grid_profile=grid_profile,
+            grid_transform=grid_transform,
+            grid_crs=grid_crs,
+            grid_height=grid_height,
+            grid_width=grid_width,
+            resampling=resampling,
+            source_nodata=None,
+        )
+
+        grid_array = grid_array * scale_factor
+
+        output_array = np.where(
+            np.isfinite(grid_array),
+            grid_array,
+            nodata,
+        ).astype(output_dtype)
+
+        output_name = build_worldclim_feature_name(
+            provider=provider,
+            product=product,
+            variable=layer_name,
+            metric=None,
+            start_month=None,
+            end_month=None,
+            domain_name=output_aoi_name,
+            target_resolution_m=target_resolution_m,
+        )
+
+        output_path = output_dir / output_name
+
+        output_profile = grid_profile.copy()
+        output_profile.update(
+            {
+                "driver": "GTiff",
+                "count": 1,
+                "dtype": output_dtype,
+                "nodata": nodata,
+                "compress": compression,
+            }
+        )
+
+        for key in ["blockxsize", "blockysize", "tiled", "interleave"]:
+            output_profile.pop(key, None)
+
+        metadata = build_static_feature_metadata(
+            source_cfg=source_cfg,
+            layer_name=layer_name,
+            layer_cfg=layer_cfg,
+            clip_aoi_name=clip_aoi_name,
+            output_aoi_name=output_aoi_name,
+            target_resolution_m=target_resolution_m,
+            resampling_method_name=resampling_name,
+        )
+
+        with rasterio.open(output_path, "w", **output_profile) as dst:
+            dst.write(output_array, 1)
+            dst.update_tags(**metadata_to_geotiff_tags(metadata))
+
+        if write_sidecar:
+            json_path = write_sidecar_json(metadata, output_path)
+            print(f"[build-static] Metadata JSON: {json_path}")
+
+        validate_raster_matches_grid(
+            raster_path=output_path,
+            grid_path=grid_path,
+        )
+
+        print(f"[build-static] Written: {output_path}")
+        written_paths.append(output_path)
+
+    return written_paths
+
+
+def build_worldclim_monthly_features(
     project_cfg: dict,
     source_cfg: dict,
     clip_aoi_cfg: dict,
@@ -215,11 +450,11 @@ def build_worldclim_features(
             monthly_arrays = []
 
             for month in months:
-                clipped_name = build_worldclim_clipped_month_name(
-                    source_resolution=source_resolution,
-                    variable=variable,
-                    month=month,
+                clipped_name = build_worldclim_clipped_name(
+                    source_cfg=source_cfg,
+                    layer_name=variable,
                     domain_name=clip_aoi_name,
+                    month=month,
                 )
 
                 clipped_path = clipped_dir / clipped_name
@@ -312,3 +547,38 @@ def build_worldclim_features(
             written_paths.append(output_path)
 
     return written_paths
+
+
+def build_worldclim_features(
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_cfg: dict,
+    output_aoi_cfg: dict,
+) -> list[Path]:
+    """
+    Route WorldClim feature building according to dataset.layer_structure.
+    """
+    layer_structure = source_cfg.get("dataset", {}).get(
+        "layer_structure",
+        "monthly_climatology",
+    )
+
+    if layer_structure == "monthly_climatology":
+        return build_worldclim_monthly_features(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_cfg=clip_aoi_cfg,
+            output_aoi_cfg=output_aoi_cfg,
+        )
+
+    if layer_structure in {"static_index_set", "static_single"}:
+        return build_worldclim_static_features(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_cfg=clip_aoi_cfg,
+            output_aoi_cfg=output_aoi_cfg,
+        )
+
+    raise NotImplementedError(
+        f"Unsupported layer_structure for build stage: {layer_structure}"
+    )

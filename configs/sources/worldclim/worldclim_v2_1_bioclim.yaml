@@ -1,0 +1,198 @@
+source:
+  id: worldclim_v2_1_bioclim
+  provider: worldclim
+  product: v2_1_bioclim
+  product_group: bioclimatic
+  version: "2.1"
+  description: "WorldClim v2.1 bioclimatic variables, 1970-2000"
+  base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
+  page_url: "https://www.worldclim.org/data/worldclim21.html"
+  documentation_url: "https://www.worldclim.org/data/bioclim.html"
+  source_crs: EPSG:4326
+  source_period: "1970-2000"
+  citation: "Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37(12): 4302-4315."
+
+dataset:
+  layer_structure: static_index_set
+  file_format: zip_geotiff
+  index_axis: bio
+  zip_variable_code: bio
+  zip_file_pattern: "wc2.1_{resolution}_bio.zip"
+  tif_file_pattern: "wc2.1_{resolution}_bio_{index}.tif"
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: auto
+  overwrite_existing: false
+  keep_global_zip_after_clip: false
+
+processing:
+  source_resolution: 10m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+
+indices:
+  bio1:
+    enabled: true
+    index: 1
+    description: "Annual Mean Temperature"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 50]
+
+  bio2:
+    enabled: true
+    index: 2
+    description: "Mean Diurnal Range"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [0, 50]
+
+  bio3:
+    enabled: true
+    index: 3
+    description: "Isothermality (BIO2/BIO7 × 100)"
+    unit: percent
+    scale_factor: 1.0
+    valid_range: [0, 100]
+
+  bio4:
+    enabled: true
+    index: 4
+    description: "Temperature Seasonality (standard deviation ×100)"
+    unit: sd_x100
+    scale_factor: 1.0
+    valid_range: [0, 30000]
+
+  bio5:
+    enabled: true
+    index: 5
+    description: "Max Temperature of Warmest Month"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-40, 60]
+
+  bio6:
+    enabled: true
+    index: 6
+    description: "Min Temperature of Coldest Month"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-60, 50]
+
+  bio7:
+    enabled: true
+    index: 7
+    description: "Temperature Annual Range"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [0, 80]
+
+  bio8:
+    enabled: true
+    index: 8
+    description: "Mean Temperature of Wettest Quarter"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 60]
+
+  bio9:
+    enabled: true
+    index: 9
+    description: "Mean Temperature of Driest Quarter"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 60]
+
+  bio10:
+    enabled: true
+    index: 10
+    description: "Mean Temperature of Warmest Quarter"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 60]
+
+  bio11:
+    enabled: true
+    index: 11
+    description: "Mean Temperature of Coldest Quarter"
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-50, 60]
+
+  bio12:
+    enabled: true
+    index: 12
+    description: "Annual Precipitation"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 20000]
+
+  bio13:
+    enabled: true
+    index: 13
+    description: "Precipitation of Wettest Month"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 5000]
+
+  bio14:
+    enabled: true
+    index: 14
+    description: "Precipitation of Driest Month"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 5000]
+
+  bio15:
+    enabled: true
+    index: 15
+    description: "Precipitation Seasonality (Coefficient of Variation)"
+    unit: coefficient_of_variation
+    scale_factor: 1.0
+    valid_range: [0, 300]
+
+  bio16:
+    enabled: true
+    index: 16
+    description: "Precipitation of Wettest Quarter"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 10000]
+
+  bio17:
+    enabled: true
+    index: 17
+    description: "Precipitation of Driest Quarter"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 10000]
+
+  bio18:
+    enabled: true
+    index: 18
+    description: "Precipitation of Warmest Quarter"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 10000]
+
+  bio19:
+    enabled: true
+    index: 19
+    description: "Precipitation of Coldest Quarter"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 10000]
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32

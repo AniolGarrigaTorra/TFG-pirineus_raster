@@ -1,12 +1,22 @@
 source:
-  id: worldclim_v2_1_base
+  id: worldclim_v2_1_climate_normals
   provider: worldclim
-  product: v2_1_base
+  product: v2_1_climate_normals
+  product_group: historical_climate
   version: "2.1"
-  description: "WorldClim v2.1 climate normals, 1970-2000"
+  description: "WorldClim v2.1 monthly climate normals, 1970-2000"
   base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
+  page_url: "https://www.worldclim.org/data/worldclim21.html"
   source_crs: EPSG:4326
   source_period: "1970-2000"
+  citation: "Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37(12): 4302-4315."
+
+dataset:
+  layer_structure: monthly_climatology
+  file_format: zip_geotiff
+  temporal_axis: month
+  zip_file_pattern: "wc2.1_{resolution}_{variable}.zip"
+  tif_file_pattern: "wc2.1_{resolution}_{variable}_{month:02d}.tif"
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
@@ -19,7 +29,7 @@ download:
   keep_global_zip_after_clip: false
 
 processing:
-  source_resolution: 30s
+  source_resolution: 10m
   target_resolution_m: 100
   grid_from_project: true
 
@@ -31,37 +41,37 @@ variables:
     valid_range: [-50, 50]
 
   tmax:
-    enabled: false
+    enabled: true
     unit: degC
     scale_factor: 0.1
     valid_range: [-40, 60]
 
   tavg:
-    enabled: false
+    enabled: true
     unit: degC
     scale_factor: 0.1
     valid_range: [-50, 60]
 
   prec:
-    enabled: false
+    enabled: true
     unit: mm
     scale_factor: 1.0
     valid_range: [0, 20000]
 
   srad:
-    enabled: false
+    enabled: true
     unit: kJ m-2 day-1
     scale_factor: 1.0
     valid_range: [0, 40000]
 
   wind:
-    enabled: false
+    enabled: true
     unit: m s-1
     scale_factor: 0.1
     valid_range: [0, 100]
 
   vapr:
-    enabled: false
+    enabled: true
     unit: kPa
     scale_factor: 0.01
     valid_range: [0, 20]

@@ -17,7 +17,7 @@ echo "Host: $(hostname)"
 echo "Date: $(date)"
 echo "=============================="
 
-PROJECT_DIR="$HOME/projects/pirineus_raster"
+PROJECT_DIR="/mnt/csl/work/aniol.garriga.torra/pirineus_raster"
 cd "$PROJECT_DIR"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -26,10 +26,12 @@ conda activate pirineus-raster
 echo "Python: $(which python)"
 python --version
 
+STAGE="${1:-build}"
+
 python -m src.features.build_raster_features \
   --project-config configs/project.yaml \
-  --source-config configs/sources/worldclim_v2_1_base.yaml \
-  --stage download
+  --source-config configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml \
+  --stage "$STAGE"
 
 echo "Raster features job finished successfully"
 echo "Date: $(date)"
