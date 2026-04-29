@@ -1,0 +1,22 @@
+name: pyrenees_full
+description: "Generous bounding box around the Pyrenees, based on Natural Earth PYRENEES label area and expanded for WorldClim clipping."
+
+crs: EPSG:3035
+
+bounds:
+  xmin: 3300000
+  xmax: 3770000
+  ymin: 2120000
+  ymax: 2345000
+
+bounds_epsg4326:
+  xmin: -2.28618323475999
+  xmax: 3.18030846445879
+  ymin: 41.9550235046815
+  ymax: 43.4746768249941
+
+notes:
+  - "Bounding box used for clipping global WorldClim rasters."
+  - "Based on Natural Earth Physical Labels - PYRENEES polygon."
+  - "Natural Earth physical region boundaries are approximate, so this AOI is used as a generous clipping domain, not as an exact mountain boundary."
+  - "Bounds in EPSG:3035 have been rounded outward to provide a generous clipping area."
