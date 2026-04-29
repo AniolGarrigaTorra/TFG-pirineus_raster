@@ -10,13 +10,18 @@
 
 set -euo pipefail
 
-PROJECT_DIR="$HOME/projects/pirineus_raster"
+PROJECT_DIR="/mnt/csl/work/aniol.garriga.torra/pirineus_raster"
 cd "$PROJECT_DIR"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate pirineus-raster
-
 RESOLUTION="${1:-100}"
+AOI_CONFIG="${2:-configs/aoi/experimental_pallars_sobira.yaml}"
 
-python -m src.make_grid --resolution "$RESOLUTION"
-python -m src.validation.validate_grid --resolution "$RESOLUTION"
+python -m src.make_grid \
+  --project-config configs/project.yaml \
+  --aoi-config "$AOI_CONFIG" \
+  --resolution "$RESOLUTION"
+
+python -m src.validation.validate_grid \
+  --project-config configs/project.yaml \
+  --aoi-config "$AOI_CONFIG" \
+  --resolution "$RESOLUTION"

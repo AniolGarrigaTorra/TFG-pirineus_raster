@@ -1,15 +1,14 @@
 source:
-  id: worldclim_v2_1_bioclim
+  id: worldclim_v2_1_elevation
   provider: worldclim
-  product: v2_1_bioclim
-  product_group: bioclimatic
+  product: v2_1_elevation
+  product_group: elevation
   version: "2.1"
-  description: "WorldClim v2.1 bioclimatic variables, 1970-2000"
+  description: "Elevation data used to produce WorldClim v2.1, derived from SRTM"
   base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
   page_url: "https://www.worldclim.org/data/worldclim21.html"
-  documentation_url: "https://www.worldclim.org/data/bioclim.html"
   source_crs: EPSG:4326
-  source_period: "1970-2000"
+  source_period: "reference elevation layer"
   citation: "Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37(12): 4302-4315."
 
 dataset:

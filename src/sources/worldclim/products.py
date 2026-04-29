@@ -28,6 +28,12 @@ WORLDCLIM_PRODUCTS = {
         zip_variable_mode="single_zip",
         supports_temporal_aggregation=False,
     ),
+    "cruts4_09_monthly": WorldClimProduct(
+        product="cruts4_09_monthly",
+        layer_structure="monthly_time_series",
+        zip_variable_mode="variable_period",
+        supports_temporal_aggregation=True,
+    ),
 }
 
 

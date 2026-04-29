@@ -8,9 +8,8 @@ from src.io.paths import ensure_dir
 from src.sources.worldclim.naming import (
     build_worldclim_download_url,
     build_worldclim_zip_path,
-    get_zip_variable_codes,
+    get_zip_specs,
 )
-
 
 USER_AGENT = "pirineus-raster-pipeline/0.1"
 
@@ -97,7 +96,7 @@ def download_file(
 def ensure_worldclim_zip(
     source_cfg: dict,
     raw_dir: Path,
-    zip_variable_code: str,
+    zip_spec: dict,
 ) -> Path:
     download_cfg = source_cfg.get("download", {})
 
@@ -108,7 +107,7 @@ def ensure_worldclim_zip(
     zip_path = build_worldclim_zip_path(
         raw_dir=raw_dir,
         source_cfg=source_cfg,
-        zip_variable_code=zip_variable_code,
+        zip_spec=zip_spec,
     )
 
     if zip_path.exists() and not overwrite:
@@ -117,13 +116,17 @@ def ensure_worldclim_zip(
 
     if not enabled or mode == "manual":
         if not zip_path.exists():
+            url = build_worldclim_download_url(
+                source_cfg=source_cfg,
+                zip_spec=zip_spec,
+            )
             raise FileNotFoundError(
                 "WorldClim raw ZIP not found and automatic download is disabled.\n"
                 f"Expected file: {zip_path}\n"
                 "Manual protocol:\n"
-                "  1. Download the ZIP from WorldClim.\n"
-                f"  2. Place it at: {zip_path}\n"
-                "  3. Re-run the pipeline."
+                f"  mkdir -p {zip_path.parent}\n"
+                f"  wget -c -O {zip_path} {url}\n"
+                "  Re-run the pipeline."
             )
 
         print(f"[worldclim] Manual mode. Found existing ZIP: {zip_path}")
@@ -134,7 +137,7 @@ def ensure_worldclim_zip(
 
     url = build_worldclim_download_url(
         source_cfg=source_cfg,
-        zip_variable_code=zip_variable_code,
+        zip_spec=zip_spec,
     )
 
     download_file(
@@ -154,16 +157,21 @@ def download_worldclim_raw_files(
 ) -> list[Path]:
     ensure_dir(raw_dir)
 
-    zip_variable_codes = get_zip_variable_codes(source_cfg)
+    zip_specs = get_zip_specs(source_cfg)
     zip_paths = []
 
-    print("[worldclim] ZIP variable codes:", ", ".join(zip_variable_codes))
+    print("[worldclim] ZIP specs:")
+    for spec in zip_specs:
+        label = spec["zip_variable_code"]
+        if spec.get("period"):
+            label = f"{label}_{spec['period']}"
+        print(f"  - {label}")
 
-    for zip_variable_code in zip_variable_codes:
+    for zip_spec in zip_specs:
         zip_path = ensure_worldclim_zip(
             source_cfg=source_cfg,
             raw_dir=raw_dir,
-            zip_variable_code=zip_variable_code,
+            zip_spec=zip_spec,
         )
         zip_paths.append(zip_path)
 

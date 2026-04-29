@@ -9,12 +9,13 @@ source:
   page_url: "https://www.worldclim.org/data/monthlywth.html"
   source_crs: EPSG:4326
   source_period: "1950-2024"
-  citation: "WorldClim monthly historical weather data downscaled from CRU-TS-4.09 using WorldClim 2.1 for bias correction."
+  citation: "WorldClim historical monthly weather data downscaled from CRU-TS-4.09 by the Climatic Research Unit, University of East Anglia, using WorldClim 2.1 for bias correction. Cite Harris et al. 2020 for CRU-TS and Fick & Hijmans 2017 for WorldClim 2."
 
 dataset:
   layer_structure: monthly_time_series
   file_format: zip_geotiff
   temporal_axis: year_month
+  zip_variable_mode: variable_period
   zip_file_pattern: "wc2.1_cruts4.09_{resolution}_{variable}_{period}.zip"
   tif_file_pattern: "wc2.1_cruts4.09_{resolution}_{variable}_{year}-{month:02d}.tif"
 
@@ -61,20 +62,32 @@ variables:
     scale_factor: 1.0
 
 temporal_aggregations:
-  - name: annual_mean_1991_2020
+  - name: annual_mean_temperature_1991_2020
     years: [1991, 2020]
     months: [1, 12]
     metric: mean
+    variables: [tmin, tmax]
 
-  - name: may_sep_mean_1991_2020
+  - name: may_sep_mean_temperature_1991_2020
     years: [1991, 2020]
     months: [5, 9]
     metric: mean
+    variables: [tmin, tmax]
 
-  - name: annual_sum_1991_2020
+  - name: mean_annual_precipitation_1991_2020
     years: [1991, 2020]
     months: [1, 12]
-    metric: sum
+    within_year_metric: sum
+    across_year_metric: mean
+    output_metric_name: mean_annual_sum
+    variables: [prec]
+
+  - name: mean_may_sep_precipitation_1991_2020
+    years: [1991, 2020]
+    months: [5, 9]
+    within_year_metric: sum
+    across_year_metric: mean
+    output_metric_name: mean_period_sum
     variables: [prec]
 
 output:

@@ -21,22 +21,6 @@ def get_grid_path(project_cfg: dict, aoi_cfg: dict, resolution_m: int) -> Path:
     resolution_suffix = build_resolution_suffix(resolution_m)
     return grid_dir / f"grid_{aoi_name}_{resolution_suffix}.tif"
 
-
-# Kept for backwards compatibility with previous climate pipeline.
-def get_aligned_dir(project_cfg: dict, category: str, resolution_m: int) -> Path:
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
-    aligned_subdir = project_cfg["alignment"]["interim_subdir"]
-    resolution_suffix = build_resolution_suffix(resolution_m)
-    return interim_dir / aligned_subdir / category / resolution_suffix
-
-
-# Kept for backwards compatibility with previous climate pipeline.
-def get_processed_dir(project_cfg: dict, category: str, resolution_m: int) -> Path:
-    processed_dir = Path(project_cfg["paths"]["processed_dir"])
-    resolution_suffix = build_resolution_suffix(resolution_m)
-    return processed_dir / category / resolution_suffix
-
-
 def get_source_raw_dir(
     project_cfg: dict,
     provider: str,

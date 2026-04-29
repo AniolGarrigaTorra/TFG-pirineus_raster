@@ -10,13 +10,27 @@ from src.sources.worldclim.naming import (
     build_worldclim_zip_path,
     build_worldclim_clipped_name,
     build_worldclim_monthly_member_basename,
+    build_worldclim_monthly_time_series_member_basename,
     build_worldclim_static_index_member_basename,
     build_worldclim_static_single_member_basename,
     get_layer_structure,
     get_source_resolution,
-    get_zip_variable_codes,
+    get_zip_specs,
 )
 
+
+def _years_from_period(period: str) -> list[int]:
+    """
+    Convert '1990-1999' into [1990, ..., 1999].
+    """
+    start_year_str, end_year_str = period.split("-")
+    start_year = int(start_year_str)
+    end_year = int(end_year_str)
+
+    if start_year > end_year:
+        raise ValueError(f"Invalid period: {period}")
+
+    return list(range(start_year, end_year + 1))
 
 def _get_aoi_bounds(aoi_cfg: dict) -> tuple[float, float, float, float]:
     bounds = aoi_cfg["bounds"]
@@ -212,10 +226,16 @@ def clip_monthly_climatology(
     written_paths: list[Path] = []
 
     for variable in _get_enabled_monthly_variables(source_cfg):
+        zip_spec = {
+            "zip_variable_code": variable,
+            "variable": variable,
+            "period": None,
+        }
+
         zip_path = build_worldclim_zip_path(
             raw_dir=raw_dir,
             source_cfg=source_cfg,
-            zip_variable_code=variable,
+            zip_spec=zip_spec,
         )
 
         if not zip_path.exists():
@@ -291,10 +311,16 @@ def clip_static_index_set(
         / source_resolution
     )
 
+    zip_spec = {
+        "zip_variable_code": zip_variable_code,
+        "variable": zip_variable_code,
+        "period": None,
+    }
+
     zip_path = build_worldclim_zip_path(
         raw_dir=raw_dir,
         source_cfg=source_cfg,
-        zip_variable_code=zip_variable_code,
+        zip_spec=zip_spec,
     )
 
     if not zip_path.exists():
@@ -343,6 +369,94 @@ def clip_static_index_set(
         written_paths.append(output_path)
 
     _delete_zip_if_safe(zip_path, keep_global_zip_after_clip)
+
+    return written_paths
+
+
+def clip_monthly_time_series(
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_name: str,
+    clip_bounds_source_crs: tuple[float, float, float, float],
+    compression: str,
+    overwrite: bool,
+    keep_global_zip_after_clip: bool,
+) -> list[Path]:
+    source = source_cfg["source"]
+    provider = source["provider"]
+    product = source["product"]
+    source_resolution = get_source_resolution(source_cfg)
+
+    raw_dir = (
+        Path(project_cfg["paths"]["raw_dir"])
+        / provider
+        / product
+        / source_resolution
+    )
+
+    written_paths: list[Path] = []
+    zip_specs = get_zip_specs(source_cfg)
+
+    for zip_spec in zip_specs:
+        variable = zip_spec["variable"]
+        period = zip_spec["period"]
+
+        zip_path = build_worldclim_zip_path(
+            raw_dir=raw_dir,
+            source_cfg=source_cfg,
+            zip_spec=zip_spec,
+        )
+
+        if not zip_path.exists():
+            raise FileNotFoundError(f"Missing raw WorldClim ZIP: {zip_path}")
+
+        print(f"[clip] Processing monthly time series: {variable} {period}")
+        print(f"[clip] ZIP: {zip_path}")
+
+        clipped_dir = get_source_clipped_dir(
+            project_cfg=project_cfg,
+            provider=provider,
+            product=product,
+            domain_name=clip_aoi_name,
+            source_resolution=source_resolution,
+            variable=variable,
+        )
+
+        ensure_dir(clipped_dir)
+
+        for year in _years_from_period(period):
+            for month in range(1, 13):
+                expected_basename = build_worldclim_monthly_time_series_member_basename(
+                    source_cfg=source_cfg,
+                    variable=variable,
+                    year=year,
+                    month=month,
+                )
+
+                member = _find_tif_in_zip(zip_path, expected_basename)
+
+                output_name = build_worldclim_clipped_name(
+                    source_cfg=source_cfg,
+                    layer_name=variable,
+                    domain_name=clip_aoi_name,
+                    year=year,
+                    month=month,
+                )
+
+                output_path = clipped_dir / output_name
+
+                clip_one_raster(
+                    zip_path=zip_path,
+                    member=member,
+                    output_path=output_path,
+                    clip_bounds_in_source_crs=clip_bounds_source_crs,
+                    compression=compression,
+                    overwrite=overwrite,
+                )
+
+                written_paths.append(output_path)
+
+        _delete_zip_if_safe(zip_path, keep_global_zip_after_clip)
 
     return written_paths
 
@@ -485,6 +599,17 @@ def clip_worldclim_raw_files(
 
     if layer_structure == "static_single":
         return clip_static_single(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            clip_bounds_source_crs=clip_bounds_source_crs,
+            compression=compression,
+            overwrite=overwrite,
+            keep_global_zip_after_clip=keep_global_zip_after_clip,
+        )
+    
+    if layer_structure == "monthly_time_series":
+        return clip_monthly_time_series(
             project_cfg=project_cfg,
             source_cfg=source_cfg,
             clip_aoi_name=clip_aoi_name,
