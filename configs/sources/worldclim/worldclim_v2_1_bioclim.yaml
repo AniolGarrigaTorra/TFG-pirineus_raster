@@ -1,4 +1,4 @@
-source:
+ssource:
   id: worldclim_v2_1_bioclim
   provider: worldclim
   product: v2_1_bioclim
@@ -196,3 +196,7 @@ output:
   write_sidecar_json: true
   compression: LZW
   dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001
