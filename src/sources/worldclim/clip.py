@@ -17,6 +17,9 @@ from src.sources.worldclim.naming import (
     get_layer_structure,
     get_source_resolution,
     get_zip_specs,
+    get_file_specs,
+    build_worldclim_cmip6_raw_path,
+    build_worldclim_cmip6_clipped_month_name,
 )
 
 def _list_monthly_time_series_members(
@@ -205,6 +208,95 @@ def clip_one_raster(
     print(f"[clip] Written: {output_path}")
 
 
+def clip_one_multiband_monthly_raster(
+    raw_path: Path,
+    output_dir: Path,
+    source_cfg: dict,
+    file_spec: dict,
+    clip_aoi_name: str,
+    clip_bounds_in_source_crs: tuple[float, float, float, float],
+    compression: str = "LZW",
+    overwrite: bool = False,
+) -> list[Path]:
+    """
+    Clip a direct CMIP6 multiband GeoTIFF.
+
+    Expected:
+      band 1 = January
+      ...
+      band 12 = December
+    """
+    ensure_dir(output_dir)
+
+    written_paths: list[Path] = []
+
+    with rasterio.open(raw_path) as src:
+        if src.count < 12:
+            raise ValueError(
+                f"Expected at least 12 monthly bands in {raw_path}, found {src.count}"
+            )
+
+        window = from_bounds(
+            *clip_bounds_in_source_crs,
+            transform=src.transform,
+        )
+        window = window.round_offsets().round_lengths()
+        transform = src.window_transform(window)
+
+        for month in range(1, 13):
+            output_name = build_worldclim_cmip6_clipped_month_name(
+                source_cfg=source_cfg,
+                file_spec=file_spec,
+                domain_name=clip_aoi_name,
+                month=month,
+            )
+            output_path = output_dir / output_name
+
+            if output_path.exists() and not overwrite:
+                print(f"[clip] Exists, skipping: {output_path}")
+                written_paths.append(output_path)
+                continue
+
+            data = src.read(month, window=window)
+
+            profile = src.profile.copy()
+            profile.update(
+                {
+                    "driver": "GTiff",
+                    "height": data.shape[0],
+                    "width": data.shape[1],
+                    "count": 1,
+                    "transform": transform,
+                    "compress": compression,
+                }
+            )
+
+            for key in ["blockxsize", "blockysize", "tiled", "interleave"]:
+                profile.pop(key, None)
+
+            with rasterio.open(output_path, "w", **profile) as dst:
+                dst.write(data, 1)
+                dst.update_tags(
+                    SOURCE_CLIPPED_FROM=str(raw_path.name),
+                    SOURCE_BAND=str(month),
+                    SOURCE_MONTH=str(month),
+                    GCM=file_spec["gcm"],
+                    SSP=file_spec["ssp"],
+                    PERIOD=file_spec["period"],
+                    CLIP_METHOD="bbox",
+                    CLIP_BOUNDS_SOURCE_CRS=str(clip_bounds_in_source_crs),
+                    NOTE=(
+                        "Intermediate clipped monthly raster from CMIP6 multiband GeoTIFF. "
+                        "Original WorldClim values are preserved; scale_factor is not applied here."
+                    ),
+                )
+
+            print(f"[clip] Written: {output_path}")
+            written_paths.append(output_path)
+
+    return written_paths
+
+
 def _get_enabled_monthly_variables(source_cfg: dict) -> list[str]:
     variables_cfg = source_cfg.get("variables", {})
     enabled = [
@@ -342,6 +434,79 @@ def clip_monthly_climatology(
             written_paths.append(output_path)
 
         _delete_zip_if_safe(zip_path, keep_global_zip_after_clip)
+
+    return written_paths
+
+def clip_future_monthly_multiband(
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_name: str,
+    clip_bounds_source_crs: tuple[float, float, float, float],
+    compression: str,
+    overwrite: bool,
+    keep_global_file_after_clip: bool,
+) -> list[Path]:
+    source = source_cfg["source"]
+    provider = source["provider"]
+    product = source["product"]
+    source_resolution = get_source_resolution(source_cfg)
+
+    raw_dir = (
+        Path(project_cfg["paths"]["raw_dir"])
+        / provider
+        / product
+        / source_resolution
+    )
+
+    written_paths: list[Path] = []
+    file_specs = get_file_specs(source_cfg)
+
+    for file_spec in file_specs:
+        raw_path = build_worldclim_cmip6_raw_path(
+            raw_dir=raw_dir,
+            source_cfg=source_cfg,
+            file_spec=file_spec,
+        )
+
+        if not raw_path.exists():
+            raise FileNotFoundError(f"Missing raw CMIP6 GeoTIFF: {raw_path}")
+
+        print(
+            f"[clip] Processing CMIP6: "
+            f"{file_spec['variable']} {file_spec['gcm']} "
+            f"{file_spec['ssp']} {file_spec['period']}"
+        )
+
+        clipped_dir = (
+            get_source_clipped_dir(
+                project_cfg=project_cfg,
+                provider=provider,
+                product=product,
+                domain_name=clip_aoi_name,
+                source_resolution=source_resolution,
+                variable=file_spec["variable"],
+            )
+            / file_spec["gcm"]
+            / file_spec["ssp"]
+            / file_spec["period"]
+        )
+
+        paths = clip_one_multiband_monthly_raster(
+            raw_path=raw_path,
+            output_dir=clipped_dir,
+            source_cfg=source_cfg,
+            file_spec=file_spec,
+            clip_aoi_name=clip_aoi_name,
+            clip_bounds_in_source_crs=clip_bounds_source_crs,
+            compression=compression,
+            overwrite=overwrite,
+        )
+
+        written_paths.extend(paths)
+
+        if not keep_global_file_after_clip and raw_path.exists():
+            print(f"[clip] Removing global raw CMIP6 file after clipping: {raw_path}")
+            raw_path.unlink()
 
     return written_paths
 
@@ -619,6 +784,9 @@ def clip_worldclim_raw_files(
     keep_global_zip_after_clip = bool(
         download_cfg.get("keep_global_zip_after_clip", True)
     )
+    keep_global_file_after_clip = bool(
+        download_cfg.get("keep_global_file_after_clip", True)
+    )
 
     clip_bounds_project_crs = _get_aoi_bounds(clip_aoi_cfg)
 
@@ -677,6 +845,17 @@ def clip_worldclim_raw_files(
             compression=compression,
             overwrite=overwrite,
             keep_global_zip_after_clip=keep_global_zip_after_clip,
+        )
+    
+    if layer_structure == "future_monthly_multiband":
+        return clip_future_monthly_multiband(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            clip_bounds_source_crs=clip_bounds_source_crs,
+            compression=compression,
+            overwrite=overwrite,
+            keep_global_file_after_clip=keep_global_file_after_clip,
         )
 
     raise NotImplementedError(f"Unsupported layer_structure: {layer_structure}")

@@ -9,8 +9,11 @@ from src.sources.worldclim.naming import (
     build_worldclim_download_url,
     build_worldclim_zip_path,
     get_zip_specs,
+    get_file_specs,
+    get_layer_structure,
+    build_worldclim_cmip6_download_url,
+    build_worldclim_cmip6_raw_path,
 )
-
 USER_AGENT = "pirineus-raster-pipeline/0.1"
 
 
@@ -93,6 +96,70 @@ def download_file(
     )
 
 
+def download_worldclim_direct_files(
+    source_cfg: dict,
+    raw_dir: Path,
+) -> list[Path]:
+    ensure_dir(raw_dir)
+
+    file_specs = get_file_specs(source_cfg)
+    download_cfg = source_cfg.get("download", {})
+
+    mode = download_cfg.get("mode", "manual")
+    enabled = bool(download_cfg.get("enabled", False))
+    overwrite = bool(download_cfg.get("overwrite_existing", False))
+
+    paths: list[Path] = []
+
+    print("[worldclim] Direct file specs:")
+    for spec in file_specs:
+        print(
+            f"  - {spec['variable']} "
+            f"{spec['gcm']} {spec['ssp']} {spec['period']}"
+        )
+
+    for spec in file_specs:
+        output_path = build_worldclim_cmip6_raw_path(
+            raw_dir=raw_dir,
+            source_cfg=source_cfg,
+            file_spec=spec,
+        )
+
+        url = build_worldclim_cmip6_download_url(
+            source_cfg=source_cfg,
+            file_spec=spec,
+        )
+
+        if output_path.exists() and not overwrite:
+            print(f"[worldclim] Raw file already exists: {output_path}")
+            paths.append(output_path)
+            continue
+
+        if not enabled or mode == "manual":
+            raise FileNotFoundError(
+                "WorldClim CMIP6 raw GeoTIFF not found and automatic download is disabled.\n"
+                f"Expected file: {output_path}\n"
+                "Manual protocol:\n"
+                f"  mkdir -p {output_path.parent}\n"
+                f"  wget -c -O {output_path} {url}\n"
+                "  Re-run the pipeline."
+            )
+
+        if mode != "auto":
+            raise ValueError(f"Unsupported download mode: {mode}. Use 'auto' or 'manual'.")
+
+        download_file(
+            url=url,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+
+        time.sleep(1)
+        paths.append(output_path)
+
+    return paths
+
+
 def ensure_worldclim_zip(
     source_cfg: dict,
     raw_dir: Path,
@@ -155,6 +222,14 @@ def download_worldclim_raw_files(
     source_cfg: dict,
     raw_dir: Path,
 ) -> list[Path]:
+    layer_structure = get_layer_structure(source_cfg)
+
+    if layer_structure == "future_monthly_multiband":
+        return download_worldclim_direct_files(
+            source_cfg=source_cfg,
+            raw_dir=raw_dir,
+        )
+
     ensure_dir(raw_dir)
 
     zip_specs = get_zip_specs(source_cfg)

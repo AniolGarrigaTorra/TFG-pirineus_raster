@@ -1,0 +1,103 @@
+source:
+  id: worldclim_cmip6_future
+  provider: worldclim
+  product: cmip6_future
+  product_group: future_climate
+  version: "CMIP6"
+  description: "WorldClim CMIP6 downscaled future climate projections"
+  base_url: "https://geodata.ucdavis.edu/cmip6"
+  page_url: "https://www.worldclim.org/data/cmip6/cmip6climate.html"
+  source_crs: EPSG:4326
+  source_period: "future 20-year averages"
+  citation: "WorldClim CMIP6 future climate projections. Downscaling and bias correction were done with WorldClim v2.1 as baseline climate. Also cite the corresponding CMIP6 GCM and CMIP6 terms of use."
+
+dataset:
+  layer_structure: future_monthly_multiband
+  file_format: direct_multiband_geotiff
+  temporal_axis: month
+  variable_axis: band
+  tif_file_pattern: "wc2.1_{resolution}_{variable}_{gcm}_{ssp}_{period}.tif"
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: auto
+  overwrite_existing: false
+  keep_global_file_after_clip: false
+
+processing:
+  source_resolution: 10m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+  by_variable:
+    tmin: nearest
+    tmax: nearest
+    prec: nearest
+
+gcms:
+  - ACCESS-CM2
+
+ssps:
+  - ssp126
+
+periods:
+  - "2021-2040"
+
+variables:
+  tmin:
+    enabled: true
+    worldclim_code: tmin
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-80, 80]
+
+  tmax:
+    enabled: true
+    worldclim_code: tmax
+    unit: degC
+    scale_factor: 0.1
+    valid_range: [-80, 80]
+
+  prec:
+    enabled: true
+    worldclim_code: prec
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 20000]
+
+temporal_aggregations:
+  - name: annual_mean
+    months: [1, 12]
+    metric: mean
+    variables: [tmin, tmax]
+
+  - name: may_sep_mean
+    months: [5, 9]
+    metric: mean
+    variables: [tmin, tmax]
+
+  - name: annual_precip_sum
+    months: [1, 12]
+    metric: sum
+    variables: [prec]
+
+  - name: may_sep_precip_sum
+    months: [5, 9]
+    metric: sum
+    variables: [prec]
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

@@ -34,6 +34,12 @@ WORLDCLIM_PRODUCTS = {
         zip_variable_mode="variable_period",
         supports_temporal_aggregation=True,
     ),
+    "cmip6_future": WorldClimProduct(
+        product="cmip6_future",
+        layer_structure="future_monthly_multiband",
+        zip_variable_mode="direct_file",
+        supports_temporal_aggregation=True,
+    ),
 }
 
 

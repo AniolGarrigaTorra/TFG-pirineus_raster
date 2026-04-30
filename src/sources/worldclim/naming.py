@@ -121,6 +121,61 @@ def get_zip_specs(source_cfg: dict) -> list[dict]:
     )
 
 
+def get_file_specs(source_cfg: dict) -> list[dict]:
+    """
+    Return raw file specifications for both ZIP and direct GeoTIFF products.
+    """
+    layer_structure = get_layer_structure(source_cfg)
+
+    if layer_structure != "future_monthly_multiband":
+        # Existing products still use ZIP specs.
+        return get_zip_specs(source_cfg)
+
+    variables_cfg = source_cfg.get("variables", {})
+    gcms = source_cfg.get("gcms", [])
+    ssps = source_cfg.get("ssps", [])
+    periods = source_cfg.get("periods", [])
+
+    enabled_variables = [
+        variable
+        for variable, cfg in variables_cfg.items()
+        if cfg.get("enabled", False)
+    ]
+
+    if not enabled_variables:
+        raise ValueError("No enabled variables found in CMIP6 source config.")
+
+    if not gcms:
+        raise ValueError("No GCMs found in CMIP6 source config.")
+
+    if not ssps:
+        raise ValueError("No SSPs found in CMIP6 source config.")
+
+    if not periods:
+        raise ValueError("No periods found in CMIP6 source config.")
+
+    specs = []
+
+    for variable in enabled_variables:
+        variable_cfg = variables_cfg[variable]
+        worldclim_code = variable_cfg.get("worldclim_code", variable)
+
+        for gcm in gcms:
+            for ssp in ssps:
+                for period in periods:
+                    specs.append(
+                        {
+                            "variable": variable,
+                            "worldclim_code": worldclim_code,
+                            "gcm": gcm,
+                            "ssp": ssp,
+                            "period": period,
+                        }
+                    )
+
+    return specs
+
+
 def build_worldclim_zip_name(source_cfg: dict, zip_spec: dict) -> str:
     """
     Examples:
@@ -145,6 +200,24 @@ def build_worldclim_zip_name(source_cfg: dict, zip_spec: dict) -> str:
     )
 
 
+def build_worldclim_cmip6_filename(
+    source_cfg: dict,
+    file_spec: dict,
+) -> str:
+    source_resolution = get_source_resolution(source_cfg)
+    pattern = source_cfg["dataset"].get(
+        "tif_file_pattern",
+        "wc2.1_{resolution}_{variable}_{gcm}_{ssp}_{period}.tif",
+    )
+
+    return pattern.format(
+        resolution=source_resolution,
+        variable=file_spec["worldclim_code"],
+        gcm=file_spec["gcm"],
+        ssp=file_spec["ssp"],
+        period=file_spec["period"],
+    )
+
 def build_worldclim_download_url(
     source_cfg: dict,
     zip_spec: dict,
@@ -154,6 +227,19 @@ def build_worldclim_download_url(
     return f"{base_url.rstrip('/')}/{zip_name}"
 
 
+def build_worldclim_cmip6_download_url(
+    source_cfg: dict,
+    file_spec: dict,
+) -> str:
+    source_resolution = get_source_resolution(source_cfg)
+    base_url = source_cfg["source"]["base_url"].rstrip("/")
+    filename = build_worldclim_cmip6_filename(source_cfg, file_spec)
+
+    return (
+        f"{base_url}/{source_resolution}/"
+        f"{file_spec['gcm']}/{file_spec['ssp']}/{filename}"
+    )
+
 def build_worldclim_zip_path(
     raw_dir: Path,
     source_cfg: dict,
@@ -161,6 +247,21 @@ def build_worldclim_zip_path(
 ) -> Path:
     zip_name = build_worldclim_zip_name(source_cfg, zip_spec)
     return raw_dir / zip_name
+
+def build_worldclim_cmip6_raw_path(
+    raw_dir: Path,
+    source_cfg: dict,
+    file_spec: dict,
+) -> Path:
+    filename = build_worldclim_cmip6_filename(source_cfg, file_spec)
+
+    return (
+        raw_dir
+        / file_spec["gcm"]
+        / file_spec["ssp"]
+        / file_spec["period"]
+        / filename
+    )
 
 
 def build_worldclim_monthly_member_basename(
@@ -182,6 +283,20 @@ def build_worldclim_monthly_member_basename(
         resolution=source_resolution,
         variable=variable,
         month=month,
+    )
+
+def build_worldclim_cmip6_clipped_month_name(
+    source_cfg: dict,
+    file_spec: dict,
+    domain_name: str,
+    month: int,
+) -> str:
+    source_resolution = get_source_resolution(source_cfg)
+
+    return (
+        f"wc2.1_{source_resolution}_{file_spec['variable']}_"
+        f"{file_spec['gcm']}_{file_spec['ssp']}_{file_spec['period']}_"
+        f"{month:02d}_{domain_name}.tif"
     )
 
 
@@ -339,5 +454,25 @@ def build_worldclim_feature_name(
 
     return (
         f"{provider}_{product}_{variable}_"
+        f"{domain_name}_{int(target_resolution_m)}m.tif"
+    )
+
+
+def build_worldclim_cmip6_feature_name(
+    provider: str,
+    product: str,
+    variable: str,
+    metric: str,
+    gcm: str,
+    ssp: str,
+    period: str,
+    start_month: int,
+    end_month: int,
+    domain_name: str,
+    target_resolution_m: int,
+) -> str:
+    return (
+        f"{provider}_{product}_{variable}_{gcm}_{ssp}_{period}_"
+        f"{metric}_m{start_month:02d}-m{end_month:02d}_"
         f"{domain_name}_{int(target_resolution_m)}m.tif"
     )
