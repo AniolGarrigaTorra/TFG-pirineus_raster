@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.io.paths import get_source_raw_dir
-from src.sources.worldclim.builders import build_worldclim_features
+from src.sources.worldclim.build import build_worldclim_features
 from src.sources.worldclim.clip import clip_worldclim_raw_files
 from src.sources.worldclim.download import download_worldclim_raw_files
 

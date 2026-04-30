@@ -1,6 +1,7 @@
-data_*
-logs/
+*.egg-info/
 __pycache__/
-.ipynb_checkpoints/
-venv/
-Miniconda*
+*.pyc
+data_raw/
+data_interim/
+data_processed/
+logs/

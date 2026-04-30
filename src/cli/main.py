@@ -4,11 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
-from src.pipeline.layer_catalog import (
+from src.pipeline.layers import (
     build_layer_catalog_from_manifest,
     summarize_layer_catalog,
 )
-from src.pipeline.run_orchestrator import run_dataset_pipeline
+from src.pipeline.dataset import run_dataset_pipeline
 from src.pipeline.runner import run_source_pipeline
 from src.sources.registry import list_source_connectors
 

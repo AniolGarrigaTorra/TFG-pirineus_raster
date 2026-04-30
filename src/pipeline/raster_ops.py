@@ -1,0 +1,615 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import rasterio
+from rasterio.crs import CRS
+from rasterio.enums import Resampling
+from rasterio.transform import Affine
+from rasterio.warp import reproject
+
+from src.io.paths import get_grid_path
+
+
+# =============================================================================
+# Grid context
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class GridContext:
+    """
+    Immutable description of the target project grid.
+
+    All output feature rasters must match this grid exactly.
+    """
+
+    path: Path
+    profile: dict[str, Any]
+    transform: Affine
+    crs: CRS
+    height: int
+    width: int
+    resolution_m: int
+    aoi_name: str
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.height, self.width
+
+
+def load_grid_context(
+    project_cfg: dict,
+    aoi_cfg: dict,
+    resolution_m: int,
+) -> GridContext:
+    """
+    Load target grid metadata from the project grid raster.
+    """
+    aoi_name = aoi_cfg["name"]
+
+    grid_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=aoi_cfg,
+        resolution_m=resolution_m,
+    )
+
+    if not grid_path.exists():
+        raise FileNotFoundError(
+            f"Target grid does not exist: {grid_path}\n"
+            f"Create it first with:\n"
+            f"  python -m src.make_grid "
+            f"--project-config configs/project.yaml "
+            f"--aoi-config <aoi_config> "
+            f"--resolution {resolution_m}"
+        )
+
+    with rasterio.open(grid_path) as grid:
+        profile = grid.profile.copy()
+
+        return GridContext(
+            path=grid_path,
+            profile=profile,
+            transform=grid.transform,
+            crs=grid.crs,
+            height=grid.height,
+            width=grid.width,
+            resolution_m=int(resolution_m),
+            aoi_name=aoi_name,
+        )
+
+
+def print_grid_context(
+    grid: GridContext,
+    prefix: str = "[grid]",
+) -> None:
+    print(f"{prefix} AOI: {grid.aoi_name}")
+    print(f"{prefix} Path: {grid.path}")
+    print(f"{prefix} CRS: {grid.crs}")
+    print(f"{prefix} Shape: {grid.width} x {grid.height}")
+    print(f"{prefix} Resolution: {grid.resolution_m} m")
+
+
+# =============================================================================
+# Resampling
+# =============================================================================
+
+
+_RESAMPLING_METHODS: dict[str, Resampling] = {
+    "nearest": Resampling.nearest,
+    "bilinear": Resampling.bilinear,
+    "cubic": Resampling.cubic,
+    "cubic_spline": Resampling.cubic_spline,
+    "lanczos": Resampling.lanczos,
+    "average": Resampling.average,
+    "mode": Resampling.mode,
+    "max": Resampling.max,
+    "min": Resampling.min,
+    "med": Resampling.med,
+    "q1": Resampling.q1,
+    "q3": Resampling.q3,
+    "sum": Resampling.sum,
+}
+
+
+def get_resampling_method(method_name: str | None) -> Resampling:
+    """
+    Convert a string resampling method name to rasterio.enums.Resampling.
+    """
+    if method_name is None:
+        method_name = "nearest"
+
+    method_name = str(method_name).lower()
+
+    if method_name not in _RESAMPLING_METHODS:
+        valid = ", ".join(sorted(_RESAMPLING_METHODS))
+        raise ValueError(
+            f"Unsupported resampling method '{method_name}'. "
+            f"Valid methods are: {valid}"
+        )
+
+    return _RESAMPLING_METHODS[method_name]
+
+
+def get_variable_resampling_method_name(
+    source_cfg: dict,
+    variable: str,
+) -> str:
+    """
+    Return resampling method name for one variable.
+
+    Supported config patterns are intentionally flexible:
+
+    resampling:
+      default: nearest
+      variables:
+        elev: bilinear
+
+    or:
+
+    variables:
+      elev:
+        resampling: bilinear
+    """
+    variable_cfg = source_cfg.get("variables", {}).get(variable, {})
+    index_cfg = source_cfg.get("indices", {}).get(variable, {})
+
+    if "resampling" in variable_cfg:
+        return str(variable_cfg["resampling"])
+
+    if "resampling" in index_cfg:
+        return str(index_cfg["resampling"])
+
+    resampling_cfg = source_cfg.get("resampling", {}) or {}
+
+    for key in ["variables", "per_variable", "by_variable"]:
+        per_variable = resampling_cfg.get(key, {})
+        if variable in per_variable:
+            return str(per_variable[variable])
+
+    if variable in resampling_cfg:
+        return str(resampling_cfg[variable])
+
+    return str(resampling_cfg.get("default", "nearest"))
+
+
+def get_variable_resampling_method(
+    source_cfg: dict,
+    variable: str,
+) -> Resampling:
+    """
+    Return rasterio Resampling enum for one variable.
+    """
+    return get_resampling_method(
+        get_variable_resampling_method_name(
+            source_cfg=source_cfg,
+            variable=variable,
+        )
+    )
+
+
+# =============================================================================
+# Raster reading and grid alignment
+# =============================================================================
+
+
+def read_raster_to_grid(
+    raster_path: Path,
+    grid: GridContext,
+    resampling: Resampling,
+    band: int = 1,
+    scale_factor: float = 1.0,
+) -> np.ndarray:
+    """
+    Read one raster band and align it to the target project grid.
+
+    Returns a float32 array with np.nan as internal nodata.
+    Scale factor is applied after reprojection.
+    """
+    raster_path = Path(raster_path)
+
+    if not raster_path.exists():
+        raise FileNotFoundError(f"Input raster does not exist: {raster_path}")
+
+    dst = np.full(
+        grid.shape,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    with rasterio.open(raster_path) as src:
+        src_array = src.read(band).astype(np.float32)
+        src_nodata = src.nodata
+
+        if src_nodata is not None:
+            src_array = np.where(src_array == src_nodata, np.nan, src_array)
+
+        reproject(
+            source=src_array,
+            destination=dst,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=np.nan,
+            dst_transform=grid.transform,
+            dst_crs=grid.crs,
+            dst_nodata=np.nan,
+            resampling=resampling,
+        )
+
+    if scale_factor != 1.0:
+        dst = dst * float(scale_factor)
+
+    dst = dst.astype(np.float32)
+    dst[~np.isfinite(dst)] = np.nan
+
+    return dst
+
+
+def stack_rasters_to_grid(
+    raster_paths: list[Path],
+    grid: GridContext,
+    resampling: Resampling,
+    scale_factor: float = 1.0,
+    band: int = 1,
+) -> np.ndarray:
+    """
+    Read several rasters and return a stack aligned to the target grid.
+
+    Output shape:
+      (n_layers, height, width)
+    """
+    arrays = [
+        read_raster_to_grid(
+            raster_path=path,
+            grid=grid,
+            resampling=resampling,
+            band=band,
+            scale_factor=scale_factor,
+        )
+        for path in raster_paths
+    ]
+
+    if not arrays:
+        raise ValueError("No raster paths provided for stack.")
+
+    return np.stack(arrays, axis=0)
+
+
+def read_raster_array_as_nan(path: str | Path) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    Read a single-band raster as float32 and convert nodata to np.nan.
+
+    Returns:
+      array, profile
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Raster not found: {path}")
+
+    with rasterio.open(path) as src:
+        array = src.read(1).astype(np.float32)
+        profile = src.profile.copy()
+        nodata = src.nodata
+
+    if nodata is not None:
+        array = np.where(array == nodata, np.nan, array)
+
+    array[~np.isfinite(array)] = np.nan
+
+    return array, profile
+
+
+# =============================================================================
+# Metadata
+# =============================================================================
+
+
+def _json_safe(value: Any) -> Any:
+    """
+    Convert common non-JSON types to JSON-safe values.
+    """
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    return value
+
+
+def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _json_safe(value)
+        for key, value in metadata.items()
+        if value is not None
+    }
+
+
+def metadata_to_geotiff_tags(metadata: dict[str, Any]) -> dict[str, str]:
+    """
+    Convert metadata dictionary to GeoTIFF-safe string tags.
+
+    GeoTIFF tags should be simple string key-value pairs.
+    Complex values are serialized as JSON strings.
+    """
+    tags: dict[str, str] = {}
+
+    for key, value in _clean_metadata(metadata).items():
+        if isinstance(value, (dict, list)):
+            tags[key] = json.dumps(value, ensure_ascii=False, default=str)
+        else:
+            tags[key] = str(value)
+
+    return tags
+
+
+def write_sidecar_json(
+    metadata: dict[str, Any],
+    raster_path: str | Path,
+) -> Path:
+    """
+    Write metadata next to a GeoTIFF as .json.
+    """
+    raster_path = Path(raster_path)
+    json_path = raster_path.with_suffix(".json")
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            _clean_metadata(metadata),
+            f,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
+
+    return json_path
+
+
+def _source_metadata(source_cfg: dict) -> dict[str, Any]:
+    source = source_cfg.get("source", {})
+    dataset = source_cfg.get("dataset", {})
+    processing = source_cfg.get("processing", {})
+
+    return {
+        "provider": source.get("provider"),
+        "product": source.get("product"),
+        "source_id": source.get("id"),
+        "dataset_layer_structure": dataset.get("layer_structure"),
+        "source_resolution": processing.get("source_resolution"),
+        "target_resolution_m": processing.get("target_resolution_m"),
+    }
+
+
+def build_feature_metadata(
+    source_cfg: dict,
+    variable: str,
+    variable_cfg: dict,
+    aggregation_cfg: dict,
+    months: list[int],
+    clip_aoi_name: str,
+    output_aoi_name: str,
+    target_resolution_m: int,
+    resampling_method_name: str,
+) -> dict[str, Any]:
+    """
+    Build metadata for temporal aggregated feature rasters.
+    """
+    source_meta = _source_metadata(source_cfg)
+
+    metric = (
+        aggregation_cfg.get("metric")
+        or aggregation_cfg.get("output_metric_name")
+        or aggregation_cfg.get("aggregation_metric")
+    )
+
+    metadata = {
+        **source_meta,
+        "variable": variable,
+        "variable_description": variable_cfg.get("description"),
+        "unit": variable_cfg.get("unit"),
+        "valid_range": variable_cfg.get("valid_range"),
+        "scale_factor": variable_cfg.get("scale_factor", 1.0),
+        "aggregation_name": aggregation_cfg.get("name"),
+        "aggregation_metric": metric,
+        "metric": metric,
+        "months": months,
+        "month_start": min(months) if months else None,
+        "month_end": max(months) if months else None,
+        "clip_aoi_name": clip_aoi_name,
+        "output_aoi_name": output_aoi_name,
+        "target_resolution_m": target_resolution_m,
+        "resampling": resampling_method_name,
+    }
+
+    return _clean_metadata(metadata)
+
+
+def build_static_feature_metadata(
+    source_cfg: dict,
+    layer_name: str,
+    layer_cfg: dict,
+    clip_aoi_name: str,
+    output_aoi_name: str,
+    target_resolution_m: int,
+    resampling_method_name: str,
+) -> dict[str, Any]:
+    """
+    Build metadata for static feature rasters.
+    """
+    source_meta = _source_metadata(source_cfg)
+
+    metadata = {
+        **source_meta,
+        "variable": layer_name,
+        "variable_description": layer_cfg.get("description"),
+        "unit": layer_cfg.get("unit"),
+        "valid_range": layer_cfg.get("valid_range"),
+        "scale_factor": layer_cfg.get("scale_factor", 1.0),
+        "clip_aoi_name": clip_aoi_name,
+        "output_aoi_name": output_aoi_name,
+        "target_resolution_m": target_resolution_m,
+        "resampling": resampling_method_name,
+    }
+
+    return _clean_metadata(metadata)
+
+
+# =============================================================================
+# Raster writing
+# =============================================================================
+
+
+def build_output_profile(
+    grid: GridContext,
+    output_dtype: str = "float32",
+    nodata: float = -9999.0,
+    compression: str = "LZW",
+) -> dict[str, Any]:
+    """
+    Build a GeoTIFF output profile matching the target grid.
+    """
+    profile = grid.profile.copy()
+
+    profile.update(
+        driver="GTiff",
+        height=grid.height,
+        width=grid.width,
+        count=1,
+        dtype=output_dtype,
+        crs=grid.crs,
+        transform=grid.transform,
+        nodata=nodata,
+        compress=compression,
+    )
+
+    return profile
+
+
+def prepare_array_for_write(
+    array: np.ndarray,
+    nodata: float = -9999.0,
+    output_dtype: str = "float32",
+) -> np.ndarray:
+    """
+    Convert an internal float array with np.nan into a writable raster array.
+    """
+    if array.ndim != 2:
+        raise ValueError(
+            f"Expected 2D array for raster writing, got shape {array.shape}"
+        )
+
+    out = array.astype(np.float32, copy=True)
+    out[~np.isfinite(out)] = nodata
+
+    return out.astype(output_dtype)
+
+
+def write_feature_raster(
+    output_path: Path,
+    array: np.ndarray,
+    grid: GridContext,
+    metadata: dict[str, Any],
+    output_dtype: str = "float32",
+    nodata: float = -9999.0,
+    compression: str = "LZW",
+    write_sidecar: bool = True,
+    validate: bool = True,
+) -> Path:
+    """
+    Write one feature raster aligned to the project grid.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    output_profile = build_output_profile(
+        grid=grid,
+        output_dtype=output_dtype,
+        nodata=nodata,
+        compression=compression,
+    )
+
+    writable = prepare_array_for_write(
+        array=array,
+        nodata=nodata,
+        output_dtype=output_dtype,
+    )
+
+    with rasterio.open(output_path, "w", **output_profile) as dst:
+        dst.write(writable, 1)
+        dst.update_tags(**metadata_to_geotiff_tags(metadata))
+
+    if write_sidecar:
+        write_sidecar_json(metadata, output_path)
+
+    if validate:
+        validate_raster_matches_grid(
+            raster_path=output_path,
+            grid_path=grid.path,
+        )
+
+    return output_path
+
+
+# =============================================================================
+# Validation
+# =============================================================================
+
+
+def validate_raster_matches_grid(
+    raster_path: str | Path,
+    grid_path: str | Path,
+    check_transform: bool = True,
+    check_crs: bool = True,
+    check_shape: bool = True,
+) -> None:
+    """
+    Validate that a raster matches the target grid geometry.
+
+    Checks:
+      - CRS
+      - width/height
+      - affine transform
+    """
+    raster_path = Path(raster_path)
+    grid_path = Path(grid_path)
+
+    if not raster_path.exists():
+        raise FileNotFoundError(f"Raster does not exist: {raster_path}")
+
+    if not grid_path.exists():
+        raise FileNotFoundError(f"Grid does not exist: {grid_path}")
+
+    with rasterio.open(raster_path) as raster, rasterio.open(grid_path) as grid:
+        if check_crs and raster.crs != grid.crs:
+            raise ValueError(
+                f"CRS mismatch for {raster_path}: "
+                f"raster={raster.crs}, grid={grid.crs}"
+            )
+
+        if check_shape and (
+            raster.width != grid.width or raster.height != grid.height
+        ):
+            raise ValueError(
+                f"Shape mismatch for {raster_path}: "
+                f"raster=({raster.width}, {raster.height}), "
+                f"grid=({grid.width}, {grid.height})"
+            )
+
+        if check_transform and raster.transform != grid.transform:
+            raise ValueError(
+                f"Transform mismatch for {raster_path}: "
+                f"raster={raster.transform}, grid={grid.transform}"
+            )

@@ -7,9 +7,84 @@ from typing import Callable
 import numpy as np
 from rasterio.enums import Resampling
 
-from src.pipeline.aggregation import aggregate_stack
-from src.pipeline.grid_context import GridContext
-from src.pipeline.raster_reading import read_raster_to_grid
+from src.pipeline.raster_ops import read_raster_to_grid
+
+
+# =============================================================================
+# Basic temporal aggregation
+# =============================================================================
+
+
+def aggregate_stack(
+    stack: np.ndarray,
+    metric: str,
+) -> np.ndarray:
+    """
+    Aggregate a stack of rasters along the first axis.
+
+    Parameters
+    ----------
+    stack:
+        Array with shape (time, height, width).
+
+    metric:
+        Aggregation metric. Supported:
+          - mean
+          - sum
+          - std
+          - min
+          - max
+
+    Notes
+    -----
+    The stack is expected to use np.nan for nodata.
+    Aggregations ignore np.nan values.
+    """
+    if stack.ndim != 3:
+        raise ValueError(
+            f"Expected stack with shape (time, height, width), got {stack.shape}"
+        )
+
+    if metric == "mean":
+        return np.nanmean(stack, axis=0)
+
+    if metric == "sum":
+        return np.nansum(stack, axis=0)
+
+    if metric == "std":
+        return np.nanstd(stack, axis=0)
+
+    if metric == "min":
+        return np.nanmin(stack, axis=0)
+
+    if metric == "max":
+        return np.nanmax(stack, axis=0)
+
+    raise ValueError(f"Unsupported aggregation metric: {metric}")
+
+
+def months_from_range(month_range: list[int]) -> list[int]:
+    """
+    Convert a month range [start, end] into a list of months.
+
+    Example
+    -------
+    [5, 9] -> [5, 6, 7, 8, 9]
+    """
+    if len(month_range) != 2:
+        raise ValueError(f"Month range must have two values: {month_range}")
+
+    start_month, end_month = int(month_range[0]), int(month_range[1])
+
+    if start_month < 1 or end_month > 12 or start_month > end_month:
+        raise ValueError(f"Invalid month range: {month_range}")
+
+    return list(range(start_month, end_month + 1))
+
+
+# =============================================================================
+# Generic temporal raster specs
+# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +106,7 @@ class TemporalRasterSpec:
 
 def read_temporal_stack_to_grid(
     specs: list[TemporalRasterSpec],
-    grid: GridContext,
+    grid,
     resampling: Resampling,
     scale_factor: float = 1.0,
 ) -> np.ndarray:
@@ -64,7 +139,7 @@ def read_temporal_stack_to_grid(
 
 def aggregate_temporal_specs(
     specs: list[TemporalRasterSpec],
-    grid: GridContext,
+    grid,
     resampling: Resampling,
     scale_factor: float,
     metric: str,
@@ -74,7 +149,7 @@ def aggregate_temporal_specs(
 
     Example:
       all months from 1991-2020 -> mean
-      all months 5-9 -> sum
+      selected months 5-9 -> sum
     """
     stack = read_temporal_stack_to_grid(
         specs=specs,
@@ -93,7 +168,7 @@ def aggregate_year_then_across_years(
     spec_factory: Callable[[int, int], TemporalRasterSpec],
     years: list[int],
     months: list[int],
-    grid: GridContext,
+    grid,
     resampling: Resampling,
     scale_factor: float,
     within_year_metric: str,
@@ -105,10 +180,11 @@ def aggregate_year_then_across_years(
       1. For each year, aggregate selected months.
       2. Aggregate the yearly results across years.
 
-    Example:
-      annual precipitation:
-        within_year_metric = sum
-        across_year_metric = mean
+    Example
+    -------
+    Mean annual precipitation:
+      within_year_metric = sum
+      across_year_metric = mean
     """
     if not years:
         raise ValueError("No years provided.")
@@ -146,7 +222,7 @@ def aggregate_time_series(
     spec_factory: Callable[[int, int], TemporalRasterSpec],
     years: list[int],
     months: list[int],
-    grid: GridContext,
+    grid,
     resampling: Resampling,
     scale_factor: float,
     aggregation_cfg: dict,
@@ -216,7 +292,7 @@ def aggregate_time_series(
 def aggregate_monthly_bands(
     raster_path: Path,
     months: list[int],
-    grid: GridContext,
+    grid,
     resampling: Resampling,
     scale_factor: float,
     metric: str,
