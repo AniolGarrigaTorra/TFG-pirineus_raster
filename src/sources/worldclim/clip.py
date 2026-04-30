@@ -1,5 +1,6 @@
 from pathlib import Path
 import zipfile
+import re
 
 import rasterio
 from rasterio.windows import from_bounds
@@ -17,6 +18,62 @@ from src.sources.worldclim.naming import (
     get_source_resolution,
     get_zip_specs,
 )
+
+def _list_monthly_time_series_members(
+    zip_path: Path,
+    source_cfg: dict,
+    variable: str,
+) -> list[tuple[int, int, str]]:
+    """
+    List available year-month TIFFs inside a CRU-TS monthly ZIP.
+
+    Returns:
+      [(year, month, member_name), ...]
+
+    This is more robust than assuming that a period such as 1950-1959
+    really contains every year from 1950 to 1959. For example, the
+    WorldClim CRU-TS 1950-1959 ZIP may start at 1951.
+    """
+    source_resolution = get_source_resolution(source_cfg)
+
+    pattern = re.compile(
+        rf"wc2\.1_cruts4\.09_{re.escape(source_resolution)}_"
+        rf"{re.escape(variable)}_(\d{{4}})-(\d{{2}})\.tif$"
+    )
+
+    matches: list[tuple[int, int, str]] = []
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        members = zf.namelist()
+
+    for member in members:
+        basename = Path(member).name
+        match = pattern.match(basename)
+
+        if match is None:
+            continue
+
+        year = int(match.group(1))
+        month = int(match.group(2))
+
+        if not 1 <= month <= 12:
+            raise ValueError(
+                f"Invalid month parsed from ZIP member {member}: {month}"
+            )
+
+        matches.append((year, month, member))
+
+    if not matches:
+        sample = "\n".join(members[:20])
+        raise FileNotFoundError(
+            f"No monthly time-series TIFFs found for variable '{variable}' "
+            f"inside {zip_path}.\n"
+            f"First ZIP members:\n{sample}"
+        )
+
+    matches.sort(key=lambda item: (item[0], item[1]))
+
+    return matches
 
 
 def _years_from_period(period: str) -> list[int]:
@@ -424,37 +481,40 @@ def clip_monthly_time_series(
 
         ensure_dir(clipped_dir)
 
-        for year in _years_from_period(period):
-            for month in range(1, 13):
-                expected_basename = build_worldclim_monthly_time_series_member_basename(
-                    source_cfg=source_cfg,
-                    variable=variable,
-                    year=year,
-                    month=month,
-                )
+        available_members = _list_monthly_time_series_members(
+            zip_path=zip_path,
+            source_cfg=source_cfg,
+            variable=variable,
+        )
 
-                member = _find_tif_in_zip(zip_path, expected_basename)
+        available_years = sorted({year for year, _, _ in available_members})
+        print(
+            f"[clip] Available years in ZIP: "
+            f"{available_years[0]}-{available_years[-1]} "
+            f"({len(available_members)} monthly rasters)"
+        )
 
-                output_name = build_worldclim_clipped_name(
-                    source_cfg=source_cfg,
-                    layer_name=variable,
-                    domain_name=clip_aoi_name,
-                    year=year,
-                    month=month,
-                )
+        for year, month, member in available_members:
+            output_name = build_worldclim_clipped_name(
+                source_cfg=source_cfg,
+                layer_name=variable,
+                domain_name=clip_aoi_name,
+                year=year,
+                month=month,
+            )
 
-                output_path = clipped_dir / output_name
+            output_path = clipped_dir / output_name
 
-                clip_one_raster(
-                    zip_path=zip_path,
-                    member=member,
-                    output_path=output_path,
-                    clip_bounds_in_source_crs=clip_bounds_source_crs,
-                    compression=compression,
-                    overwrite=overwrite,
-                )
+            clip_one_raster(
+                zip_path=zip_path,
+                member=member,
+                output_path=output_path,
+                clip_bounds_in_source_crs=clip_bounds_source_crs,
+                compression=compression,
+                overwrite=overwrite,
+            )
 
-                written_paths.append(output_path)
+            written_paths.append(output_path)
 
         _delete_zip_if_safe(zip_path, keep_global_zip_after_clip)
 
