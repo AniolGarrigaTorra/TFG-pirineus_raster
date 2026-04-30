@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from src.io.paths import get_source_raw_dir
-from src.sources.worldclim.download import download_worldclim_raw_files
+from src.sources.worldclim.builders import build_worldclim_features
 from src.sources.worldclim.clip import clip_worldclim_raw_files
-from src.pipeline.raster_pipeline import build_worldclim_features
-from src.sources.worldclim.products import get_worldclim_product
+from src.sources.worldclim.download import download_worldclim_raw_files
 
 
 def prepare_worldclim_raw_data(
@@ -12,12 +13,10 @@ def prepare_worldclim_raw_data(
     source_cfg: dict,
 ) -> list[Path]:
     """
-    Prepare raw global WorldClim ZIP files.
+    Prepare raw global WorldClim files.
 
-    This downloads or validates raw ZIPs.
+    This downloads or validates raw source files according to the source YAML.
     """
-    product_info = get_worldclim_product(source_cfg["source"]["product"])
-
     source = source_cfg["source"]
     processing = source_cfg["processing"]
 
@@ -44,9 +43,8 @@ def prepare_worldclim_clipped_data(
     clip_aoi_cfg: dict,
 ) -> list[Path]:
     """
-    Prepare clipped WorldClim monthly rasters for the configured clipping AOI.
+    Prepare clipped WorldClim rasters for the configured clipping AOI.
     """
-    product_info = get_worldclim_product(source_cfg["source"]["product"])
     return clip_worldclim_raw_files(
         project_cfg=project_cfg,
         source_cfg=source_cfg,
@@ -63,7 +61,6 @@ def prepare_worldclim_features(
     """
     Build final grid-aligned WorldClim features.
     """
-    product_info = get_worldclim_product(source_cfg["source"]["product"])
     return build_worldclim_features(
         project_cfg=project_cfg,
         source_cfg=source_cfg,

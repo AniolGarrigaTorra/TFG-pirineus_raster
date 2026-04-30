@@ -17,6 +17,13 @@ grids:
 features:
   processed_subdir: features
 
+datasets:
+  processed_subdir: datasets
+  rasters_subdir: rasters
+  metadata_subdir: metadata
+  config_subdir: config
+  logs_subdir: logs
+
 sources:
   raw_subdir: sources
   interim_subdir: sources

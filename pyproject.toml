@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pirineus-raster"
+version = "0.1.0"
+description = "Config-driven raster layer generation pipeline for the Pyrenees."
+requires-python = ">=3.11"
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyyaml",
+  "rasterio",
+  "rioxarray",
+  "xarray",
+  "geopandas",
+  "shapely",
+  "pyproj",
+  "netcdf4"
+]
+
+[project.scripts]
+pirineus-raster = "src.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

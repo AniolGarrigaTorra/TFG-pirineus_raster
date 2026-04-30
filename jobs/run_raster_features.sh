@@ -1,37 +1,25 @@
 #!/bin/bash
 #SBATCH --account=csl
 #SBATCH --partition=csl
-#SBATCH --job-name=raster_features
-#SBATCH --output=logs/raster_features_%j.out
-#SBATCH --error=logs/raster_features_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --job-name=pirineus_raster
+#SBATCH --output=logs/pirineus_raster_%j.out
+#SBATCH --error=logs/pirineus_raster_%j.err
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 
 set -euo pipefail
 
+source jobs/common.sh
+
+RUN_CONFIG="${1:-configs/runs/pallars_worldclim_100m.yaml}"
+
 echo "=============================="
-echo "Starting raster features job"
-echo "Job ID: ${SLURM_JOB_ID:-no_slurm}"
-echo "Host: $(hostname)"
-echo "Date: $(date)"
+echo "Running Pirineus Raster dataset pipeline"
+echo "Run config: $RUN_CONFIG"
 echo "=============================="
 
-PROJECT_DIR="/mnt/csl/work/aniol.garriga.torra/pirineus_raster"
-cd "$PROJECT_DIR"
+pirineus-raster run "$RUN_CONFIG"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate pirineus-raster
-
-echo "Python: $(which python)"
-python --version
-
-STAGE="${1:-build}"
-
-python -m src.features.build_raster_features \
-  --project-config configs/project.yaml \
-  --source-config configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml \
-  --stage "$STAGE"
-
-echo "Raster features job finished successfully"
+echo "Pirineus Raster job finished successfully"
 echo "Date: $(date)"

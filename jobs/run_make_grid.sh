@@ -10,18 +10,18 @@
 
 set -euo pipefail
 
-PROJECT_DIR="/mnt/csl/work/aniol.garriga.torra/pirineus_raster"
-cd "$PROJECT_DIR"
+source jobs/common.sh
 
 RESOLUTION="${1:-100}"
 AOI_CONFIG="${2:-configs/aoi/experimental_pallars_sobira.yaml}"
+PROJECT_CONFIG="${3:-configs/project.yaml}"
 
 python -m src.make_grid \
-  --project-config configs/project.yaml \
+  --project-config "$PROJECT_CONFIG" \
   --aoi-config "$AOI_CONFIG" \
   --resolution "$RESOLUTION"
 
 python -m src.validation.validate_grid \
-  --project-config configs/project.yaml \
+  --project-config "$PROJECT_CONFIG" \
   --aoi-config "$AOI_CONFIG" \
   --resolution "$RESOLUTION"

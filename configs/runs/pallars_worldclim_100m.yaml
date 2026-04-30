@@ -1,0 +1,23 @@
+run:
+  name: pallars_worldclim_100m
+  description: "Small test run for Pallars Sobirà using WorldClim climate normals and elevation."
+  project_config: configs/project.yaml
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+  resolution_m: 100
+  stages: [build]
+
+sources:
+  - id: worldclim_v2_1_climate_normals
+    config: configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml
+    stages: [build]
+
+  - id: worldclim_v2_1_elevation
+    config: configs/sources/worldclim/worldclim_v2_1_elevation.yaml
+    stages: [build]
+
+outputs:
+  dataset_dir: data_processed/datasets/pallars_worldclim_100m
+  copy_rasters: true
+  overwrite_existing: true
+  write_run_summary: true
+  write_manifest: true

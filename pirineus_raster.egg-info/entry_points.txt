@@ -1,0 +1,2 @@
+[console_scripts]
+pirineus-raster = src.cli.main:main
