@@ -12,6 +12,7 @@ from src.pipeline.dataset_output import (
     now_iso,
     write_json,
 )
+from src.pipeline.derived_features import build_derived_features
 from src.pipeline.run_config import (
     get_dataset_dir,
     get_project_config_path,
@@ -25,19 +26,33 @@ from src.pipeline.run_config import (
 from src.pipeline.runner import run_source_pipeline
 
 
+def _load_run_aoi(
+    run_cfg: dict[str, Any],
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+    run_aoi_config_path = get_run_aoi_config_path(run_cfg)
+
+    if run_aoi_config_path is None:
+        return None, None, None
+
+    run_aoi_cfg = load_yaml(run_aoi_config_path)
+    run_aoi_name = run_aoi_cfg.get("name") or run_aoi_cfg.get("aoi", {}).get("name")
+
+    return run_aoi_config_path, run_aoi_cfg, run_aoi_name
+
+
 def run_dataset_pipeline(
     run_config_path: str | Path,
 ) -> dict[str, Any]:
     """
     Execute a complete dataset run_config.
 
-    This is now the main high-level execution path of the repository.
-    It:
-    - loads one run_config
-    - executes all requested sources/stages
-    - copies final rasters into the dataset folder
-    - writes run_summary.json
-    - writes manifest.json
+    Main high-level execution path:
+      1. execute all requested sources/stages
+      2. copy final rasters into the dataset folder
+      3. write run_summary.json
+      4. write manifest.json
+      5. build derived features, if configured
+      6. update manifest.json
     """
     run_config_path = Path(run_config_path)
 
@@ -47,13 +62,8 @@ def run_dataset_pipeline(
     project_cfg = load_yaml(project_config_path)
     dataset_dir = get_dataset_dir(run_cfg)
 
-    run_aoi_config_path = get_run_aoi_config_path(run_cfg)
+    run_aoi_config_path, run_aoi_cfg, run_aoi_name = _load_run_aoi(run_cfg)
     run_resolution_m = get_run_resolution_m(run_cfg)
-
-    run_aoi_name = None
-    if run_aoi_config_path is not None:
-        run_aoi_cfg = load_yaml(run_aoi_config_path)
-        run_aoi_name = run_aoi_cfg.get("name") or run_aoi_cfg.get("aoi", {}).get("name")
 
     outputs_cfg = run_cfg.get("outputs", {})
     copy_rasters = bool(outputs_cfg.get("copy_rasters", True))
@@ -153,15 +163,15 @@ def run_dataset_pipeline(
         "run_config": str(run_config_path),
         "project_config": str(project_config_path),
         "dataset_dir": str(dataset_dir),
+        "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
+        "run_aoi_name": run_aoi_name,
+        "run_resolution_m": run_resolution_m,
         "started_at": started_at,
         "finished_at": finished_at,
         "copy_rasters": copy_rasters,
         "n_sources": len(source_results),
         "n_copied_rasters": len(copied_rasters),
         "sources": source_results,
-        "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
-        "run_aoi_name": run_aoi_name,
-        "run_resolution_m": run_resolution_m,
     }
 
     if write_run_summary:
@@ -190,10 +200,35 @@ def run_dataset_pipeline(
             manifest,
         )
 
+    derived_paths: list[Path] = []
+
+    if run_cfg.get("derived_features"):
+        if run_aoi_cfg is None:
+            raise ValueError(
+                "derived_features require run.aoi_config to be defined."
+            )
+
+        derived_paths = build_derived_features(
+            run_cfg=run_cfg,
+            project_cfg=project_cfg,
+            dataset_dir=dataset_dir,
+            output_aoi_cfg=run_aoi_cfg,
+        )
+
+        summary["n_derived_features"] = len(derived_paths)
+        summary["derived_features"] = [str(path) for path in derived_paths]
+
+        if write_run_summary:
+            write_json(
+                dirs["metadata"] / "run_summary.json",
+                summary,
+            )
+
     print("==============================")
     print("Dataset run finished successfully")
     print(f"Dataset dir: {dataset_dir}")
     print(f"Copied rasters: {len(copied_rasters)}")
+    print(f"Derived rasters: {len(derived_paths)}")
     print(f"Run summary: {dirs['metadata'] / 'run_summary.json'}")
     print(f"Manifest:    {dirs['metadata'] / 'manifest.json'}")
     print("==============================")

@@ -59,6 +59,7 @@ def validate_run_config(
         validate_stages(stages, context=f"sources[{idx}].stages")
 
     validate_outputs_config(cfg.get("outputs", {}), location=location)
+    validate_derived_features_config(cfg.get("derived_features", []), location=location)
 
 
 def validate_outputs_config(outputs_cfg: Any, location: str = "") -> None:
@@ -78,6 +79,34 @@ def validate_outputs_config(outputs_cfg: Any, location: str = "") -> None:
     for key in boolean_keys:
         if key in outputs_cfg and not isinstance(outputs_cfg[key], bool):
             raise ValueError(f"'outputs.{key}' must be true or false{location}.")
+
+
+def validate_derived_features_config(
+    derived_features: Any,
+    location: str = "",
+) -> None:
+    if derived_features in [None, []]:
+        return
+
+    if not isinstance(derived_features, list):
+        raise ValueError(f"'derived_features' must be a list{location}.")
+
+    for idx, item in enumerate(derived_features):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"derived_features[{idx}] must be a dictionary{location}."
+            )
+
+        for key in ["name", "expression", "inputs"]:
+            if key not in item:
+                raise ValueError(
+                    f"Missing required key 'derived_features[{idx}].{key}'{location}."
+                )
+
+        if not isinstance(item["inputs"], dict) or not item["inputs"]:
+            raise ValueError(
+                f"derived_features[{idx}].inputs must be a non-empty dictionary{location}."
+            )
 
 
 def validate_stages(stages: Any, context: str = "stages") -> None:
@@ -131,6 +160,20 @@ def get_project_config_path(cfg: dict[str, Any]) -> Path:
     return Path(cfg["run"].get("project_config", "configs/project.yaml"))
 
 
+def get_run_aoi_config_path(cfg: dict[str, Any]) -> Path | None:
+    value = cfg["run"].get("aoi_config")
+    if value is None:
+        return None
+    return Path(value)
+
+
+def get_run_resolution_m(cfg: dict[str, Any]) -> int | None:
+    value = cfg["run"].get("resolution_m")
+    if value is None:
+        return None
+    return int(value)
+
+
 def get_dataset_dir(cfg: dict[str, Any]) -> Path:
     outputs_cfg = cfg.get("outputs", {})
     run_name = get_run_name(cfg)
@@ -145,17 +188,3 @@ def get_dataset_dir(cfg: dict[str, Any]) -> Path:
 
 def get_source_entries(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return list(cfg["sources"])
-
-
-def get_run_aoi_config_path(cfg: dict[str, Any]) -> Path | None:
-    value = cfg["run"].get("aoi_config")
-    if value is None:
-        return None
-    return Path(value)
-
-
-def get_run_resolution_m(cfg: dict[str, Any]) -> int | None:
-    value = cfg["run"].get("resolution_m")
-    if value is None:
-        return None
-    return int(value)

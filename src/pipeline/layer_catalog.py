@@ -40,6 +40,13 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _metadata_first(metadata: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        if key in metadata and metadata[key] not in [None, ""]:
+            return metadata[key]
+    return None
+
+
 def _valid_range_from_metadata(metadata: dict[str, Any]) -> tuple[float, float] | None:
     value = metadata.get("valid_range")
 
@@ -50,7 +57,6 @@ def _valid_range_from_metadata(metadata: dict[str, Any]) -> tuple[float, float] 
         return None
 
     if isinstance(value, str):
-        # Accept strings like "[-50, 60]" or "-50,60"
         numbers = re.findall(r"-?\d+(?:\.\d+)?", value)
         if len(numbers) >= 2:
             return (float(numbers[0]), float(numbers[1]))
@@ -69,6 +75,9 @@ def _months_from_metadata(metadata: dict[str, Any]) -> list[int] | None:
         value = metadata.get("aggregation_months")
 
     if value is None:
+        value = metadata.get("month_range")
+
+    if value is None:
         return None
 
     if isinstance(value, list):
@@ -82,13 +91,41 @@ def _months_from_metadata(metadata: dict[str, Any]) -> list[int] | None:
     return None
 
 
+def _infer_months_from_name(name: str) -> list[int] | None:
+    """
+    Infer month list from filename fragments such as:
+      _m01-m12_
+      _m05-m09_
+    """
+    match = re.search(r"_m(\d{1,2})-m(\d{1,2})(?:_|$)", name)
+
+    if not match:
+        return None
+
+    start = int(match.group(1))
+    end = int(match.group(2))
+
+    if start > end:
+        return None
+
+    return list(range(start, end + 1))
+
+
+def _infer_resolution_from_name(name: str) -> int | None:
+    match = re.search(r"_(\d+)m$", name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _infer_variable_from_name(name: str) -> str | None:
     """
     Conservative filename fallback.
 
     Expected examples:
       worldclim_v2_1_elevation_elev_experimental_pallars_sobira_100m
-      worldclim_v2_1_base_tmin_may_sep_mean_experimental_pallars_sobira_100m
+      worldclim_v2_1_climate_normals_tmax_mean_m01-m12_experimental_pallars_sobira_100m
+      worldclim_cmip6_future_tmin_mean_ACCESS-CM2_ssp126_2021-2040_m01-m12_experimental_pallars_sobira_100m
     """
     known_variables = [
         "tmin",
@@ -103,11 +140,11 @@ def _infer_variable_from_name(name: str) -> str | None:
     ]
 
     tokens = name.split("_")
+
     for token in tokens:
         if token in known_variables:
             return token
 
-    # Handle bio01, bio02, etc.
     for token in tokens:
         if re.fullmatch(r"bio\d{1,2}", token):
             return token
@@ -115,17 +152,70 @@ def _infer_variable_from_name(name: str) -> str | None:
     return None
 
 
-def _infer_resolution_from_name(name: str) -> int | None:
-    match = re.search(r"_(\d+)m$", name)
-    if match:
-        return int(match.group(1))
+def _infer_metric_from_name(name: str, variable: str | None) -> str | None:
+    """
+    Infer aggregation metric from filename.
+
+    Examples:
+      ..._tmax_mean_m01-m12_... -> mean
+      ..._prec_sum_m05-m09_...  -> sum
+      ..._tmin_std_m01-m12_...  -> std
+    """
+    if variable is None:
+        return None
+
+    tokens = name.split("_")
+
+    try:
+        idx = tokens.index(variable)
+    except ValueError:
+        return None
+
+    if idx + 1 >= len(tokens):
+        return None
+
+    candidate = tokens[idx + 1]
+
+    known_metrics = {
+        "mean",
+        "sum",
+        "std",
+        "min",
+        "max",
+        "median",
+        "range",
+    }
+
+    if candidate in known_metrics:
+        return candidate
+
     return None
 
 
-def _metadata_first(metadata: dict[str, Any], keys: list[str]) -> Any:
-    for key in keys:
-        if key in metadata and metadata[key] not in [None, ""]:
-            return metadata[key]
+def _infer_period_from_name(name: str) -> str | None:
+    match = re.search(r"_(\d{4}-\d{4})_", name)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _infer_ssp_from_name(name: str) -> str | None:
+    match = re.search(r"_(ssp\d{3})_", name)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _infer_gcm_from_name(name: str) -> str | None:
+    """
+    Very conservative fallback for CMIP6 names.
+
+    Example:
+      ..._ACCESS-CM2_ssp126_2021-2040_...
+    """
+    match = re.search(r"_([A-Za-z0-9-]+)_ssp\d{3}_\d{4}-\d{4}_", name)
+    if match:
+        return match.group(1)
     return None
 
 
@@ -137,7 +227,10 @@ def build_layer_spec_from_raster_entry(
     """
     Build one LayerSpec from a copied raster entry in the manifest.
 
-    raster_entry comes from dataset_output.copy_raster_to_dataset().
+    Priority order:
+      1. sidecar JSON metadata
+      2. dataset manifest fallback
+      3. filename inference
     """
     source_result = source_result or {}
     manifest = manifest or {}
@@ -172,14 +265,57 @@ def build_layer_spec_from_raster_entry(
         _metadata_first(metadata, ["variable", "variable_name", "worldclim_variable_code"])
         or _infer_variable_from_name(dataset_path.stem)
     )
+    variable = str(variable) if variable is not None else None
+
+    aggregation_metric = (
+        _metadata_first(
+            metadata,
+            [
+                "aggregation_metric",
+                "metric",
+                "temporal_metric",
+                "output_metric_name",
+            ],
+        )
+        or _infer_metric_from_name(dataset_path.stem, variable)
+    )
+
+    aggregation_name = _metadata_first(
+        metadata,
+        [
+            "aggregation_name",
+            "temporal_aggregation_name",
+            "aggregation",
+        ],
+    )
+
+    months = (
+        _months_from_metadata(metadata)
+        or _infer_months_from_name(dataset_path.stem)
+    )
 
     resolution_m = (
         _as_int(_metadata_first(metadata, ["target_resolution_m", "resolution_m"]))
         or _infer_resolution_from_name(dataset_path.stem)
+        or _as_int(manifest.get("run_resolution_m"))
     )
 
     valid_range = _valid_range_from_metadata(metadata)
-    months = _months_from_metadata(metadata)
+
+    period = (
+        _metadata_first(metadata, ["future_period", "period"])
+        or _infer_period_from_name(dataset_path.stem)
+    )
+
+    ssp = (
+        _metadata_first(metadata, ["ssp"])
+        or _infer_ssp_from_name(dataset_path.stem)
+    )
+
+    gcm = (
+        _metadata_first(metadata, ["gcm"])
+        or _infer_gcm_from_name(dataset_path.stem)
+    )
 
     return LayerSpec(
         name=str(raster_entry.get("name") or dataset_path.stem),
@@ -187,7 +323,7 @@ def build_layer_spec_from_raster_entry(
         provider=provider,
         product=product,
         source_id=source_id,
-        variable=str(variable) if variable is not None else None,
+        variable=variable,
         variable_description=_metadata_first(
             metadata,
             ["variable_description", "description"],
@@ -208,23 +344,17 @@ def build_layer_spec_from_raster_entry(
             )
             or manifest.get("run_aoi_name")
         ),
-        resolution_m=resolution_m or _as_int(manifest.get("run_resolution_m")),
+        resolution_m=resolution_m,
         crs=_metadata_first(metadata, ["crs", "target_crs"]),
         nodata=_as_float(_metadata_first(metadata, ["nodata"])),
         dtype=_metadata_first(metadata, ["dtype"]),
-        aggregation_name=_metadata_first(
-            metadata,
-            ["aggregation_name", "temporal_aggregation_name"],
-        ),
-        aggregation_metric=_metadata_first(
-            metadata,
-            ["aggregation_metric", "metric"],
-        ),
+        aggregation_name=aggregation_name,
+        aggregation_metric=str(aggregation_metric) if aggregation_metric is not None else None,
         months=months,
         year=_as_int(_metadata_first(metadata, ["year"])),
-        period=_metadata_first(metadata, ["future_period", "period"]),
-        gcm=_metadata_first(metadata, ["gcm"]),
-        ssp=_metadata_first(metadata, ["ssp"]),
+        period=period,
+        gcm=gcm,
+        ssp=ssp,
         layer_type=_metadata_first(
             metadata,
             ["dataset_layer_structure", "layer_structure", "layer_type"],
@@ -274,7 +404,9 @@ def summarize_layer_catalog(layers: list[LayerSpec]) -> dict[str, Any]:
     products = sorted({layer.product for layer in layers})
     variables = sorted({layer.variable for layer in layers if layer.variable is not None})
     aois = sorted({layer.aoi for layer in layers if layer.aoi is not None})
-    resolutions = sorted({layer.resolution_m for layer in layers if layer.resolution_m is not None})
+    resolutions = sorted(
+        {layer.resolution_m for layer in layers if layer.resolution_m is not None}
+    )
 
     return {
         "n_layers": len(layers),

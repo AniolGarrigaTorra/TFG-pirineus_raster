@@ -15,6 +15,39 @@ sources:
     config: configs/sources/worldclim/worldclim_v2_1_elevation.yaml
     stages: [build]
 
+derived_features:
+  - name: thermal_range_annual_mean
+    description: "Annual mean thermal range computed as tmax annual mean minus tmin annual mean."
+    expression: tmax_annual_mean - tmin_annual_mean
+    output_dtype: float32
+    unit: "°C"
+    inputs:
+      tmax_annual_mean:
+        variable: tmax
+        aggregation_metric: mean
+        months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+      tmin_annual_mean:
+        variable: tmin
+        aggregation_metric: mean
+        months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+  - name: thermal_range_may_sep_mean
+    description: "May-September mean thermal range computed as tmax mean minus tmin mean."
+    expression: tmax_may_sep_mean - tmin_may_sep_mean
+    output_dtype: float32
+    unit: "°C"
+    inputs:
+      tmax_may_sep_mean:
+        variable: tmax
+        aggregation_metric: mean
+        months: [5, 6, 7, 8, 9]
+
+      tmin_may_sep_mean:
+        variable: tmin
+        aggregation_metric: mean
+        months: [5, 6, 7, 8, 9]
+
 outputs:
   dataset_dir: data_processed/datasets/pallars_worldclim_100m
   copy_rasters: true
