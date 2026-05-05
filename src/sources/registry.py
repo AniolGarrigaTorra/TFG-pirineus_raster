@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from src.sources.base import RasterSourceConnector
 from src.sources.worldclim.connector import WorldClimConnector
+from src.sources.copernicus.connector import CopernicusConnector
 
 
 _SOURCE_CONNECTORS: dict[str, RasterSourceConnector] = {
     "worldclim": WorldClimConnector(),
+    "copernicus": CopernicusConnector(),
 }
 
 

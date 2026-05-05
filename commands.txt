@@ -1,11 +1,16 @@
-python -m src.features.build_raster_features \
-  --project-config configs/project.yaml \
-  --source-config configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml \
-  --stage build
-
-
+1: Make grid
 python -m src.make_grid \
   --project-config configs/project.yaml \
   --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
   --resolution 100
 
+2.1: run config
+pirineus-raster run configs/runs/pallars_worldclim_100m.yaml
+
+2.2: debugging
+pirineus-raster run-source \
+  --source-config configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml \
+  --stage build
+
+3: Inspect the dataset
+pirineus-raster inspect data_processed/datasets/pallars_worldclim_100m/
