@@ -1,20 +1,20 @@
 source:
-  id: copernicus_clms_grasslands
+  id: copernicus_clms_small_landscape_features
   provider: copernicus
-  product: clms_grasslands
+  product: clms_small_landscape_features
   product_group: land_cover
   version: "2021"
-  description: "Copernicus Land Monitoring Service High Resolution Layer Grasslands"
-  page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-grasslands"
+  description: "Copernicus Land Monitoring Service High Resolution Layer Small Landscape Features / Small Woody Features"
+  page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-small-landscape-features"
   source_crs: EPSG:3035
   source_period: "2021"
-  citation: "Copernicus Land Monitoring Service. High Resolution Layer Grasslands."
+  citation: "Copernicus Land Monitoring Service. High Resolution Layer Small Landscape Features."
 
 dataset:
   layer_structure: static_single
-  file_format: geotiff
-  native_resolution_m: 10
-  data_type: categorical
+  file_format: zip_geotiff
+  native_resolution_m: 100
+  data_type: continuous
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
@@ -30,49 +30,42 @@ download:
     max_results: 50
     temporary_dir: data_raw/copernicus/_hda_downloads
     move_downloaded_to_raw: false
-    mosaic_compression: LZW
     sleep_after_download_seconds: 2
 
   files:
-    grasslands:
-      filename: grasslands_2021_10m_pyrenees_full_mosaic.tif
+    small_landscape_features:
+      filename: small_landscape_features_2021_100m_eu_03035.zip
       max_results: 50
-      file_pattern: "*.zip"
+      file_pattern: "*eu_03035*.zip"
       zip_member_pattern: ".*\\.tif$"
-      postprocess: mosaic_zip_geotiff
+      postprocess: copy_single
       hda_query:
-        dataset_id: "EO:EEA:DAT:HRL:GRA"
-        bbox:
-          - -2.28618323
-          - 41.9550235
-          - 3.18030846
-          - 43.47467682
-        productType: "Grassland"
-        resolution: "10m"
+        dataset_id: "EO:EEA:DAT:HRL:SLF"
+        productType: "Small Woody Features"
+        resolution: "100m"
         year: "2021"
         itemsPerPage: 200
         startIndex: 0
 
 processing:
-  source_resolution: 10m
+  source_resolution: 100m
   target_resolution_m: 100
   grid_from_project: true
 
 resampling:
-  default: nearest
+  default: average
   by_variable:
-    grasslands: nearest
+    small_landscape_features: average
 
 variables:
-  grasslands:
+  small_landscape_features:
     enabled: true
-    description: "Grasslands"
-    unit: class
+    description: "Small Landscape Features / Small Woody Features"
+    unit: percent
     scale_factor: 1.0
-    valid_range: [0, 255]
-    data_type: categorical
-    native_resolution_m: 10
-    round_values: true
+    valid_range: [0, 100]
+    data_type: percentage
+    native_resolution_m: 100
     temporal:
       type: static
       reference_year: 2021

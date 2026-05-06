@@ -1,0 +1,85 @@
+source:
+  id: copernicus_clms_water_wetness
+  provider: copernicus
+  product: clms_water_wetness
+  product_group: land_cover
+  version: "2018"
+  description: "Copernicus Land Monitoring Service High Resolution Layer Water and Wetness"
+  page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-water-and-wetness"
+  source_crs: EPSG:3035
+  source_period: "2018"
+  citation: "Copernicus Land Monitoring Service. High Resolution Layer Water and Wetness."
+
+dataset:
+  layer_structure: static_single
+  file_format: geotiff
+  native_resolution_m: 10
+  data_type: categorical
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: wekeo_hda
+  overwrite_existing: false
+
+  hda:
+    max_workers: 2
+    max_results: 50
+    temporary_dir: data_raw/copernicus/_hda_downloads
+    move_downloaded_to_raw: false
+    mosaic_compression: LZW
+    sleep_after_download_seconds: 2
+
+  files:
+    water_wetness:
+      filename: water_wetness_2018_10m_pyrenees_full_mosaic.tif
+      max_results: 50
+      file_pattern: "*.zip"
+      zip_member_pattern: ".*/DATA/WAW_2018_010m_E(33|34|35|36|37)N(21|22|23)_03035_v020\\.tif$"
+      postprocess: mosaic_zip_geotiff
+      allow_multiple_zip_members: true
+      skip_zip_without_matching_members: true
+      hda_query:
+        dataset_id: "EO:EEA:DAT:HRL:WAW"
+        productType: "Water and wetness"
+        resolution: "10m"
+        year: "2018"
+        itemsPerPage: 200
+        startIndex: 0
+
+processing:
+  source_resolution: 10m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+  by_variable:
+    water_wetness: nearest
+
+variables:
+  water_wetness:
+    enabled: true
+    description: "Water and Wetness"
+    unit: class
+    scale_factor: 1.0
+    valid_range: [0, 255]
+    data_type: categorical
+    native_resolution_m: 10
+    round_values: true
+    temporal:
+      type: static
+      reference_year: 2018
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

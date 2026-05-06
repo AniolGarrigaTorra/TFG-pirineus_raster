@@ -349,6 +349,7 @@ def run_dataset_pipeline(
                 project_config_path=project_config_path,
                 source_config_path=source_config_path,
                 stage=stage,
+                run_cfg=run_cfg,
             )
 
             stage_results.append(

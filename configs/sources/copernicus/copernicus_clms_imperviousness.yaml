@@ -1,18 +1,18 @@
 source:
-  id: copernicus_clms_tree_cover_density
+  id: copernicus_clms_imperviousness
   provider: copernicus
-  product: clms_tree_cover_density
+  product: clms_imperviousness
   product_group: land_cover
   version: "2021"
-  description: "Copernicus Land Monitoring Service High Resolution Layer Tree Cover Density"
-  page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-forests-and-tree-cover"
+  description: "Copernicus Land Monitoring Service High Resolution Layer Imperviousness"
+  page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-imperviousness"
   source_crs: EPSG:3035
   source_period: "2021"
-  citation: "Copernicus Land Monitoring Service. High Resolution Layer Tree Cover Density."
+  citation: "Copernicus Land Monitoring Service. High Resolution Layer Imperviousness."
 
 dataset:
   layer_structure: static_single
-  file_format: zip_geotiff
+  file_format: geotiff
   native_resolution_m: 10
   data_type: percentage
 
@@ -27,26 +27,31 @@ download:
 
   hda:
     max_workers: 2
-    max_results: 1
+    max_results: 50
     temporary_dir: data_raw/copernicus/_hda_downloads
     move_downloaded_to_raw: false
+    mosaic_compression: LZW
+    sleep_after_download_seconds: 2
 
   files:
-    tree_cover_density:
-      filename: tree_cover_density_2021_10m_E33N23.zip
-      max_results: 1
+    imperviousness:
+      filename: imperviousness_2021_10m_pyrenees_full_mosaic.tif
+      max_results: 50
       file_pattern: "*.zip"
       zip_member_pattern: ".*\\.tif$"
+      postprocess: mosaic_zip_geotiff
+      allow_multiple_zip_members: false
+      skip_zip_without_matching_members: false
       hda_query:
-        dataset_id: "EO:EEA:DAT:HRL:TCF"
+        dataset_id: "EO:EEA:DAT:HRL:IMP"
+        productType: "Imperviousness Density"
+        resolution: "10m"
+        year: "2021"
         bbox:
           - -2.28618323
           - 41.9550235
           - 3.18030846
           - 43.47467682
-        productType: "Tree Cover Density"
-        resolution: "10m"
-        year: "2021"
         itemsPerPage: 200
         startIndex: 0
 
@@ -58,12 +63,12 @@ processing:
 resampling:
   default: average
   by_variable:
-    tree_cover_density: average
+    imperviousness: average
 
 variables:
-  tree_cover_density:
+  imperviousness:
     enabled: true
-    description: "Tree Cover Density"
+    description: "Imperviousness Density"
     unit: percent
     scale_factor: 1.0
     valid_range: [0, 100]

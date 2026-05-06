@@ -82,24 +82,36 @@ def get_download_file_specs(source_cfg: dict) -> list[dict]:
     """
     Return one file spec per enabled variable.
 
-    Expected YAML patterns:
+    Supported patterns:
 
-    Direct URL:
+    1) Direct URL single file:
       download:
         files:
-          tree_cover_density:
+          variable:
             url: "..."
-            filename: "tree_cover_density.tif"
+            filename: "variable.tif"
 
-    WEkEO HDA:
+    2) Direct URL multiple files -> mosaic:
+      download:
+        files:
+          variable:
+            filename: "variable_mosaic.tif"
+            urls:
+              - "https://..."
+              - "https://..."
+            postprocess: mosaic_geotiff
+
+    3) WEkEO HDA tiled ZIPs -> raw GeoTIFF mosaic:
       download:
         mode: wekeo_hda
         files:
-          tree_cover_density:
-            filename: "tree_cover_density_2021_10m.tif"
+          variable:
+            filename: "variable_mosaic.tif"
+            file_pattern: "*.zip"
+            zip_member_pattern: ".*\\.tif$"
+            postprocess: mosaic_zip_geotiff
             hda_query:
               dataset_id: "..."
-              ...
     """
     download_cfg = source_cfg.get("download", {}) or {}
     files_cfg = download_cfg.get("files", {}) or {}
@@ -119,6 +131,8 @@ def get_download_file_specs(source_cfg: dict) -> list[dict]:
             "variable": variable,
             "filename": filename,
             "url": file_cfg.get("url") or variable_cfg.get("url"),
+            "urls": file_cfg.get("urls") or variable_cfg.get("urls"),
+            "filenames": file_cfg.get("filenames") or variable_cfg.get("filenames"),
             "local_path": file_cfg.get("local_path") or variable_cfg.get("local_path"),
             "zip_member": file_cfg.get("zip_member") or variable_cfg.get("zip_member"),
             "zip_member_pattern": (
@@ -142,6 +156,22 @@ def get_download_file_specs(source_cfg: dict) -> list[dict]:
                 file_cfg.get(
                     "allow_multiple",
                     variable_cfg.get("allow_multiple", False),
+                )
+            ),
+            "postprocess": (
+                file_cfg.get("postprocess")
+                or variable_cfg.get("postprocess")
+            ),
+            "allow_multiple_zip_members": bool(
+                file_cfg.get(
+                    "allow_multiple_zip_members",
+                    variable_cfg.get("allow_multiple_zip_members", False),
+                )
+            ),
+            "skip_zip_without_matching_members": bool(
+                file_cfg.get(
+                    "skip_zip_without_matching_members",
+                    variable_cfg.get("skip_zip_without_matching_members", False),
                 )
             ),
         }

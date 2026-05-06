@@ -1,0 +1,88 @@
+source:
+  id: copernicus_dem_glo30
+  provider: copernicus
+  product: dem_glo30
+  product_group: topography
+  version: "2023_1"
+  description: "Copernicus DEM GLO-30 Digital Surface Model"
+  page_url: "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM"
+  source_crs: EPSG:4326
+  source_period: "2011-2015"
+  citation: "Copernicus DEM GLO-30. Digital Surface Model derived from WorldDEM/TanDEM-X."
+
+dataset:
+  layer_structure: static_single
+  file_format: geotiff
+  native_resolution_m: 30
+  data_type: continuous
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: manual_url
+  overwrite_existing: false
+
+  files:
+    elevation:
+      filename: copernicus_dem_glo30_pyrenees_full_mosaic.tif
+      postprocess: mosaic_geotiff
+      urls:
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_W003_00_DEM/Copernicus_DSM_COG_10_N41_00_W003_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_W002_00_DEM/Copernicus_DSM_COG_10_N41_00_W002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_W001_00_DEM/Copernicus_DSM_COG_10_N41_00_W001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_E000_00_DEM/Copernicus_DSM_COG_10_N41_00_E000_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_E001_00_DEM/Copernicus_DSM_COG_10_N41_00_E001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_E002_00_DEM/Copernicus_DSM_COG_10_N41_00_E002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_E003_00_DEM/Copernicus_DSM_COG_10_N41_00_E003_00_DEM.tif"
+
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_W003_00_DEM/Copernicus_DSM_COG_10_N42_00_W003_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_W002_00_DEM/Copernicus_DSM_COG_10_N42_00_W002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_W001_00_DEM/Copernicus_DSM_COG_10_N42_00_W001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_E000_00_DEM/Copernicus_DSM_COG_10_N42_00_E000_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_E001_00_DEM/Copernicus_DSM_COG_10_N42_00_E001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_E002_00_DEM/Copernicus_DSM_COG_10_N42_00_E002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N42_00_E003_00_DEM/Copernicus_DSM_COG_10_N42_00_E003_00_DEM.tif"
+
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_W003_00_DEM/Copernicus_DSM_COG_10_N43_00_W003_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_W002_00_DEM/Copernicus_DSM_COG_10_N43_00_W002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_W001_00_DEM/Copernicus_DSM_COG_10_N43_00_W001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_E000_00_DEM/Copernicus_DSM_COG_10_N43_00_E000_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_E001_00_DEM/Copernicus_DSM_COG_10_N43_00_E001_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_E002_00_DEM/Copernicus_DSM_COG_10_N43_00_E002_00_DEM.tif"
+        - "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_E003_00_DEM/Copernicus_DSM_COG_10_N43_00_E003_00_DEM.tif"
+
+processing:
+  source_resolution: 30m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: average
+  by_variable:
+    elevation: average
+
+variables:
+  elevation:
+    enabled: true
+    description: "Copernicus DEM GLO-30 elevation / surface height"
+    unit: m
+    scale_factor: 1.0
+    valid_range: [-500, 9000]
+    data_type: continuous
+    native_resolution_m: 30
+    temporal:
+      type: static
+      reference_year: 2015
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

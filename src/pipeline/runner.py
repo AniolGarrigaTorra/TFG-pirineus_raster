@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.io.config import load_yaml
 from src.sources.registry import get_source_connector
+from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
 
 
 VALID_STAGES = {"download", "clip", "build", "all"}
@@ -87,12 +88,11 @@ def _normalize_single_stage(stage: str) -> list[str]:
 
 
 def run_source_pipeline(
-    project_config_path: str | Path = "configs/project.yaml",
-    source_config_path: str | Path = (
-        "configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml"
-    ),
-    stage: str = "build",
-) -> list[Path]:
+    project_config_path: str,
+    source_config_path: str,
+    stage: str,
+    run_cfg: dict | None = None,
+) -> list:
     """
     Run one source pipeline stage.
 
@@ -121,6 +121,11 @@ def run_source_pipeline(
 
     project_cfg = load_yaml(project_config_path)
     source_cfg = load_yaml(source_config_path)
+
+    source_cfg = apply_run_overrides_to_source_cfg(
+        source_cfg=source_cfg,
+        run_cfg=run_cfg,
+    )
 
     source = source_cfg["source"]
     provider = source["provider"]

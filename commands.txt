@@ -14,3 +14,39 @@ pirineus-raster run-source \
 
 3: Inspect the dataset
 pirineus-raster inspect data_processed/datasets/pallars_worldclim_100m/
+
+
+
+HPC JOBS:
+
+sbatch jobs/jobs_pyrenees_full_copernicus_worldclim_100m.sh
+
+squeue -u $USER
+
+squeue -j <JOB_ID>
+
+See log:
+ls -lh /home/usuaris/csl/aniol.garriga.torra/logs/jobs/*<JOB_ID>*
+tail -f /home/usuaris/csl/aniol.garriga.torra/logs/jobs/NOM_DEL_FITXER.out
+
+See errors:
+cat /home/usuaris/csl/aniol.garriga.torra/logs/jobs/*<JOB_ID>*.err
+
+See final state:
+sacct -j <JOB_ID> --format=JobID,JobName,Partition,Account,State,ExitCode,Elapsed,MaxRSS
+
+Cancel:
+scancel 2539999
+
+Sizes of files:
+du -sh data_processed/datasets/pyrenees_full_copernicus_worldclim_100m
+
+
+Download to PC:
+
+Compress on HPC:
+tar -czf pyrenees_full_copernicus_worldclim_100m.tar.gz pyrenees_full_copernicus_worldclim_100m
+
+On local terminal:
+scp aniol.garriga.torra@csle03:/mnt/csl/work/aniol.garriga.torra/pirineus_raster/data_processed/datasets/pyrenees_full_copernicus_worldclim_100m.tar.gz /home/aniol-garriga-torra-boss/Escriptori/ANIOL/UNI/4t Carrera/TFG/datasets/
+tar -xzf pyrenees_full_copernicus_worldclim_100m.tar.gz

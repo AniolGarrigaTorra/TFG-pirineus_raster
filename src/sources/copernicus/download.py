@@ -3,17 +3,142 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 import shutil
 import time
 
 from src.io.paths import ensure_dir
 from src.sources.copernicus.hda import download_with_wekeo_hda
+from src.sources.copernicus.postprocess import mosaic_geotiffs
 from src.sources.copernicus.naming import (
     validate_copernicus_source_config,
     get_download_file_specs,
 )
 
 USER_AGENT = "pirineus-raster-pipeline/0.1"
+
+def _filename_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    name = Path(parsed.path).name
+
+    if not name:
+        raise ValueError(f"Could not infer filename from URL: {url}")
+
+    return name
+
+
+def download_multiple_files(
+    urls: list[str],
+    output_dir: Path,
+    filenames: list[str] | None = None,
+    overwrite: bool = False,
+) -> list[Path]:
+    """
+    Download multiple files to an output directory.
+
+    Used for tiled products such as Copernicus DEM.
+    """
+    output_dir = Path(output_dir)
+    ensure_dir(output_dir)
+
+    if filenames is not None and len(filenames) != len(urls):
+        raise ValueError(
+            "If filenames is provided, it must have the same length as urls."
+        )
+
+    downloaded: list[Path] = []
+
+    for idx, url in enumerate(urls):
+        filename = filenames[idx] if filenames is not None else _filename_from_url(url)
+        output_path = output_dir / filename
+
+        download_file(
+            url=url,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+
+        downloaded.append(output_path)
+
+    return downloaded
+
+
+def _handle_manual_url_download(
+    *,
+    spec: dict,
+    output_path: Path,
+    raw_dir: Path,
+    overwrite: bool,
+    source_cfg: dict,
+) -> Path:
+    """
+    Handle manual_url mode for both:
+      - single URL
+      - multiple URLs + optional mosaic postprocess
+    """
+    variable = spec["variable"]
+    url = spec.get("url")
+    urls = spec.get("urls")
+    postprocess = spec.get("postprocess")
+
+    if urls:
+        if not isinstance(urls, list):
+            raise TypeError(
+                f"download.files.{variable}.urls must be a list of URLs."
+            )
+
+        parts_dir = raw_dir / "_parts" / variable
+
+        downloaded_paths = download_multiple_files(
+            urls=urls,
+            output_dir=parts_dir,
+            filenames=spec.get("filenames"),
+            overwrite=overwrite,
+        )
+
+        if postprocess == "mosaic_geotiff":
+            hda_cfg = source_cfg.get("download", {}).get("hda", {}) or {}
+            compression = str(
+                hda_cfg.get(
+                    "mosaic_compression",
+                    source_cfg.get("output", {}).get("compression", "LZW"),
+                )
+            )
+
+            return mosaic_geotiffs(
+                input_paths=downloaded_paths,
+                output_path=output_path,
+                overwrite=overwrite,
+                compression=compression,
+            )
+
+        if postprocess not in (None, "", "none"):
+            raise NotImplementedError(
+                f"Unsupported postprocess for manual_url: {postprocess!r}. "
+                "Supported: none, mosaic_geotiff"
+            )
+
+        if len(downloaded_paths) != 1:
+            raise RuntimeError(
+                "Multiple URLs were downloaded but no postprocess was configured. "
+                "Use postprocess: mosaic_geotiff or provide a single URL."
+            )
+
+        ensure_dir(output_path.parent)
+        shutil.copy2(downloaded_paths[0], output_path)
+        return output_path
+
+    if url:
+        download_file(
+            url=url,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+        return output_path
+
+    raise ValueError(
+        f"Missing url or urls for variable={variable!r} in download.files"
+    )
 
 
 def download_file(
@@ -165,20 +290,16 @@ def download_copernicus_raw_files(
             print(f"[download] Manual file found: {output_path}")
             raw_paths.append(output_path)
             continue
-
+        
         if mode == "manual_url":
-            url = spec.get("url")
-            if not url:
-                raise ValueError(
-                    f"Missing URL for variable={variable!r} in download.files"
-                )
-
-            download_file(
-                url=url,
+            downloaded_path = _handle_manual_url_download(
+                spec=spec,
                 output_path=output_path,
+                raw_dir=raw_dir,
                 overwrite=overwrite,
+                source_cfg=source_cfg,
             )
-            raw_paths.append(output_path)
+            raw_paths.append(downloaded_path)
             continue
 
         if mode == "local_file":
