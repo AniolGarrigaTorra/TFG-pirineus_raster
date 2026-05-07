@@ -2,20 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 import shutil
 import time
 
 from src.io.paths import ensure_dir
 from src.sources.copernicus.hda import download_with_wekeo_hda
-from src.sources.copernicus.postprocess import mosaic_geotiffs
 from src.sources.copernicus.naming import (
     validate_copernicus_source_config,
     get_download_file_specs,
 )
+from src.sources.copernicus.postprocess import run_static_postprocess
+from src.sources.copernicus.temporal_postprocess import (
+    run_temporal_zip_geotiff_aggregation,
+)
 
 USER_AGENT = "pirineus-raster-pipeline/0.1"
+
 
 def _filename_from_url(url: str) -> str:
     parsed = urlparse(url)
@@ -25,120 +29,6 @@ def _filename_from_url(url: str) -> str:
         raise ValueError(f"Could not infer filename from URL: {url}")
 
     return name
-
-
-def download_multiple_files(
-    urls: list[str],
-    output_dir: Path,
-    filenames: list[str] | None = None,
-    overwrite: bool = False,
-) -> list[Path]:
-    """
-    Download multiple files to an output directory.
-
-    Used for tiled products such as Copernicus DEM.
-    """
-    output_dir = Path(output_dir)
-    ensure_dir(output_dir)
-
-    if filenames is not None and len(filenames) != len(urls):
-        raise ValueError(
-            "If filenames is provided, it must have the same length as urls."
-        )
-
-    downloaded: list[Path] = []
-
-    for idx, url in enumerate(urls):
-        filename = filenames[idx] if filenames is not None else _filename_from_url(url)
-        output_path = output_dir / filename
-
-        download_file(
-            url=url,
-            output_path=output_path,
-            overwrite=overwrite,
-        )
-
-        downloaded.append(output_path)
-
-    return downloaded
-
-
-def _handle_manual_url_download(
-    *,
-    spec: dict,
-    output_path: Path,
-    raw_dir: Path,
-    overwrite: bool,
-    source_cfg: dict,
-) -> Path:
-    """
-    Handle manual_url mode for both:
-      - single URL
-      - multiple URLs + optional mosaic postprocess
-    """
-    variable = spec["variable"]
-    url = spec.get("url")
-    urls = spec.get("urls")
-    postprocess = spec.get("postprocess")
-
-    if urls:
-        if not isinstance(urls, list):
-            raise TypeError(
-                f"download.files.{variable}.urls must be a list of URLs."
-            )
-
-        parts_dir = raw_dir / "_parts" / variable
-
-        downloaded_paths = download_multiple_files(
-            urls=urls,
-            output_dir=parts_dir,
-            filenames=spec.get("filenames"),
-            overwrite=overwrite,
-        )
-
-        if postprocess == "mosaic_geotiff":
-            hda_cfg = source_cfg.get("download", {}).get("hda", {}) or {}
-            compression = str(
-                hda_cfg.get(
-                    "mosaic_compression",
-                    source_cfg.get("output", {}).get("compression", "LZW"),
-                )
-            )
-
-            return mosaic_geotiffs(
-                input_paths=downloaded_paths,
-                output_path=output_path,
-                overwrite=overwrite,
-                compression=compression,
-            )
-
-        if postprocess not in (None, "", "none"):
-            raise NotImplementedError(
-                f"Unsupported postprocess for manual_url: {postprocess!r}. "
-                "Supported: none, mosaic_geotiff"
-            )
-
-        if len(downloaded_paths) != 1:
-            raise RuntimeError(
-                "Multiple URLs were downloaded but no postprocess was configured. "
-                "Use postprocess: mosaic_geotiff or provide a single URL."
-            )
-
-        ensure_dir(output_path.parent)
-        shutil.copy2(downloaded_paths[0], output_path)
-        return output_path
-
-    if url:
-        download_file(
-            url=url,
-            output_path=output_path,
-            overwrite=overwrite,
-        )
-        return output_path
-
-    raise ValueError(
-        f"Missing url or urls for variable={variable!r} in download.files"
-    )
 
 
 def download_file(
@@ -208,19 +98,46 @@ def download_file(
         "Failed to download Copernicus file after multiple attempts.\n"
         f"URL: {url}\n"
         f"Output: {output_path}\n"
-        f"Last error: {last_error}\n\n"
-        "Manual fallback:\n"
-        f"  mkdir -p {output_path.parent}\n"
-        f"  wget -c -O {output_path} '{url}'\n"
-        "Then re-run the pipeline."
+        f"Last error: {last_error}"
     )
+
+
+def download_multiple_files(
+    urls: list[str],
+    output_dir: Path,
+    filenames: list[str] | None = None,
+    overwrite: bool = False,
+) -> list[Path]:
+    output_dir = Path(output_dir)
+    ensure_dir(output_dir)
+
+    if filenames is not None and len(filenames) != len(urls):
+        raise ValueError(
+            "If filenames is provided, it must have the same length as urls."
+        )
+
+    downloaded: list[Path] = []
+
+    for idx, url in enumerate(urls):
+        filename = filenames[idx] if filenames is not None else _filename_from_url(url)
+        output_path = output_dir / filename
+
+        download_file(
+            url=url,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+
+        downloaded.append(output_path)
+
+    return downloaded
 
 
 def copy_local_file(
     local_path: str | Path,
     output_path: Path,
     overwrite: bool = False,
-) -> None:
+) -> Path:
     local_path = Path(local_path)
     output_path = Path(output_path)
 
@@ -229,7 +146,7 @@ def copy_local_file(
 
     if output_path.exists() and not overwrite:
         print(f"[download] Exists, skipping: {output_path}")
-        return
+        return output_path
 
     ensure_dir(output_path.parent)
 
@@ -237,21 +154,111 @@ def copy_local_file(
     print(f"[download] Output: {output_path}")
 
     shutil.copy2(local_path, output_path)
+    return output_path
+
+
+def _run_postprocess(
+    *,
+    input_paths: list[Path],
+    output_path: Path,
+    raw_dir: Path,
+    source_cfg: dict,
+    spec: dict,
+) -> list[Path]:
+    postprocess = spec.get("postprocess") or "copy_single"
+
+    if postprocess == "temporal_zip_geotiff_aggregation":
+        return run_temporal_zip_geotiff_aggregation(
+            input_paths=input_paths,
+            raw_dir=raw_dir,
+            source_cfg=source_cfg,
+            spec=spec,
+        )
+
+    written = run_static_postprocess(
+        postprocess=postprocess,
+        input_paths=input_paths,
+        output_path=output_path,
+        spec=spec,
+        source_cfg=source_cfg,
+    )
+
+    return [written]
+
+
+def _handle_manual_url_download(
+    *,
+    spec: dict,
+    output_path: Path,
+    raw_dir: Path,
+    overwrite: bool,
+    source_cfg: dict,
+) -> list[Path]:
+    variable = spec["variable"]
+    url = spec.get("url")
+    urls = spec.get("urls")
+
+    if urls:
+        if not isinstance(urls, list):
+            raise TypeError(
+                f"download.files.{variable}.urls must be a list of URLs."
+            )
+
+        parts_dir = raw_dir / "_parts" / variable
+
+        downloaded_paths = download_multiple_files(
+            urls=urls,
+            output_dir=parts_dir,
+            filenames=spec.get("filenames"),
+            overwrite=overwrite,
+        )
+
+        return _run_postprocess(
+            input_paths=downloaded_paths,
+            output_path=output_path,
+            raw_dir=raw_dir,
+            source_cfg=source_cfg,
+            spec=spec,
+        )
+
+    if url:
+        download_file(
+            url=url,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+        return [output_path]
+
+    raise ValueError(
+        f"Missing url or urls for variable={variable!r} in download.files"
+    )
+
+
+def _handle_local_file_download(
+    *,
+    spec: dict,
+    output_path: Path,
+    overwrite: bool,
+) -> list[Path]:
+    local_path = spec.get("local_path")
+    if not local_path:
+        raise ValueError(
+            f"Missing local_path for variable={spec['variable']!r} in download.files"
+        )
+
+    copied = copy_local_file(
+        local_path=local_path,
+        output_path=output_path,
+        overwrite=overwrite,
+    )
+
+    return [copied]
 
 
 def download_copernicus_raw_files(
     source_cfg: dict,
     raw_dir: Path,
 ) -> list[Path]:
-    """
-    Download or validate raw Copernicus files.
-
-    Supported modes:
-      - manual: check that files already exist in raw_dir
-      - manual_url: download from direct URLs declared in YAML
-      - local_file: copy files from local paths declared in YAML
-      - wekeo_hda: search and download through WEkEO HDA API
-    """
     validate_copernicus_source_config(source_cfg)
 
     raw_dir = Path(raw_dir)
@@ -276,7 +283,7 @@ def download_copernicus_raw_files(
         output_path = raw_dir / spec["filename"]
 
         print("==============================")
-        print(f"[download] Variable: {variable}")
+        print(f"[download] Variable/download spec: {variable}")
         print(f"[download] File: {output_path}")
 
         if not enabled or mode == "manual":
@@ -290,40 +297,42 @@ def download_copernicus_raw_files(
             print(f"[download] Manual file found: {output_path}")
             raw_paths.append(output_path)
             continue
-        
+
         if mode == "manual_url":
-            downloaded_path = _handle_manual_url_download(
+            written_paths = _handle_manual_url_download(
                 spec=spec,
                 output_path=output_path,
                 raw_dir=raw_dir,
                 overwrite=overwrite,
                 source_cfg=source_cfg,
             )
-            raw_paths.append(downloaded_path)
+            raw_paths.extend(written_paths)
             continue
 
         if mode == "local_file":
-            local_path = spec.get("local_path")
-            if not local_path:
-                raise ValueError(
-                    f"Missing local_path for variable={variable!r} in download.files"
-                )
-
-            copy_local_file(
-                local_path=local_path,
+            written_paths = _handle_local_file_download(
+                spec=spec,
                 output_path=output_path,
                 overwrite=overwrite,
             )
-            raw_paths.append(output_path)
+            raw_paths.extend(written_paths)
             continue
 
         if mode == "wekeo_hda":
-            downloaded_path = download_with_wekeo_hda(
+            downloaded_files = download_with_wekeo_hda(
                 source_cfg=source_cfg,
                 spec=spec,
                 output_path=output_path,
             )
-            raw_paths.append(downloaded_path)
+
+            written_paths = _run_postprocess(
+                input_paths=downloaded_files,
+                output_path=output_path,
+                raw_dir=raw_dir,
+                source_cfg=source_cfg,
+                spec=spec,
+            )
+            raw_paths.extend(written_paths)
             continue
 
         raise NotImplementedError(

@@ -1,0 +1,20 @@
+run:
+  name: pallars_hrsi_snow_100m
+  description: "Test run for Copernicus HRSI Fractional Snow Cover temporal aggregations."
+  project_config: configs/project.yaml
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  resolution_m: 100
+  stages: [download, clip, build]
+
+sources:
+  - id: copernicus_hrsi_snow
+    config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+    stages: [download, clip, build]
+
+outputs:
+  dataset_dir: data_processed/datasets/pallars_hrsi_snow_100m
+  copy_rasters: true
+  overwrite_existing: true
+  write_run_summary: true
+  write_manifest: true

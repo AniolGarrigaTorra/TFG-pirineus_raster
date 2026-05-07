@@ -1,0 +1,190 @@
+source:
+  id: copernicus_hrsi_snow
+  provider: copernicus
+  product: hrsi_snow
+  product_group: snow
+  version: "2022"
+  description: "Copernicus High Resolution Snow and Ice Fractional Snow Cover temporal aggregations"
+  page_url: "https://land.copernicus.eu/en/products/snow/fractional-snow-cover"
+  source_crs: EPSG:3035
+  source_period: "2022"
+  citation: "Copernicus Land Monitoring Service. High Resolution Snow and Ice, Fractional Snow Cover."
+
+dataset:
+  layer_structure: temporal_aggregation
+  file_format: geotiff
+  native_resolution_m: 20
+  data_type: percentage
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: wekeo_hda
+  overwrite_existing: false
+
+  hda:
+    max_workers: 2
+    max_results: 50
+    temporary_dir: data_raw/copernicus/_hda_downloads
+    move_downloaded_to_raw: false
+    sleep_after_download_seconds: 2
+
+  files:
+    snow_scenes:
+      filename: snow_scenes_marker.txt
+      max_results: 50
+      file_pattern: "*.zip"
+      postprocess: temporal_zip_geotiff_aggregation
+      hda_query:
+        dataset_id: "EO:CRYO:DAT:HRSI:FSC"
+        startdate: "2022-01-01T00:00:00.000Z"
+        enddate: "2022-03-31T23:59:59.999Z"
+        cloudCover: "70"
+        published_start: "2022-01-01T00:00:00.000Z"
+        published_end: "2026-12-31T00:00:00.000Z"
+        bbox:
+          - -2.28618323
+          - 41.9550235
+          - 3.18030846
+          - 43.47467682
+        itemsPerPage: 200
+        startIndex: 0
+
+processing:
+  source_resolution: 20m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: average
+  by_variable:
+    snow_fraction_mean_winter: average
+    snow_fraction_mean_spring: average
+    snow_fraction_mean_annual: average
+    snow_cover_days_winter: average
+    snow_cover_days_spring: average
+    snow_valid_observations_annual: average
+
+temporal_postprocess:
+  # FSC products include several layers. FSCOG = Fractional Snow Cover On Ground.
+  # Si vols top-of-canopy, canvia FSCOG per FSCTOC.
+  zip_member_pattern: ".*FSCOG.*\\.tif$"
+
+  # FSC filenames normally include an acquisition date as YYYYMMDD.
+  date_regex: "(\\d{8})"
+  date_format: "%Y%m%d"
+
+  # Reproject temporal mosaics to a common CRS before aggregation.
+  # This avoids problems when Sentinel-2 tiles cross UTM zones.
+  target_crs: EPSG:3035
+  target_resolution_m: 20
+  vrt_resampling: nearest
+
+  # Keep only true fractional snow values.
+  # HRSI products may include coded non-snow/non-valid classes depending on layer.
+  value_filter:
+    valid_range: [0, 100]
+    nodata_values: [205, 210, 254, 255]
+    scale_factor: 1.0
+
+  # Optional export of each timestep.
+  # Keep disabled by default because it can generate many files.
+  export_timesteps:
+    enabled: false
+    output_dir: timesteps
+    naming: "{variable}_{date}.tif"
+    variable_name_pattern: "snow_fraction_{date}"
+    unit: percent
+    data_type: percentage
+    native_resolution_m: 20
+
+  output_variable_groups:
+    snow_fraction_means:
+      template:
+        name: "snow_fraction_mean_{season}"
+        filename: "snow_fraction_mean_{season}.tif"
+        method: mean
+        months: "{months}"
+        description: "Mean fractional snow cover on ground during {season_label}"
+        unit: percent
+        valid_range: [0, 100]
+        data_type: percentage
+        native_resolution_m: 20
+        temporal:
+          type: seasonal_aggregation
+          season: "{season}"
+          months: "{months}"
+          reference_year: 2022
+      foreach:
+        - season: winter
+          season_label: "winter period December-March"
+          months: [12, 1, 2, 3]
+
+        - season: spring
+          season_label: "spring period April-June"
+          months: [4, 5, 6]
+
+        - season: annual
+          season_label: "the full year"
+          months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+    snow_cover_days:
+      template:
+        name: "snow_cover_days_{season}"
+        filename: "snow_cover_days_{season}.tif"
+        method: count_threshold
+        threshold: 50
+        comparison: ">="
+        months: "{months}"
+        description: "Number of valid observation days with fractional snow cover >= 50% during {season_label}"
+        unit: days
+        valid_range: [0, 250]
+        data_type: continuous
+        native_resolution_m: 20
+        temporal:
+          type: seasonal_aggregation
+          season: "{season}"
+          months: "{months}"
+          reference_year: 2022
+      foreach:
+        - season: winter
+          season_label: "winter period December-March"
+          months: [12, 1, 2, 3]
+
+        - season: spring
+          season_label: "spring period April-June"
+          months: [4, 5, 6]
+
+    snow_valid_observations:
+      template:
+        name: "snow_valid_observations_{season}"
+        filename: "snow_valid_observations_{season}.tif"
+        method: valid_observation_count
+        months: "{months}"
+        description: "Number of valid fractional snow cover observations during {season_label}"
+        unit: observations
+        valid_range: [0, 365]
+        data_type: continuous
+        native_resolution_m: 20
+        temporal:
+          type: seasonal_aggregation
+          season: "{season}"
+          months: "{months}"
+          reference_year: 2022
+      foreach:
+        - season: annual
+          season_label: "the full year"
+          months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

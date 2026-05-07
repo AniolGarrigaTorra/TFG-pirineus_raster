@@ -6,6 +6,7 @@ from pathlib import Path
 SUPPORTED_LAYER_STRUCTURES = {
     "static_single",
     "static_multi",
+    "temporal_aggregation",
 }
 
 
@@ -80,103 +81,116 @@ def get_enabled_variable_items(source_cfg: dict) -> list[tuple[str, dict]]:
 
 def get_download_file_specs(source_cfg: dict) -> list[dict]:
     """
-    Return one file spec per enabled variable.
+    Return download file specs.
 
-    Supported patterns:
+    Important design:
 
-    1) Direct URL single file:
-      download:
-        files:
-          variable:
-            url: "..."
-            filename: "variable.tif"
+    - If download.files exists, it is the authoritative list of download tasks.
+      This is needed for temporal products where one download task can generate
+      many output variables.
 
-    2) Direct URL multiple files -> mosaic:
-      download:
-        files:
-          variable:
-            filename: "variable_mosaic.tif"
-            urls:
-              - "https://..."
-              - "https://..."
-            postprocess: mosaic_geotiff
+      Example:
+        download.files.snow_scenes
+          -> downloads many HRSI snow scenes
+          -> temporal_postprocess generates:
+               snow_fraction_mean_winter
+               snow_cover_days_winter
+               ...
 
-    3) WEkEO HDA tiled ZIPs -> raw GeoTIFF mosaic:
-      download:
-        mode: wekeo_hda
-        files:
-          variable:
-            filename: "variable_mosaic.tif"
-            file_pattern: "*.zip"
-            zip_member_pattern: ".*\\.tif$"
-            postprocess: mosaic_zip_geotiff
-            hda_query:
-              dataset_id: "..."
+    - If download.files does not exist, fallback to one download spec per
+      enabled variable. This keeps old/simple static source configs working.
     """
     download_cfg = source_cfg.get("download", {}) or {}
     files_cfg = download_cfg.get("files", {}) or {}
 
     specs: list[dict] = []
 
+    # ------------------------------------------------------------
+    # Preferred path: explicit download.files
+    # ------------------------------------------------------------
+    if files_cfg:
+        for download_name, file_cfg in files_cfg.items():
+            file_cfg = file_cfg or {}
+
+            filename = (
+                file_cfg.get("filename")
+                or f"{download_name}.tif"
+            )
+
+            spec = {
+                "variable": download_name,
+                "filename": filename,
+
+                # Direct/manual URL modes
+                "url": file_cfg.get("url"),
+                "urls": file_cfg.get("urls"),
+                "filenames": file_cfg.get("filenames"),
+                "local_path": file_cfg.get("local_path"),
+
+                # ZIP handling
+                "zip_member": file_cfg.get("zip_member"),
+                "zip_member_pattern": file_cfg.get("zip_member_pattern"),
+                "file_pattern": file_cfg.get("file_pattern"),
+
+                # WEkEO HDA
+                "hda_query": file_cfg.get("hda_query"),
+                "hda_query_path": file_cfg.get("hda_query_path"),
+                "max_results": file_cfg.get("max_results"),
+
+                # Multi-file/multi-member behavior
+                "allow_multiple": bool(file_cfg.get("allow_multiple", False)),
+                "allow_multiple_zip_members": bool(
+                    file_cfg.get("allow_multiple_zip_members", False)
+                ),
+                "skip_zip_without_matching_members": bool(
+                    file_cfg.get("skip_zip_without_matching_members", False)
+                ),
+
+                # Processing mode
+                "postprocess": file_cfg.get("postprocess"),
+            }
+
+            specs.append(spec)
+
+        return specs
+
+    # ------------------------------------------------------------
+    # Fallback path: one spec per enabled variable
+    # ------------------------------------------------------------
+    # This supports older/simple source configs where each variable corresponds
+    # directly to one raw input file.
     for variable, variable_cfg in get_enabled_variable_items(source_cfg):
-        file_cfg = files_cfg.get(variable, {}) or {}
+        filename = variable_cfg.get("source_filename") or f"{variable}.tif"
 
-        filename = (
-            file_cfg.get("filename")
-            or variable_cfg.get("source_filename")
-            or f"{variable}.tif"
+        specs.append(
+            {
+                "variable": variable,
+                "filename": filename,
+
+                "url": variable_cfg.get("url"),
+                "urls": variable_cfg.get("urls"),
+                "filenames": variable_cfg.get("filenames"),
+                "local_path": variable_cfg.get("local_path"),
+
+                "zip_member": variable_cfg.get("zip_member"),
+                "zip_member_pattern": variable_cfg.get("zip_member_pattern"),
+                "file_pattern": variable_cfg.get("file_pattern"),
+
+                "hda_query": variable_cfg.get("hda_query"),
+                "hda_query_path": variable_cfg.get("hda_query_path"),
+                "max_results": variable_cfg.get("max_results"),
+
+                "allow_multiple": bool(variable_cfg.get("allow_multiple", False)),
+                "allow_multiple_zip_members": bool(
+                    variable_cfg.get("allow_multiple_zip_members", False)
+                ),
+                "skip_zip_without_matching_members": bool(
+                    variable_cfg.get("skip_zip_without_matching_members", False)
+                ),
+
+                "postprocess": variable_cfg.get("postprocess"),
+            }
         )
-
-        spec = {
-            "variable": variable,
-            "filename": filename,
-            "url": file_cfg.get("url") or variable_cfg.get("url"),
-            "urls": file_cfg.get("urls") or variable_cfg.get("urls"),
-            "filenames": file_cfg.get("filenames") or variable_cfg.get("filenames"),
-            "local_path": file_cfg.get("local_path") or variable_cfg.get("local_path"),
-            "zip_member": file_cfg.get("zip_member") or variable_cfg.get("zip_member"),
-            "zip_member_pattern": (
-                file_cfg.get("zip_member_pattern")
-                or variable_cfg.get("zip_member_pattern")
-            ),
-            "hda_query": file_cfg.get("hda_query") or variable_cfg.get("hda_query"),
-            "hda_query_path": (
-                file_cfg.get("hda_query_path")
-                or variable_cfg.get("hda_query_path")
-            ),
-            "file_pattern": (
-                file_cfg.get("file_pattern")
-                or variable_cfg.get("file_pattern")
-            ),
-            "max_results": (
-                file_cfg.get("max_results")
-                or variable_cfg.get("max_results")
-            ),
-            "allow_multiple": bool(
-                file_cfg.get(
-                    "allow_multiple",
-                    variable_cfg.get("allow_multiple", False),
-                )
-            ),
-            "postprocess": (
-                file_cfg.get("postprocess")
-                or variable_cfg.get("postprocess")
-            ),
-            "allow_multiple_zip_members": bool(
-                file_cfg.get(
-                    "allow_multiple_zip_members",
-                    variable_cfg.get("allow_multiple_zip_members", False),
-                )
-            ),
-            "skip_zip_without_matching_members": bool(
-                file_cfg.get(
-                    "skip_zip_without_matching_members",
-                    variable_cfg.get("skip_zip_without_matching_members", False),
-                )
-            ),
-        }
-
-        specs.append(spec)
 
     return specs
 
@@ -186,7 +200,15 @@ def get_file_spec_for_variable(source_cfg: dict, variable: str) -> dict:
         if spec["variable"] == variable:
             return spec
 
-    raise KeyError(f"No file spec found for variable={variable!r}")
+    variable_cfg = source_cfg.get("variables", {}).get(variable, {}) or {}
+    filename = variable_cfg.get("source_filename") or f"{variable}.tif"
+
+    return {
+        "variable": variable,
+        "filename": filename,
+        "zip_member": variable_cfg.get("zip_member"),
+        "zip_member_pattern": variable_cfg.get("zip_member_pattern"),
+    }
 
 
 def build_copernicus_raw_path(

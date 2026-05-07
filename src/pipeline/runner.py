@@ -5,6 +5,7 @@ from pathlib import Path
 from src.io.config import load_yaml
 from src.sources.registry import get_source_connector
 from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
+from src.pipeline.variable_expansion import expand_source_config
 
 
 VALID_STAGES = {"download", "clip", "build", "all"}
@@ -126,6 +127,7 @@ def run_source_pipeline(
         source_cfg=source_cfg,
         run_cfg=run_cfg,
     )
+    source_cfg = expand_source_config(source_cfg)
 
     source = source_cfg["source"]
     provider = source["provider"]
