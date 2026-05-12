@@ -5,14 +5,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import json
+import math
 import re
 from typing import Any
 
 import numpy as np
 import rasterio
 from rasterio.enums import Resampling
-from rasterio.merge import merge
+from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
+from rasterio.warp import transform_bounds
 
 from src.sources.copernicus.postprocess import (
     find_tif_members_in_zip,
@@ -25,6 +27,15 @@ class TemporalRaster:
     uri: str
     date: datetime
     source_path: str
+
+
+@dataclass(frozen=True)
+class ReferenceGrid:
+    crs: Any
+    transform: Any
+    width: int
+    height: int
+    profile: dict
 
 
 def _parse_date_from_text(
@@ -158,12 +169,7 @@ def _filter_by_months(
         return rasters
 
     months_set = {int(month) for month in months}
-
-    return [
-        raster
-        for raster in rasters
-        if raster.date.month in months_set
-    ]
+    return [raster for raster in rasters if raster.date.month in months_set]
 
 
 def _filter_by_date_range(
@@ -233,94 +239,185 @@ def _clean_array(
     return data
 
 
+def _group_by_date(rasters: list[TemporalRaster]) -> dict[datetime, list[TemporalRaster]]:
+    by_date: dict[datetime, list[TemporalRaster]] = defaultdict(list)
+
+    for raster in rasters:
+        by_date[raster.date].append(raster)
+
+    return by_date
+
+
+def _align_bounds_to_resolution(
+    *,
+    minx: float,
+    miny: float,
+    maxx: float,
+    maxy: float,
+    resolution: float,
+) -> tuple[float, float, float, float]:
+    aligned_minx = math.floor(minx / resolution) * resolution
+    aligned_miny = math.floor(miny / resolution) * resolution
+    aligned_maxx = math.ceil(maxx / resolution) * resolution
+    aligned_maxy = math.ceil(maxy / resolution) * resolution
+
+    return aligned_minx, aligned_miny, aligned_maxx, aligned_maxy
+
+
+def _build_reference_grid(
+    *,
+    rasters: list[TemporalRaster],
+    temporal_cfg: dict[str, Any],
+) -> ReferenceGrid:
+    """
+    Build one common grid for all temporal rasters selected for a metric.
+
+    This guarantees that all per-date arrays have the same shape before
+    temporal aggregation.
+    """
+    if not rasters:
+        raise ValueError("Cannot build reference grid from empty rasters list.")
+
+    target_crs = temporal_cfg.get("target_crs")
+    target_resolution_m = temporal_cfg.get("target_resolution_m")
+
+    if target_resolution_m is None:
+        raise ValueError(
+            "temporal_postprocess.target_resolution_m is required for "
+            "stable temporal aggregation."
+        )
+
+    resolution = float(target_resolution_m)
+
+    minx_values: list[float] = []
+    miny_values: list[float] = []
+    maxx_values: list[float] = []
+    maxy_values: list[float] = []
+
+    first_profile: dict | None = None
+
+    for raster in rasters:
+        with rasterio.open(raster.uri) as src:
+            if target_crs is None:
+                target_crs = src.crs
+
+            bounds = transform_bounds(
+                src.crs,
+                target_crs,
+                src.bounds.left,
+                src.bounds.bottom,
+                src.bounds.right,
+                src.bounds.top,
+                densify_pts=21,
+            )
+
+            minx_values.append(bounds[0])
+            miny_values.append(bounds[1])
+            maxx_values.append(bounds[2])
+            maxy_values.append(bounds[3])
+
+            if first_profile is None:
+                first_profile = src.profile.copy()
+
+    if first_profile is None:
+        raise RuntimeError("Could not read reference profile from temporal rasters.")
+
+    minx, miny, maxx, maxy = _align_bounds_to_resolution(
+        minx=min(minx_values),
+        miny=min(miny_values),
+        maxx=max(maxx_values),
+        maxy=max(maxy_values),
+        resolution=resolution,
+    )
+
+    width = int(math.ceil((maxx - minx) / resolution))
+    height = int(math.ceil((maxy - miny) / resolution))
+
+    transform = from_origin(minx, maxy, resolution, resolution)
+
+    profile = first_profile.copy()
+    profile.update(
+        driver="GTiff",
+        crs=target_crs,
+        transform=transform,
+        width=width,
+        height=height,
+        count=1,
+        dtype="float32",
+        BIGTIFF="IF_SAFER",
+    )
+
+    print("[temporal] Reference grid:")
+    print(f"  CRS: {target_crs}")
+    print(f"  Resolution: {resolution}")
+    print(f"  Width x height: {width} x {height}")
+    print(f"  Bounds: {minx}, {miny}, {maxx}, {maxy}")
+
+    return ReferenceGrid(
+        crs=target_crs,
+        transform=transform,
+        width=width,
+        height=height,
+        profile=profile,
+    )
+
+
 def _read_mosaic_for_date(
     rasters: list[TemporalRaster],
     *,
     temporal_cfg: dict[str, Any],
+    reference_grid: ReferenceGrid,
 ) -> tuple[np.ndarray, dict]:
     """
-    Read one or more rasters for the same date.
+    Read one or more rasters for the same date into the common reference grid.
 
-    If temporal_postprocess.target_crs is set, all rasters are read through
-    WarpedVRT before mosaic. This is important for Sentinel-2 tile grids that
-    may cross UTM zones.
+    If several tiles exist for the same date, they are merged by averaging
+    overlapping valid pixels.
     """
-    target_crs = temporal_cfg.get("target_crs")
-    target_resolution_m = temporal_cfg.get("target_resolution_m")
     vrt_resampling = _get_vrt_resampling(temporal_cfg.get("vrt_resampling", "nearest"))
     value_filter = temporal_cfg.get("value_filter", {}) or {}
 
-    opened = []
-    srcs = []
+    sum_array = np.zeros(
+        (reference_grid.height, reference_grid.width),
+        dtype=np.float32,
+    )
+    count_array = np.zeros(
+        (reference_grid.height, reference_grid.width),
+        dtype=np.float32,
+    )
 
-    try:
-        for raster in rasters:
-            src = rasterio.open(raster.uri)
-            opened.append(src)
+    for raster in rasters:
+        with rasterio.open(raster.uri) as src:
+            with WarpedVRT(
+                src,
+                crs=reference_grid.crs,
+                transform=reference_grid.transform,
+                width=reference_grid.width,
+                height=reference_grid.height,
+                resampling=vrt_resampling,
+            ) as vrt:
+                data = vrt.read(1)
+                cleaned = _clean_array(
+                    data,
+                    nodata=vrt.nodata,
+                    value_filter=value_filter,
+                )
 
-            if target_crs:
-                vrt_kwargs: dict[str, Any] = {
-                    "crs": target_crs,
-                    "resampling": vrt_resampling,
-                }
+        valid = np.isfinite(cleaned)
 
-                if target_resolution_m is not None:
-                    vrt_kwargs["x_res"] = float(target_resolution_m)
-                    vrt_kwargs["y_res"] = float(target_resolution_m)
+        sum_array[valid] += cleaned[valid]
+        count_array[valid] += 1.0
 
-                vrt = WarpedVRT(src, **vrt_kwargs)
-                srcs.append(vrt)
-            else:
-                srcs.append(src)
+    output = np.full(
+        (reference_grid.height, reference_grid.width),
+        np.nan,
+        dtype=np.float32,
+    )
 
-        if len(srcs) == 1:
-            src = srcs[0]
-            data = src.read(1)
-            data = _clean_array(
-                data,
-                nodata=src.nodata,
-                value_filter=value_filter,
-            )
+    valid_count = count_array > 0
+    output[valid_count] = sum_array[valid_count] / count_array[valid_count]
 
-            profile = src.profile.copy()
-            profile.update(count=1, dtype="float32")
-            return data, profile
-
-        mosaic, transform = merge(srcs)
-        data = mosaic[0]
-
-        nodata = srcs[0].nodata
-        data = _clean_array(
-            data,
-            nodata=nodata,
-            value_filter=value_filter,
-        )
-
-        profile = srcs[0].profile.copy()
-        profile.update(
-            driver="GTiff",
-            height=data.shape[0],
-            width=data.shape[1],
-            count=1,
-            transform=transform,
-            dtype="float32",
-            BIGTIFF="IF_SAFER",
-        )
-
-        return data, profile
-
-    finally:
-        for src in srcs:
-            try:
-                src.close()
-            except Exception:
-                pass
-
-        for src in opened:
-            try:
-                src.close()
-            except Exception:
-                pass
+    return output, reference_grid.profile.copy()
 
 
 def _comparison_mask(
@@ -352,24 +449,12 @@ def _compute_metric(
 
     method = metric_cfg["method"]
 
-    if method in {"mean", "median", "min", "max", "std"}:
-        stack = np.stack(arrays, axis=0).astype(np.float32)
-
-        if method == "mean":
-            return np.nanmean(stack, axis=0).astype(np.float32)
-        if method == "median":
-            return np.nanmedian(stack, axis=0).astype(np.float32)
-        if method == "min":
-            return np.nanmin(stack, axis=0).astype(np.float32)
-        if method == "max":
-            return np.nanmax(stack, axis=0).astype(np.float32)
-        if method == "std":
-            return np.nanstd(stack, axis=0).astype(np.float32)
-
     if method == "valid_observation_count":
         count = np.zeros_like(arrays[0], dtype=np.float32)
+
         for array in arrays:
             count += np.isfinite(array).astype(np.float32)
+
         return count
 
     if method == "count_threshold":
@@ -384,6 +469,24 @@ def _compute_metric(
             count += (valid & mask).astype(np.float32)
 
         return count
+
+    # Metrics that need the temporal stack.
+    stack = np.stack(arrays, axis=0).astype(np.float32)
+
+    if method == "mean":
+        return np.nanmean(stack, axis=0).astype(np.float32)
+
+    if method == "median":
+        return np.nanmedian(stack, axis=0).astype(np.float32)
+
+    if method == "min":
+        return np.nanmin(stack, axis=0).astype(np.float32)
+
+    if method == "max":
+        return np.nanmax(stack, axis=0).astype(np.float32)
+
+    if method == "std":
+        return np.nanstd(stack, axis=0).astype(np.float32)
 
     raise NotImplementedError(f"Unsupported temporal metric method={method!r}")
 
@@ -413,6 +516,7 @@ def _write_temporal_output(
         driver="GTiff",
         count=1,
         dtype="float32",
+        nodata=np.nan,
         compress=compression,
         BIGTIFF="IF_SAFER",
     )
@@ -429,13 +533,6 @@ def _write_temporal_output(
 
     print(f"[temporal] Written: {output_path}")
     return output_path
-
-
-def _group_by_date(rasters: list[TemporalRaster]) -> dict[datetime, list[TemporalRaster]]:
-    by_date: dict[datetime, list[TemporalRaster]] = defaultdict(list)
-    for raster in rasters:
-        by_date[raster.date].append(raster)
-    return by_date
 
 
 def _run_export_timesteps(
@@ -462,23 +559,40 @@ def _run_export_timesteps(
     start_date = export_cfg.get("start_date")
     end_date = export_cfg.get("end_date")
 
+    selected_rasters: list[TemporalRaster] = []
+    for date in sorted(by_date):
+        for raster in by_date[date]:
+            selected_rasters.append(raster)
+
+    selected_rasters = _filter_by_date_range(
+        selected_rasters,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if not selected_rasters:
+        return []
+
+    reference_grid = _build_reference_grid(
+        rasters=selected_rasters,
+        temporal_cfg=temporal_cfg,
+    )
+
+    selected_by_date = _group_by_date(selected_rasters)
+
     written_paths: list[Path] = []
     manifest: dict[str, Any] = {
         "type": "temporal_timesteps",
         "generated_variables": {},
     }
 
-    for date in sorted(by_date):
+    for date in sorted(selected_by_date):
         date_iso = date.strftime("%Y-%m-%d")
 
-        if start_date and date < datetime.fromisoformat(start_date):
-            continue
-        if end_date and date > datetime.fromisoformat(end_date):
-            continue
-
         array, profile = _read_mosaic_for_date(
-            by_date[date],
+            selected_by_date[date],
             temporal_cfg=temporal_cfg,
+            reference_grid=reference_grid,
         )
 
         variable_name = export_cfg.get("variable_name_pattern", "temporal_{date}")
@@ -613,20 +727,27 @@ def run_temporal_zip_geotiff_aggregation(
 
         selected_by_date = _group_by_date(selected_rasters)
 
-        arrays: list[np.ndarray] = []
-        reference_profile: dict | None = None
-
         print("==============================")
         print(f"[temporal] Variable: {variable_name}")
         print(f"[temporal] Method: {metric_cfg.get('method')}")
         print(f"[temporal] Months: {months}")
         print(f"[temporal] Dates selected: {len(selected_by_date)}")
 
+        reference_grid = _build_reference_grid(
+            rasters=selected_rasters,
+            temporal_cfg=temporal_cfg,
+        )
+
+        arrays: list[np.ndarray] = []
+        reference_profile: dict | None = None
+
         for date in sorted(selected_by_date):
             array, profile = _read_mosaic_for_date(
                 selected_by_date[date],
                 temporal_cfg=temporal_cfg,
+                reference_grid=reference_grid,
             )
+
             arrays.append(array)
 
             if reference_profile is None:
@@ -680,12 +801,10 @@ def run_temporal_zip_geotiff_aggregation(
     )
 
     if timestep_outputs:
-        generated_manifest["timestep_outputs"] = [
-            str(path)
-            for path in timestep_outputs
-        ]
+        generated_manifest["timestep_outputs"] = [str(path) for path in timestep_outputs]
 
     manifest_path = Path(raw_dir) / "temporal_generated_variables.json"
+
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(generated_manifest, f, indent=2, ensure_ascii=False)
 

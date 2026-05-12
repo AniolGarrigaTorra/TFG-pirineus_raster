@@ -54,7 +54,7 @@ download:
         startIndex: 0
 
 processing:
-  source_resolution: 20m
+  source_resolution: 100m
   target_resolution_m: 100
   grid_from_project: true
 
@@ -99,7 +99,7 @@ temporal_postprocess:
     variable_name_pattern: "snow_fraction_{date}"
     unit: percent
     data_type: percentage
-    native_resolution_m: 20
+    native_resolution_m: 100
 
   output_variable_groups:
     snow_fraction_means:
@@ -112,7 +112,7 @@ temporal_postprocess:
         unit: percent
         valid_range: [0, 100]
         data_type: percentage
-        native_resolution_m: 20
+        native_resolution_m: 100
         temporal:
           type: seasonal_aggregation
           season: "{season}"

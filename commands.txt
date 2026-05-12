@@ -45,8 +45,8 @@ du -sh data_processed/datasets/pyrenees_full_copernicus_worldclim_100m
 Download to PC:
 
 Compress on HPC:
-tar -czf pyrenees_full_copernicus_worldclim_100m.tar.gz pyrenees_full_copernicus_worldclim_100m
+tar -czf pyrenees_full_copernicus_worldclim_100m.tar.gz data_processed/datasets/pyrenees_full_copernicus_worldclim_100m
 
 On local terminal:
-scp aniol.garriga.torra@csle03:/mnt/csl/work/aniol.garriga.torra/pirineus_raster/data_processed/datasets/pyrenees_full_copernicus_worldclim_100m.tar.gz /home/aniol-garriga-torra-boss/Escriptori/ANIOL/UNI/4t Carrera/TFG/datasets/
-tar -xzf pyrenees_full_copernicus_worldclim_100m.tar.gz
+scp aniol.garriga.torra@csl.calcula.tsc.upc.edu:/mnt/csl/work/aniol.garriga.torra/pirineus_raster/pyrenees_full_copernicus_worldclim_100m.tar.gz /home/aniol-garriga-torra-boss/Escriptori/ANIOL/UNI/4t\ Carrera/TFG/datasets/
+tar -xzf /home/aniol-garriga-torra-boss/Escriptori/ANIOL/UNI/4t\ Carrera/TFG/datasets/pyrenees_full_copernicus_worldclim_100m.tar.gz
