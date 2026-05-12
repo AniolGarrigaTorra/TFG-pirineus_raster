@@ -13,7 +13,7 @@ source:
 dataset:
   layer_structure: temporal_aggregation
   file_format: geotiff
-  native_resolution_m: 20
+  native_resolution_m: 100
   data_type: percentage
 
 domains:
@@ -54,7 +54,7 @@ download:
         startIndex: 0
 
 processing:
-  source_resolution: 100m
+  source_resolution: 20m
   target_resolution_m: 100
   grid_from_project: true
 
