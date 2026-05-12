@@ -279,6 +279,13 @@ def clip_copernicus_raw_files(
         )
 
         if not raw_path.exists():
+            if not bool(variable_cfg.get("required", True)):
+                print(
+                    f"[clip] Optional raw Copernicus file missing for "
+                    f"variable={variable}. Skipping: {raw_path}"
+                )
+                continue
+
             raise FileNotFoundError(
                 f"Missing raw Copernicus file for variable={variable}: {raw_path}"
             )

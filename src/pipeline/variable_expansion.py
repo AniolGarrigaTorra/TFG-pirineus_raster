@@ -266,6 +266,12 @@ def expand_temporal_postprocess_variables(
                 "temporal",
                 {"type": "temporal_aggregation"},
             ),
+
+            # Important for temporal products:
+            # some generated variables may legitimately not exist if there are no
+            # selected dates for that metric/season. In that case clip/build should skip.
+            "required": bool(variable_cfg.get("required", False)),
+
             "generated": True,
             "generated_from": "temporal_postprocess.output_variables",
         }

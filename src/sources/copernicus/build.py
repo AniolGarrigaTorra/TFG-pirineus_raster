@@ -227,6 +227,13 @@ def build_copernicus_features(
         )
 
         if not clipped_path.exists():
+            if not bool(variable_cfg.get("required", True)):
+                print(
+                    f"[build] Optional clipped Copernicus raster missing for "
+                    f"variable={variable}. Skipping: {clipped_path}"
+                )
+                continue
+
             raise FileNotFoundError(
                 f"Missing clipped Copernicus raster: {clipped_path}\n"
                 "Run the clip stage first."

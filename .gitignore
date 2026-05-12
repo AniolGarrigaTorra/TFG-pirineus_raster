@@ -5,3 +5,4 @@ data_raw/
 data_interim/
 data_processed/
 logs/*.tar.gz
+*.tar.gz

@@ -13,7 +13,7 @@ source:
 dataset:
   layer_structure: temporal_aggregation
   file_format: geotiff
-  native_resolution_m: 100
+  native_resolution_m: 20
   data_type: percentage
 
 domains:
@@ -69,29 +69,33 @@ resampling:
     snow_valid_observations_annual: average
 
 temporal_postprocess:
-  # FSC products include several layers. FSCOG = Fractional Snow Cover On Ground.
-  # Si vols top-of-canopy, canvia FSCOG per FSCTOC.
   zip_member_pattern: ".*FSCOG.*\\.tif$"
-
-  # FSC filenames normally include an acquisition date as YYYYMMDD.
   date_regex: "(\\d{8})"
   date_format: "%Y%m%d"
 
-  # Reproject temporal mosaics to a common CRS before aggregation.
-  # This avoids problems when Sentinel-2 tiles cross UTM zones.
   target_crs: EPSG:3035
   target_resolution_m: 20
   vrt_resampling: nearest
 
-  # Keep only true fractional snow values.
-  # HRSI products may include coded non-snow/non-valid classes depending on layer.
+  # Important: this forces the temporal raw outputs to the Pyrenees full AOI,
+  # instead of using the much larger union of all Sentinel-2 tile extents.
+  reference_grid:
+    crs: EPSG:3035
+    resolution_m: 20
+    bounds:
+      xmin: 3300000
+      xmax: 3770000
+      ymin: 2120000
+      ymax: 2345000
+
+  # Block size for streaming aggregation. Lower this if memory is tight.
+  block_size: 512
+
   value_filter:
     valid_range: [0, 100]
     nodata_values: [205, 210, 254, 255]
     scale_factor: 1.0
 
-  # Optional export of each timestep.
-  # Keep disabled by default because it can generate many files.
   export_timesteps:
     enabled: false
     output_dir: timesteps
@@ -99,7 +103,7 @@ temporal_postprocess:
     variable_name_pattern: "snow_fraction_{date}"
     unit: percent
     data_type: percentage
-    native_resolution_m: 100
+    native_resolution_m: 20
 
   output_variable_groups:
     snow_fraction_means:
@@ -112,7 +116,7 @@ temporal_postprocess:
         unit: percent
         valid_range: [0, 100]
         data_type: percentage
-        native_resolution_m: 100
+        native_resolution_m: 20
         temporal:
           type: seasonal_aggregation
           season: "{season}"
