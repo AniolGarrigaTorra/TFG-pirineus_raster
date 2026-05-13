@@ -1,0 +1,192 @@
+source:
+  id: igme_brgm_pyrenees_geology_400k
+  provider: igme_brgm
+  product: pyrenees_geology_400k
+  product_group: geology
+  version: "2009"
+  description: "Transboundary geological and Quaternary geological maps of the Pyrenees at 1:400,000 scale, produced by IGME and BRGM."
+  page_url: "https://info.igme.es/cartografiadigital/geologica/mapa.aspx?Id=27&parent=%27..%2Fgeologica%2Fgeologiaregionalaspx%27"
+  source_crs: EPSG:27572
+  source_scale: "1:400000"
+  citation: "IGME-BRGM, 2009. Mapa Geológico de los Pirineos a escala 1:400.000 y Mapa Geológico del Cuaternario de los Pirineos a escala 1:400.000."
+
+dataset:
+  layer_structure: vector_categorical
+  file_format: zip_shapefile
+  geometry_source: vector
+  rasterization: categorical
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  overwrite_existing: false
+  extract_after_download: true
+
+processing:
+  source_resolution: scale_400k
+  target_resolution_m: 100
+  grid_from_project: true
+
+clip:
+  overwrite_existing: false
+
+rasterization:
+  default_all_touched: false
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: int32
+
+datasets:
+  geology:
+    enabled: true
+    description: "Geological Map of the Pyrenees at 1:400,000 scale."
+    url: "https://info.igme.es/cartografiadigital/datos/tematicos/shapes/GeologicoPirineos400.zip"
+    zip_filename: "GeologicoPirineos400.zip"
+    source_crs: EPSG:27572
+    layers:
+      fgeol:
+        enabled: true
+        shapefile: "PYR400K_S_FGEOL_L2E.shp"
+        geometry_type: polygon
+        description: "Geological formations."
+      surch:
+        enabled: true
+        shapefile: "PYR400K_S_SURCH_L2E.shp"
+        geometry_type: polygon
+        description: "Geological overprints."
+      struct:
+        enabled: true
+        shapefile: "PYR400K_L_STRUCT_L2E.shp"
+        geometry_type: line
+        description: "Structural linear elements."
+      fgeol_limits:
+        enabled: true
+        shapefile: "PYR400K_L_FGEOL_L2E.shp"
+        geometry_type: line
+        description: "Geological formation boundaries."
+
+  quaternary:
+    enabled: true
+    description: "Quaternary Geological Map of the Pyrenees at 1:400,000 scale."
+    url: "https://info.igme.es/cartografiadigital/datos/tematicos/shapes/CuaternarioPirineos400.zip"
+    zip_filename: "CuaternarioPirineos400.zip"
+    source_crs: EPSG:27572
+    layers:
+      fgeol:
+        enabled: true
+        shapefile: "PYR400K_QUAT_S_FGEOL_L2E.shp"
+        geometry_type: polygon
+        description: "Quaternary geological formations."
+      surch:
+        enabled: true
+        shapefile: "PYR400K_QUAT_S_SURCH_L2E.shp"
+        geometry_type: polygon
+        description: "Quaternary overprints."
+      fgeol_limits:
+        enabled: true
+        shapefile: "PYR400K_QUAT_L_FGEOL_L2E.shp"
+        geometry_type: line
+        description: "Quaternary formation boundaries."
+      divers_lines:
+        enabled: true
+        shapefile: "PYR400K_QUAT_L_DIVERS_L2E.shp"
+        geometry_type: line
+        description: "Diverse Quaternary linear elements."
+      isoval_lines:
+        enabled: true
+        shapefile: "PYR400K_QUAT_L_ISOVAL_L2E.shp"
+        geometry_type: line
+        description: "Quaternary isolines."
+      divers_points:
+        enabled: true
+        shapefile: "PYR400K_QUAT_P_DIVERS_L2E.shp"
+        geometry_type: point
+        description: "Diverse Quaternary point elements."
+
+features:
+  - name: geology_formation_code
+    enabled: true
+    description: "Geological formation code from the 1:400,000 IGME/BRGM Pyrenees geological map."
+    dataset: geology
+    layer: fgeol
+    value_field: CODE_FUS
+    encode_categories: false
+    unit: category_code
+    all_touched: false
+    legend_fields:
+      - CODE_FUS
+      - NOTAT_PYR
+      - DESCR_SP
+      - SYSTEM_SP
+      - ETAGE_SP
+      - CODE_LEG
+
+  - name: geology_system_code
+    enabled: true
+    description: "Encoded stratigraphic system from the 1:400,000 IGME/BRGM Pyrenees geological map."
+    dataset: geology
+    layer: fgeol
+    value_field: SYSTEM_SP
+    encode_categories: true
+    unit: encoded_category
+    all_touched: false
+    legend_fields:
+      - SYSTEM_SP
+
+  - name: geology_stage_code
+    enabled: true
+    description: "Encoded stratigraphic stage from the 1:400,000 IGME/BRGM Pyrenees geological map."
+    dataset: geology
+    layer: fgeol
+    value_field: ETAGE_SP
+    encode_categories: true
+    unit: encoded_category
+    all_touched: false
+    legend_fields:
+      - ETAGE_SP
+
+  - name: quaternary_formation_code
+    enabled: true
+    description: "Quaternary formation code from the 1:400,000 IGME/BRGM Pyrenees Quaternary map."
+    dataset: quaternary
+    layer: fgeol
+    value_field: CODE_GEOL
+    encode_categories: false
+    unit: category_code
+    all_touched: false
+    legend_fields:
+      - CODE
+      - CODE_LEG
+      - CAT_SP
+      - SS_CAT_SP
+      - DESCR_SP
+
+  - name: quaternary_category_code
+    enabled: true
+    description: "Encoded Quaternary category from the 1:400,000 IGME/BRGM Pyrenees Quaternary map."
+    dataset: quaternary
+    layer: fgeol
+    value_field: CAT_SP
+    encode_categories: true
+    unit: encoded_category
+    all_touched: false
+    legend_fields:
+      - CAT_SP
+
+  - name: quaternary_subcategory_code
+    enabled: true
+    description: "Encoded Quaternary subcategory from the 1:400,000 IGME/BRGM Pyrenees Quaternary map."
+    dataset: quaternary
+    layer: fgeol
+    value_field: SS_CAT_SP
+    encode_categories: true
+    unit: encoded_category
+    all_touched: false
+    legend_fields:
+      - SS_CAT_SP
