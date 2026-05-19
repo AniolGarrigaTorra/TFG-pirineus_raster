@@ -1,0 +1,32 @@
+# configs/aoi/pyrenees_pdca_full.yaml
+
+name: pyrenees_pdca_full
+description: "Full Pyrenees AOI based on the Pyrenean Digital Climate Atlas (PDCA) cartographic bounding box, transformed from ETRS89 / UTM zone 30N to project CRS EPSG:3035 and rounded outward to align with 10, 30, 50 and 100 m grids."
+
+crs: EPSG:3035
+
+bounds:
+  xmin: 3334500
+  xmax: 3739500
+  ymin: 2105600
+  ymax: 2321600
+
+source_bounds:
+  crs: EPSG:25830
+  xmin: 590760
+  xmax: 976050
+  ymin: 4642500
+  ymax: 4796280
+
+bounds_epsg4326:
+  xmin: -2.180825743316177
+  xmax: 3.0170390027110465
+  ymin: 41.35684351603586
+  ymax: 43.75071201798661
+
+notes:
+  - "AOI derived from Batalla, Ninyerola & Catalan (2018), Pyrenean Digital Climate Atlas (PDCA)."
+  - "Original cartographic specification: ETRS89 / UTM zone 30N, 30 m pixel size, 12843 columns and 5126 rows."
+  - "Bounds were transformed to EPSG:3035 because the pirineus_raster project CRS is EPSG:3035."
+  - "Bounds were rounded outward to make width and height divisible by 10, 30, 50 and 100 m."
+  - "Recommended as the new full-Pyrenees working AOI for harmonized raster feature generation."

@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.io.config import resolve_path
+
 
 # =============================================================================
 # Layer specification
@@ -123,6 +125,24 @@ def read_json_if_exists(path: Path | None) -> dict[str, Any]:
 
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def resolve_manifest_entry_path(
+    value: str | Path | None,
+    manifest: dict[str, Any],
+) -> Path | None:
+    if value is None:
+        return None
+
+    dataset_dir = (
+        manifest.get("_resolved_dataset_dir")
+        or manifest.get("dataset_dir")
+    )
+
+    try:
+        return resolve_path(value, base_path=dataset_dir, must_exist=True)
+    except FileNotFoundError:
+        return Path(value)
 
 
 def _as_int(value: Any) -> int | None:
@@ -350,11 +370,17 @@ def build_layer_spec_from_raster_entry(
     source_result = source_result or {}
     manifest = manifest or {}
 
-    dataset_path = Path(raster_entry["dataset_path"])
-    original_path = Path(raster_entry["original_path"])
+    dataset_path = resolve_manifest_entry_path(
+        raster_entry["dataset_path"],
+        manifest,
+    ) or Path(raster_entry["dataset_path"])
+    original_path = resolve_manifest_entry_path(
+        raster_entry.get("original_path"),
+        manifest,
+    )
 
     sidecar_path_str = raster_entry.get("sidecar_json_dataset_path")
-    sidecar_path = Path(sidecar_path_str) if sidecar_path_str else None
+    sidecar_path = resolve_manifest_entry_path(sidecar_path_str, manifest)
 
     metadata = read_json_if_exists(sidecar_path)
 

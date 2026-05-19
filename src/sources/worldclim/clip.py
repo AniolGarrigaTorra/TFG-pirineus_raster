@@ -6,7 +6,7 @@ import rasterio
 from rasterio.windows import from_bounds
 from pyproj import Transformer
 
-from src.io.paths import ensure_dir, get_source_clipped_dir
+from src.io.paths import ensure_dir, get_source_clipped_dir, get_source_raw_dir
 from src.sources.worldclim.naming import (
     build_worldclim_zip_path,
     build_worldclim_clipped_name,
@@ -365,11 +365,11 @@ def clip_monthly_climatology(
     product = source["product"]
     source_resolution = get_source_resolution(source_cfg)
 
-    raw_dir = (
-        Path(project_cfg["paths"]["raw_dir"])
-        / provider
-        / product
-        / source_resolution
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        source_resolution=source_resolution,
     )
 
     written_paths: list[Path] = []
@@ -451,11 +451,11 @@ def clip_future_monthly_multiband(
     product = source["product"]
     source_resolution = get_source_resolution(source_cfg)
 
-    raw_dir = (
-        Path(project_cfg["paths"]["raw_dir"])
-        / provider
-        / product
-        / source_resolution
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        source_resolution=source_resolution,
     )
 
     written_paths: list[Path] = []
@@ -526,11 +526,11 @@ def clip_static_index_set(
     source_resolution = get_source_resolution(source_cfg)
     zip_variable_code = source_cfg["dataset"]["zip_variable_code"]
 
-    raw_dir = (
-        Path(project_cfg["paths"]["raw_dir"])
-        / provider
-        / product
-        / source_resolution
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        source_resolution=source_resolution,
     )
 
     zip_spec = {
@@ -609,11 +609,11 @@ def clip_monthly_time_series(
     product = source["product"]
     source_resolution = get_source_resolution(source_cfg)
 
-    raw_dir = (
-        Path(project_cfg["paths"]["raw_dir"])
-        / provider
-        / product
-        / source_resolution
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        source_resolution=source_resolution,
     )
 
     written_paths: list[Path] = []
@@ -701,17 +701,23 @@ def clip_static_single(
     source_resolution = get_source_resolution(source_cfg)
     zip_variable_code = source_cfg["dataset"]["zip_variable_code"]
 
-    raw_dir = (
-        Path(project_cfg["paths"]["raw_dir"])
-        / provider
-        / product
-        / source_resolution
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=provider,
+        product=product,
+        source_resolution=source_resolution,
     )
+
+    zip_spec = {
+        "zip_variable_code": zip_variable_code,
+        "variable": zip_variable_code,
+        "period": None,
+    }
 
     zip_path = build_worldclim_zip_path(
         raw_dir=raw_dir,
         source_cfg=source_cfg,
-        zip_variable_code=zip_variable_code,
+        zip_spec=zip_spec,
     )
 
     if not zip_path.exists():

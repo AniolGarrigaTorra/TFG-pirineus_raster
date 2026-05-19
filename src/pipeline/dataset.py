@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.io.config import load_yaml
+from src.io.config import load_yaml, resolve_path
+from src.io.paths import get_project_base_dir
 from src.pipeline.config import (
     get_dataset_dir,
     get_project_config_path,
@@ -24,6 +25,7 @@ from src.pipeline.layers import (
     summarize_layer_catalog,
 )
 from src.pipeline.runner import run_source_pipeline
+from src.workbench.compiler import compile_run_config
 
 
 # =============================================================================
@@ -56,6 +58,16 @@ def copy_text_file(src: Path, dst: Path) -> None:
 
     with dst.open("w", encoding="utf-8") as f_dst:
         f_dst.write(content)
+
+
+def path_relative_to_base(path: Path | None, base: Path) -> str | None:
+    if path is None:
+        return None
+
+    try:
+        return str(path.resolve().relative_to(base.resolve()))
+    except ValueError:
+        return str(path)
 
 
 # =============================================================================
@@ -159,9 +171,12 @@ def copy_raster_to_dataset(
         "name": dst_raster.stem,
         "source_id": source_id,
         "original_path": str(raster_path),
-        "dataset_path": str(dst_raster),
+        "dataset_path": path_relative_to_base(dst_raster, dataset_rasters_dir.parent),
         "sidecar_json_original_path": str(src_json) if src_json.exists() else None,
-        "sidecar_json_dataset_path": str(dst_json) if dst_json is not None else None,
+        "sidecar_json_dataset_path": path_relative_to_base(
+            dst_json,
+            dataset_rasters_dir.parent,
+        ),
     }
 
 
@@ -257,12 +272,18 @@ def build_manifest(
 
 def _load_run_aoi(
     run_cfg: dict[str, Any],
+    run_config_path: Path | None = None,
 ) -> tuple[Path | None, dict[str, Any] | None, str | None]:
     run_aoi_config_path = get_run_aoi_config_path(run_cfg)
 
     if run_aoi_config_path is None:
         return None, None, None
 
+    run_aoi_config_path = resolve_path(
+        run_aoi_config_path,
+        base_path=run_config_path,
+        must_exist=True,
+    )
     run_aoi_cfg = load_yaml(run_aoi_config_path)
     run_aoi_name = run_aoi_cfg.get("name") or run_aoi_cfg.get("aoi", {}).get("name")
 
@@ -283,16 +304,39 @@ def run_dataset_pipeline(
       5. build derived features, if configured
       6. update manifest.json
     """
-    run_config_path = Path(run_config_path)
+    run_config_path = resolve_path(run_config_path, must_exist=True)
 
-    run_cfg = load_run_config(run_config_path)
+    run_cfg = compile_run_config(load_run_config(run_config_path))
     run_name = get_run_name(run_cfg)
-    project_config_path = get_project_config_path(run_cfg)
+    project_config_path = resolve_path(
+        get_project_config_path(run_cfg),
+        base_path=run_config_path,
+        must_exist=True,
+    )
     project_cfg = load_yaml(project_config_path)
-    dataset_dir = get_dataset_dir(run_cfg)
+    project_cfg["_config_path"] = str(project_config_path)
+    dataset_dir = resolve_path(
+        get_dataset_dir(run_cfg),
+        base_path=get_project_base_dir(project_cfg),
+    )
 
-    run_aoi_config_path, run_aoi_cfg, run_aoi_name = _load_run_aoi(run_cfg)
+    run_aoi_config_path, run_aoi_cfg, run_aoi_name = _load_run_aoi(
+        run_cfg,
+        run_config_path=run_config_path,
+    )
     run_resolution_m = get_run_resolution_m(run_cfg)
+
+    run_cfg.setdefault("run", {})["project_config"] = str(project_config_path)
+    if run_aoi_config_path is not None:
+        run_cfg["run"]["aoi_config"] = str(run_aoi_config_path)
+    if run_cfg["run"].get("clip_aoi_config"):
+        run_cfg["run"]["clip_aoi_config"] = str(
+            resolve_path(
+                run_cfg["run"]["clip_aoi_config"],
+                base_path=run_config_path,
+                must_exist=True,
+            )
+        )
 
     outputs_cfg = run_cfg.get("outputs", {})
     copy_rasters = bool(outputs_cfg.get("copy_rasters", True))
@@ -309,6 +353,21 @@ def run_dataset_pipeline(
         run_config_path,
         dirs["config"] / "run_config.yaml",
     )
+    copy_text_file(
+        project_config_path,
+        dirs["config"] / "project_config.yaml",
+    )
+
+    if run_aoi_config_path is not None:
+        resolved_run_aoi_config_path = resolve_path(
+            run_aoi_config_path,
+            base_path=run_config_path,
+            must_exist=True,
+        )
+        copy_text_file(
+            resolved_run_aoi_config_path,
+            dirs["config"] / "aoi_config.yaml",
+        )
 
     print("==============================")
     print("Pirineus Raster Dataset Run")
@@ -328,9 +387,18 @@ def run_dataset_pipeline(
     copied_rasters: list[dict[str, Any]] = []
 
     for idx, source_entry in enumerate(source_entries, start=1):
-        source_config_path = Path(source_entry["config"])
+        source_config_path = resolve_path(
+            source_entry["config"],
+            base_path=run_config_path,
+            must_exist=True,
+        )
         source_id = source_entry.get("id", source_config_path.stem)
         stages = normalize_stages(source_entry.get("stages", default_stages))
+
+        copy_text_file(
+            source_config_path,
+            dirs["config"] / "sources" / f"{source_id}.yaml",
+        )
 
         print("==============================")
         print(f"Source {idx}/{len(source_entries)}: {source_id}")
@@ -350,6 +418,7 @@ def run_dataset_pipeline(
                 source_config_path=source_config_path,
                 stage=stage,
                 run_cfg=run_cfg,
+                source_entry=source_entry,
             )
 
             stage_results.append(

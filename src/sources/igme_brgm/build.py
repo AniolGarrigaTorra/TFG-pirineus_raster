@@ -128,6 +128,7 @@ def _build_source_metadata(
         "source_id": source.get("id"),
         "provider": source.get("provider"),
         "product": source.get("product"),
+        "source_config_path": source_cfg.get("_config_path"),
         "product_group": source.get("product_group"),
         "version": source.get("version"),
         "description": source.get("description"),

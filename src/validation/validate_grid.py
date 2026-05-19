@@ -4,16 +4,29 @@ from pathlib import Path
 
 import rasterio
 
-from src.io.config import load_yaml
-from src.io.paths import build_resolution_suffix, ensure_dir, get_grid_path
+from src.io.config import load_yaml, resolve_path
+from src.io.paths import build_resolution_suffix, ensure_dir, get_grid_path, get_project_base_dir
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to project config YAML.",
+    )
+    parser.add_argument(
+        "--aoi-config",
+        default=None,
+        help="Path to AOI config YAML. Recommended interface.",
+    )
+    parser.add_argument(
         "--aoi",
-        default="configs/aoi/experimental_pallars_sobira.yaml",
-        help="Path to AOI config YAML",
+        default=None,
+        help=(
+            "AOI name or AOI config path. Backwards-compatible shortcut. "
+            "Examples: experimental_pallars_sobira or configs/aoi/experimental_pallars_sobira.yaml"
+        ),
     )
     parser.add_argument(
         "--resolution",
@@ -24,11 +37,28 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_aoi_config_path(args) -> Path:
+    if args.aoi_config is not None:
+        return resolve_path(args.aoi_config, must_exist=True)
+
+    if args.aoi is not None:
+        aoi = Path(args.aoi)
+        if aoi.suffix in {".yaml", ".yml"}:
+            return resolve_path(aoi, must_exist=True)
+        return resolve_path(Path("configs/aoi") / f"{args.aoi}.yaml", must_exist=True)
+
+    return resolve_path("configs/aoi/experimental_pallars_sobira.yaml", must_exist=True)
+
+
 def main():
     args = parse_args()
 
-    project_cfg = load_yaml("configs/project.yaml")
-    aoi_cfg = load_yaml(args.aoi)
+    project_config_path = resolve_path(args.project_config, must_exist=True)
+    aoi_config_path = resolve_aoi_config_path(args)
+
+    project_cfg = load_yaml(project_config_path)
+    project_cfg["_config_path"] = str(project_config_path)
+    aoi_cfg = load_yaml(aoi_config_path)
 
     available_resolutions = project_cfg["grids"]["available_resolutions_m"]
     default_resolution = int(project_cfg["grids"]["default_resolution_m"])
@@ -120,7 +150,14 @@ def main():
 
     all_ok = all(validation_results["checks"].values())
 
-    validation_dir = Path(project_cfg["validation"]["output_dir"]) / "grid" / build_resolution_suffix(resolution)
+    validation_dir = (
+        resolve_path(
+            project_cfg["validation"]["output_dir"],
+            base_path=get_project_base_dir(project_cfg),
+        )
+        / "grid"
+        / build_resolution_suffix(resolution)
+    )
     ensure_dir(validation_dir)
 
     out_json = validation_dir / f"validate_grid_{aoi_cfg['name']}_{build_resolution_suffix(resolution)}.json"

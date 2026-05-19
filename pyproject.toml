@@ -16,9 +16,11 @@ dependencies = [
   "rioxarray",
   "xarray",
   "geopandas",
+  "fiona",
   "shapely",
   "pyproj",
-  "netcdf4"
+  "netcdf4",
+  "hda"
 ]
 
 [project.scripts]

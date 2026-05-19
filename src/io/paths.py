@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from src.io.config import resolve_path
+
 
 def build_resolution_suffix(resolution_m: int) -> str:
     return f"{int(resolution_m)}m"
@@ -9,8 +11,27 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def get_project_base_dir(project_cfg: dict) -> Path | None:
+    project_config_path = project_cfg.get("_config_path")
+    if project_config_path is None:
+        return None
+
+    config_path = Path(project_config_path)
+    if config_path.parent.name == "configs":
+        return config_path.parent.parent
+
+    return config_path.parent
+
+
+def get_project_path(project_cfg: dict, key: str) -> Path:
+    return resolve_path(
+        project_cfg["paths"][key],
+        base_path=get_project_base_dir(project_cfg),
+    )
+
+
 def get_grid_dir(project_cfg: dict) -> Path:
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
+    interim_dir = get_project_path(project_cfg, "interim_dir")
     grids_subdir = project_cfg["grids"]["subdir"]
     return interim_dir / grids_subdir
 
@@ -33,7 +54,7 @@ def get_source_raw_dir(
     Example:
     data_raw/worldclim/v2_1_base/10m/
     """
-    raw_dir = Path(project_cfg["paths"]["raw_dir"])
+    raw_dir = get_project_path(project_cfg, "raw_dir")
     return raw_dir / provider / product / source_resolution
 
 
@@ -48,7 +69,7 @@ def get_source_interim_dir(
     Example:
     data_interim/sources/worldclim/v2_1_base/
     """
-    interim_dir = Path(project_cfg["paths"]["interim_dir"])
+    interim_dir = get_project_path(project_cfg, "interim_dir")
     return interim_dir / "sources" / provider / product
 
 
@@ -88,7 +109,7 @@ def get_feature_output_dir(
     Example:
     data_processed/features/worldclim/v2_1_base/experimental_pallars_sobira/100m/
     """
-    processed_dir = Path(project_cfg["paths"]["processed_dir"])
+    processed_dir = get_project_path(project_cfg, "processed_dir")
     resolution_suffix = build_resolution_suffix(target_resolution_m)
 
     return (

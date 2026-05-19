@@ -4,12 +4,14 @@ from src.sources.base import RasterSourceConnector
 from src.sources.worldclim.connector import WorldClimConnector
 from src.sources.copernicus.connector import CopernicusConnector
 from src.sources.igme_brgm.connector import IgmeBrgmConnector
+from src.sources.pdca.connector import PdcaConnector
 
 
 _SOURCE_CONNECTORS: dict[str, RasterSourceConnector] = {
     "worldclim": WorldClimConnector(),
     "copernicus": CopernicusConnector(),
     "igme_brgm": IgmeBrgmConnector(),
+    "pdca": PdcaConnector(),
 }
 
 

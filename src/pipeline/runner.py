@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.io.config import load_yaml
+from src.io.config import load_yaml, resolve_path
 from src.sources.registry import get_source_connector
 from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
 from src.pipeline.variable_expansion import expand_source_config
+from src.workbench.compiler import compile_source_config_for_run
 
 
 VALID_STAGES = {"download", "clip", "build", "all"}
@@ -63,9 +64,21 @@ def _load_domain_configs(source_cfg: dict) -> tuple[dict, dict]:
     still defines the clipping/output domain it needs.
     """
     domains_cfg = source_cfg["domains"]
+    source_config_path = source_cfg.get("_config_path")
 
-    clip_aoi_cfg = load_yaml(domains_cfg["clip_aoi_config"])
-    output_aoi_cfg = load_yaml(domains_cfg["output_aoi_config"])
+    clip_aoi_path = resolve_path(
+        domains_cfg["clip_aoi_config"],
+        base_path=source_config_path,
+        must_exist=True,
+    )
+    output_aoi_path = resolve_path(
+        domains_cfg["output_aoi_config"],
+        base_path=source_config_path,
+        must_exist=True,
+    )
+
+    clip_aoi_cfg = load_yaml(clip_aoi_path)
+    output_aoi_cfg = load_yaml(output_aoi_path)
 
     return clip_aoi_cfg, output_aoi_cfg
 
@@ -93,6 +106,7 @@ def run_source_pipeline(
     source_config_path: str,
     stage: str,
     run_cfg: dict | None = None,
+    source_entry: dict | None = None,
 ) -> list:
     """
     Run one source pipeline stage.
@@ -117,15 +131,22 @@ def run_source_pipeline(
     list[Path]
         Paths generated or prepared by the final executed stage.
     """
-    project_config_path = Path(project_config_path)
-    source_config_path = Path(source_config_path)
+    project_config_path = resolve_path(project_config_path, must_exist=True)
+    source_config_path = resolve_path(source_config_path, must_exist=True)
 
     project_cfg = load_yaml(project_config_path)
+    project_cfg["_config_path"] = str(project_config_path)
     source_cfg = load_yaml(source_config_path)
+    source_cfg["_config_path"] = str(source_config_path)
 
     source_cfg = apply_run_overrides_to_source_cfg(
         source_cfg=source_cfg,
         run_cfg=run_cfg,
+    )
+    source_cfg = expand_source_config(source_cfg)
+    source_cfg = compile_source_config_for_run(
+        source_cfg=source_cfg,
+        source_entry=source_entry,
     )
     source_cfg = expand_source_config(source_cfg)
 

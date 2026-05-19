@@ -5,7 +5,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from src.io.config import load_yaml
+from src.io.config import load_yaml, resolve_path
 from src.io.paths import ensure_dir, get_grid_dir, get_grid_path
 
 
@@ -63,19 +63,19 @@ def resolve_aoi_config_path(args) -> Path:
       4. default experimental_pallars_sobira
     """
     if args.aoi_config is not None:
-        return Path(args.aoi_config)
+        return resolve_path(args.aoi_config, must_exist=True)
 
     if args.aoi is not None:
         aoi = Path(args.aoi)
 
         # If user passed a YAML path directly.
         if aoi.suffix in {".yaml", ".yml"}:
-            return aoi
+            return resolve_path(aoi, must_exist=True)
 
         # If user passed only the AOI name.
-        return Path("configs/aoi") / f"{args.aoi}.yaml"
+        return resolve_path(Path("configs/aoi") / f"{args.aoi}.yaml", must_exist=True)
 
-    return Path("configs/aoi/experimental_pallars_sobira.yaml")
+    return resolve_path("configs/aoi/experimental_pallars_sobira.yaml", must_exist=True)
 
 
 def validate_grid_inputs(
@@ -210,7 +210,7 @@ def create_grid(
 def main():
     args = parse_args()
 
-    project_config_path = Path(args.project_config)
+    project_config_path = resolve_path(args.project_config, must_exist=True)
     aoi_config_path = resolve_aoi_config_path(args)
 
     if not project_config_path.exists():
@@ -220,6 +220,7 @@ def main():
         raise FileNotFoundError(f"AOI config not found: {aoi_config_path}")
 
     project_cfg = load_yaml(project_config_path)
+    project_cfg["_config_path"] = str(project_config_path)
     aoi_cfg = load_yaml(aoi_config_path)
 
     default_resolution = int(project_cfg["grids"]["default_resolution_m"])

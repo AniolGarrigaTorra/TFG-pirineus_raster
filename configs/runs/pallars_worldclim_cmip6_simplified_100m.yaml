@@ -1,0 +1,44 @@
+run:
+  name: pallars_worldclim_cmip6_simplified_100m
+  description: "Example researcher-facing run config using simplified source selections for WorldClim CMIP6."
+  project_config: configs/project.yaml
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+  resolution_m: 100
+  stages: [build]
+
+sources:
+  - id: worldclim_cmip6_future
+    config: configs/sources/worldclim/worldclim_cmip6_future.yaml
+    stages: [build]
+    select:
+      variables: [tmin, tmax, prec]
+      dimensions:
+        gcms: [ACCESS-CM2]
+        ssps: [ssp126]
+        periods: ["2021-2040"]
+      aggregations:
+        use:
+          - annual_mean
+          - may_sep_mean
+          - annual_precip_sum
+    overrides:
+      resampling:
+        by_variable:
+          prec: average
+
+derived_feature_groups:
+  - recipe: thermal_range
+    foreach:
+      - source_id: worldclim_cmip6_future
+        aggregation: annual_mean
+        gcm: ACCESS-CM2
+        ssp: ssp126
+        period: "2021-2040"
+
+outputs:
+  dataset_dir: data_processed/datasets/pallars_worldclim_cmip6_simplified_100m
+  copy_rasters: true
+  overwrite_existing: true
+  write_run_summary: true
+  write_manifest: true
+

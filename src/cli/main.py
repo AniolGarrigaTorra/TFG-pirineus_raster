@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from src.io.config import resolve_path
 from src.pipeline.layers import (
     build_layer_catalog_from_manifest,
     summarize_layer_catalog,
@@ -11,6 +12,14 @@ from src.pipeline.layers import (
 from src.pipeline.dataset import run_dataset_pipeline
 from src.pipeline.runner import run_source_pipeline
 from src.sources.registry import list_source_connectors
+from src.validation.validate_dataset import validate_dataset_dir
+from src.workbench.api import serve_workbench_api
+from src.workbench.catalog import source_catalog_from_config, workbench_catalog
+from src.workbench.compiler import (
+    load_and_compile_run_config,
+    render_run_config_yaml,
+    validate_researcher_run_config,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +75,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a generated dataset directory.",
     )
 
+    validate_parser = subparsers.add_parser(
+        "validate-dataset",
+        help="Validate a generated dataset against its manifest and reference grid.",
+    )
+    validate_parser.add_argument(
+        "dataset_dir",
+        help="Path to a generated dataset directory.",
+    )
+    validate_parser.add_argument(
+        "--strict-metadata",
+        action="store_true",
+        help="Fail if sidecar JSON files are missing standardized metadata keys.",
+    )
+
+    validate_config_parser = subparsers.add_parser(
+        "validate-config",
+        help="Validate a run YAML, including simplified workbench selections.",
+    )
+    validate_config_parser.add_argument(
+        "run_config",
+        help="Path to a run config YAML.",
+    )
+
+    render_parser = subparsers.add_parser(
+        "render-run",
+        help="Render a run YAML after expanding workbench convenience blocks.",
+    )
+    render_parser.add_argument(
+        "run_config",
+        help="Path to a run config YAML.",
+    )
+    render_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output YAML path. Prints to stdout if omitted.",
+    )
+
+    catalog_parser = subparsers.add_parser(
+        "catalog",
+        help="Print project/source catalog information as JSON.",
+    )
+    catalog_parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to the project config YAML.",
+    )
+    catalog_parser.add_argument(
+        "--source-config",
+        default=None,
+        help="Optional source config YAML. If omitted, prints the full workbench catalog.",
+    )
+
+    api_parser = subparsers.add_parser(
+        "serve-config-api",
+        help="Serve the local JSON API used by the React configuration workbench.",
+    )
+    api_parser.add_argument("--host", default="127.0.0.1")
+    api_parser.add_argument("--port", default=8765, type=int)
+    api_parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to the project config YAML.",
+    )
+
     subparsers.add_parser(
         "list-sources",
         help="List available source providers.",
@@ -75,14 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_manifest(dataset_dir: str | Path) -> dict:
-    dataset_dir = Path(dataset_dir)
+    dataset_dir = resolve_path(dataset_dir, must_exist=True)
     manifest_path = dataset_dir / "metadata" / "manifest.json"
 
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
 
     with manifest_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        manifest = json.load(f)
+
+    manifest["_resolved_dataset_dir"] = str(dataset_dir)
+    return manifest
 
 
 def inspect_dataset(dataset_dir: str | Path) -> None:
@@ -139,6 +215,91 @@ def main() -> None:
 
     elif args.command == "inspect":
         inspect_dataset(args.dataset_dir)
+
+    elif args.command == "validate-dataset":
+        report = validate_dataset_dir(
+            dataset_dir=args.dataset_dir,
+            strict_metadata=args.strict_metadata,
+            write_report=True,
+        )
+        print("==============================")
+        print("Pirineus Raster Dataset Validation")
+        print(f"Dataset: {report['dataset_dir']}")
+        print(f"Grid:    {report['grid_path']}")
+        print(f"Rasters: {report['n_rasters']}")
+        print(f"Failed:  {report['n_failed']}")
+        print(f"Warned:  {report['n_warned']}")
+        print(f"Report:  {report['dataset_dir']}/metadata/validation_report.json")
+        print(f"Status:  {'PASS' if report['ok'] else 'FAIL'}")
+        print("==============================")
+
+        if not report["ok"]:
+            failed = [
+                item
+                for item in report["rasters"]
+                if not item.get("ok", False)
+            ]
+            for item in failed[:10]:
+                print(f"  - {item.get('name')}: {item.get('errors')}")
+            raise SystemExit(1)
+
+    elif args.command == "validate-config":
+        run_config_path = resolve_path(args.run_config, must_exist=True)
+        run_cfg = load_and_compile_run_config(run_config_path)
+        report = validate_researcher_run_config(
+            run_cfg=run_cfg,
+            run_config_path=run_config_path,
+        )
+        print("==============================")
+        print("Pirineus Raster Config Validation")
+        print(f"Run config:       {run_config_path}")
+        print(f"Status:           {'PASS' if report['ok'] else 'FAIL'}")
+        print(f"Estimated layers: {report['estimated_layers']}")
+        print(f"  Sources:        {report.get('estimated_source_layers', 0)}")
+        print(f"  Derived:        {report.get('estimated_derived_layers', 0)}")
+        print("==============================")
+
+        for source in report["sources"]:
+            print(
+                f"  - {source['id']}: {source['estimated_layers']} layers "
+                f"({source.get('provider')}/{source.get('product')})"
+            )
+
+        for warning in report["warnings"]:
+            print(f"WARNING: {warning}")
+
+        for error in report["errors"]:
+            print(f"ERROR: {error}")
+
+        if not report["ok"]:
+            raise SystemExit(1)
+
+    elif args.command == "render-run":
+        run_config_path = resolve_path(args.run_config, must_exist=True)
+        run_cfg = load_and_compile_run_config(run_config_path)
+        yaml_text = render_run_config_yaml(run_cfg, compile_groups=False)
+
+        if args.output:
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(yaml_text, encoding="utf-8")
+            print(f"Rendered run config: {output_path}")
+        else:
+            print(yaml_text)
+
+    elif args.command == "catalog":
+        if args.source_config:
+            payload = source_catalog_from_config(args.source_config)
+        else:
+            payload = workbench_catalog(args.project_config)
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+
+    elif args.command == "serve-config-api":
+        serve_workbench_api(
+            host=args.host,
+            port=args.port,
+            project_config_path=args.project_config,
+        )
 
     elif args.command == "list-sources":
         print("Available raster source providers:")

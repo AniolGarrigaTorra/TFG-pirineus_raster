@@ -4,6 +4,12 @@ python -m src.make_grid \
   --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
   --resolution 100
 
+1.1: Validate grid
+python -m src.validation.validate_grid \
+  --project-config configs/project.yaml \
+  --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
+  --resolution 100
+
 2.1: run config
 pirineus-raster run configs/runs/pallars_worldclim_100m.yaml
 
@@ -15,11 +21,24 @@ pirineus-raster run-source \
 3: Inspect the dataset
 pirineus-raster inspect data_processed/datasets/pallars_worldclim_100m/
 
+4: Validate the dataset
+pirineus-raster validate-dataset data_processed/datasets/pallars_worldclim_100m/
+
+5: Config workbench CLI
+pirineus-raster catalog --source-config configs/sources/worldclim/worldclim_cmip6_future.yaml
+pirineus-raster validate-config configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
+pirineus-raster render-run configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
+
+6: React workbench
+pirineus-raster serve-config-api --host 127.0.0.1 --port 8765
+cd ui
+npm install
+npm run dev
 
 
 HPC JOBS:
 
-sbatch jobs/jobs_pyrenees_full_copernicus_worldclim_100m.sh
+sbatch jobs/run_raster_features.sh configs/runs/pallars_worldclim_full_100m.yaml
 
 squeue -u $USER
 
@@ -40,7 +59,8 @@ scancel 2539999
 
 Sizes of files:
 du -sh data_processed/datasets/pyrenees_full_copernicus_worldclim_100m
-
+du -sh */ | sort -h
+du -sh * | sort -rh
 
 Download to PC:
 

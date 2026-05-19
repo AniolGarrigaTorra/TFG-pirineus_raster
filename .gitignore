@@ -6,3 +6,6 @@ data_interim/
 data_processed/
 logs/*.tar.gz
 *.tar.gz
+ui/node_modules/
+ui/dist/
+ui/coverage/

@@ -1,0 +1,167 @@
+source:
+  id: pdca_topoclimate_1950_2012
+  provider: pdca
+  product: topoclimate_1950_2012
+  product_group: climate
+  version: "1.0.0"
+  description: "Pyrenean Digital Climate Atlas long-term topoclimate surfaces for the Pyrenees, 1950-2012."
+  doi: "10.5281/zenodo.1186639"
+  article_url: "https://doi.org/10.1002/gdj3.52"
+  source_crs: EPSG:25830
+  source_period: "1950-2012"
+  citation: "Batalla, M., Ninyerola, M., & Catalan, J. (2018). Digital long-term topoclimate surfaces of the Pyrenees mountain range for the period 1950-2012. Geoscience Data Journal, 5(2), 50-62. https://doi.org/10.1002/gdj3.52"
+
+dataset:
+  layer_structure: pdca_nested_zip_geotiff_collection
+  file_format: geotiff
+  native_resolution_m: 30
+  temporal_axis: monthly_seasonal_annual_climatology
+  data_type: continuous
+  source_crs: EPSG:25830
+  expected_total_layers: 120
+  expected_variables:
+    - archive_stem: Temperature_min
+      variable_key: tmin
+      canonical_prefix: temperature_min
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: Temperature_max
+      variable_key: tmax
+      canonical_prefix: temperature_max
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: Temperature_mean
+      variable_key: tmean
+      canonical_prefix: temperature_mean
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: Precipitation
+      variable_key: prec
+      canonical_prefix: precipitation
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: PET
+      variable_key: pet
+      canonical_prefix: pet
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: Water_availability
+      variable_key: water_availability
+      canonical_prefix: water_availability
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: Pot_solar_rad
+      variable_key: psr
+      canonical_prefix: pot_solar_rad
+      temporal_layers: [Annual, January, February, March, April, May, June, July, August, September, October, November, December, Winter, Spring, Summer, Autumn]
+    - archive_stem: GDD
+      variable_key: gdd
+      canonical_prefix: gdd
+      temporal_layers: [null]
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_pdca_full.yaml
+  output_aoi_config: configs/aoi/pyrenees_pdca_full.yaml
+
+download:
+  enabled: true
+  mode: zenodo_api
+  record_id: "1186639"
+  api_url: "https://zenodo.org/api/records/1186639"
+  overwrite_existing: false
+  timeout_seconds: 1800
+  max_retries: 5
+  retry_sleep_seconds: 60
+  include_extensions: [".zip"]
+  exclude_contains: []
+  include_contains: []
+
+clip:
+  overwrite_existing: false
+  overwrite_extracted: false
+  keep_raw_zip_after_clip: true
+
+processing:
+  source_resolution: 30m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: bilinear
+  by_variable:
+    tmin: bilinear
+    tmax: bilinear
+    tmean: bilinear
+    prec: average
+    pet: average
+    water_availability: average
+    gdd: average
+    psr: average
+    unknown: bilinear
+
+variables:
+  tmin:
+    enabled: true
+    description: "Mean minimum air temperature"
+    unit: degC
+    scale_factor: 1.0
+    valid_range: [-50, 50]
+
+  tmax:
+    enabled: true
+    description: "Mean maximum air temperature"
+    unit: degC
+    scale_factor: 1.0
+    valid_range: [-40, 60]
+
+  tmean:
+    enabled: true
+    description: "Mean air temperature"
+    unit: degC
+    scale_factor: 1.0
+    valid_range: [-50, 60]
+
+  prec:
+    enabled: true
+    description: "Total precipitation"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 5000]
+
+  pet:
+    enabled: true
+    description: "Potential evapotranspiration using the Thornthwaite method"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [0, 3000]
+
+  water_availability:
+    enabled: true
+    description: "Water availability computed from precipitation and potential evapotranspiration"
+    unit: mm
+    scale_factor: 1.0
+    valid_range: [-3000, 5000]
+
+  gdd:
+    enabled: true
+    description: "Growing degree-days above 0 degrees Celsius"
+    unit: degC_day
+    scale_factor: 1.0
+    valid_range: [0, 8000]
+
+  psr:
+    enabled: true
+    description: "Potential solar radiation"
+    unit: "10 kJ m-2 day-1"
+    scale_factor: 1.0
+    valid_range: [0, 4000]
+
+  unknown:
+    enabled: true
+    description: "PDCA layer not mapped to a known variable key"
+    unit: null
+    scale_factor: 1.0
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

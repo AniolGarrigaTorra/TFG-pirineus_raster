@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -328,12 +330,142 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _file_sha256(path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+
+    path = Path(path)
+    if not path.exists() or not path.is_file():
+        return None
+
+    digest = hashlib.sha256()
+
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         key: _json_safe(value)
         for key, value in metadata.items()
         if value is not None
     }
+
+
+def _infer_resolution_unit(source_cfg: dict, native_resolution_m: Any = None) -> str | None:
+    if native_resolution_m is not None:
+        return "metre"
+
+    provider = source_cfg.get("source", {}).get("provider")
+    source_resolution = str(source_cfg.get("processing", {}).get("source_resolution", ""))
+
+    if provider == "worldclim":
+        if source_resolution.endswith("s"):
+            return "arc_second"
+        if source_resolution.endswith("m"):
+            return "arc_minute"
+
+    if source_resolution.endswith("m"):
+        return "metre"
+
+    return None
+
+
+def _infer_metadata_resolution_unit(metadata: dict[str, Any]) -> str | None:
+    if metadata.get("native_resolution_m") is not None:
+        return "metre"
+
+    provider = metadata.get("provider")
+    source_resolution = str(metadata.get("source_resolution", ""))
+
+    if provider == "worldclim":
+        if source_resolution.endswith("s"):
+            return "arc_second"
+        if source_resolution.endswith("m"):
+            return "arc_minute"
+
+    if source_resolution.endswith("m"):
+        return "metre"
+
+    return None
+
+
+def _bounds_dict(grid: GridContext) -> dict[str, float]:
+    left, bottom, right, top = rasterio.transform.array_bounds(
+        grid.height,
+        grid.width,
+        grid.transform,
+    )
+
+    return {
+        "xmin": float(left),
+        "ymin": float(bottom),
+        "xmax": float(right),
+        "ymax": float(top),
+    }
+
+
+def enrich_output_metadata(
+    metadata: dict[str, Any],
+    output_path: str | Path,
+    grid: GridContext,
+    output_dtype: str,
+    nodata: float | int,
+    compression: str,
+) -> dict[str, Any]:
+    """
+    Add provider-agnostic output provenance to one raster metadata record.
+    """
+    enriched = dict(metadata)
+
+    output_path = Path(output_path)
+    generated_at = enriched.get("generated_at") or datetime.now(timezone.utc).isoformat()
+    source_config_path = enriched.get("source_config_path")
+    source_resolution = enriched.get("source_resolution")
+
+    if source_config_path and "source_config_sha256" not in enriched:
+        enriched["source_config_sha256"] = _file_sha256(source_config_path)
+
+    if source_resolution is not None and "native_resolution" not in enriched:
+        enriched["native_resolution"] = source_resolution
+
+    if "native_resolution_unit" not in enriched:
+        native_unit = _infer_metadata_resolution_unit(enriched)
+        if native_unit is not None:
+            enriched["native_resolution_unit"] = native_unit
+
+    if "source_resolution_unit" not in enriched:
+        source_unit = _infer_metadata_resolution_unit(enriched)
+        if source_unit is not None:
+            enriched["source_resolution_unit"] = source_unit
+
+    enriched.update(
+        {
+            "metadata_schema_version": "0.3",
+            "generated_at": generated_at,
+            "output_path": str(output_path),
+            "grid_path": str(grid.path),
+            "grid_aoi_name": grid.aoi_name,
+            "crs": str(grid.crs),
+            "output_crs": str(grid.crs),
+            "target_crs": str(grid.crs),
+            "resolution_m": grid.resolution_m,
+            "output_resolution_m": grid.resolution_m,
+            "output_width": grid.width,
+            "output_height": grid.height,
+            "output_shape": [grid.height, grid.width],
+            "output_transform": list(grid.transform),
+            "output_bounds": _bounds_dict(grid),
+            "nodata": nodata,
+            "dtype": output_dtype,
+            "compression": compression,
+        }
+    )
+
+    return _clean_metadata(enriched)
 
 
 def metadata_to_geotiff_tags(metadata: dict[str, Any]) -> dict[str, str]:
@@ -382,13 +514,36 @@ def _source_metadata(source_cfg: dict) -> dict[str, Any]:
     source = source_cfg.get("source", {})
     dataset = source_cfg.get("dataset", {})
     processing = source_cfg.get("processing", {})
+    source_config_path = source_cfg.get("_config_path")
 
     return {
         "provider": source.get("provider"),
         "product": source.get("product"),
+        "product_group": source.get("product_group"),
         "source_id": source.get("id"),
+        "source_config_path": source_config_path,
+        "source_config_sha256": _file_sha256(source_config_path),
+        "source_version": source.get("version"),
+        "version": source.get("version"),
+        "source_crs": source.get("source_crs") or dataset.get("source_crs"),
+        "source_period": source.get("source_period"),
+        "source_scale": source.get("source_scale"),
+        "citation": source.get("citation"),
+        "page_url": source.get("page_url"),
+        "article_url": source.get("article_url"),
+        "doi": source.get("doi"),
         "dataset_layer_structure": dataset.get("layer_structure"),
         "source_resolution": processing.get("source_resolution"),
+        "source_resolution_unit": _infer_resolution_unit(source_cfg),
+        "native_resolution": (
+            dataset.get("native_resolution")
+            or processing.get("source_resolution")
+        ),
+        "native_resolution_m": dataset.get("native_resolution_m"),
+        "native_resolution_unit": _infer_resolution_unit(
+            source_cfg,
+            native_resolution_m=dataset.get("native_resolution_m"),
+        ),
         "target_resolution_m": processing.get("target_resolution_m"),
     }
 
@@ -408,6 +563,11 @@ def build_feature_metadata(
     Build metadata for temporal aggregated feature rasters.
     """
     source_meta = _source_metadata(source_cfg)
+    dataset_cfg = source_cfg.get("dataset", {})
+    native_resolution_m = variable_cfg.get(
+        "native_resolution_m",
+        dataset_cfg.get("native_resolution_m"),
+    )
 
     metric = (
         aggregation_cfg.get("metric")
@@ -422,6 +582,11 @@ def build_feature_metadata(
         "unit": variable_cfg.get("unit"),
         "valid_range": variable_cfg.get("valid_range"),
         "scale_factor": variable_cfg.get("scale_factor", 1.0),
+        "native_resolution_m": native_resolution_m,
+        "native_resolution_unit": _infer_resolution_unit(
+            source_cfg,
+            native_resolution_m=native_resolution_m,
+        ),
         "aggregation_name": aggregation_cfg.get("name"),
         "aggregation_metric": metric,
         "metric": metric,
@@ -450,6 +615,11 @@ def build_static_feature_metadata(
     Build metadata for static feature rasters.
     """
     source_meta = _source_metadata(source_cfg)
+    dataset_cfg = source_cfg.get("dataset", {})
+    native_resolution_m = layer_cfg.get(
+        "native_resolution_m",
+        dataset_cfg.get("native_resolution_m"),
+    )
 
     metadata = {
         **source_meta,
@@ -458,6 +628,11 @@ def build_static_feature_metadata(
         "unit": layer_cfg.get("unit"),
         "valid_range": layer_cfg.get("valid_range"),
         "scale_factor": layer_cfg.get("scale_factor", 1.0),
+        "native_resolution_m": native_resolution_m,
+        "native_resolution_unit": _infer_resolution_unit(
+            source_cfg,
+            native_resolution_m=native_resolution_m,
+        ),
         "clip_aoi_name": clip_aoi_name,
         "output_aoi_name": output_aoi_name,
         "target_resolution_m": target_resolution_m,
@@ -535,6 +710,14 @@ def write_feature_raster(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_profile = build_output_profile(
+        grid=grid,
+        output_dtype=output_dtype,
+        nodata=nodata,
+        compression=compression,
+    )
+    metadata = enrich_output_metadata(
+        metadata=metadata,
+        output_path=output_path,
         grid=grid,
         output_dtype=output_dtype,
         nodata=nodata,
