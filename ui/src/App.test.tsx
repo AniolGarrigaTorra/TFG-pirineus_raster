@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { WorkbenchCatalog } from "./types";
@@ -49,7 +49,7 @@ describe("App", () => {
   it("renders the workbench with catalog sources", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => catalog
+      text: async () => JSON.stringify(catalog)
     } as Response));
 
     render(<App />);
@@ -59,6 +59,8 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("API ready")).toBeTruthy();
     });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     expect(screen.getByText("worldclim_cmip6_future")).toBeTruthy();
   });

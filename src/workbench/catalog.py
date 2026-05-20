@@ -25,6 +25,7 @@ SUPPORTED_RESAMPLING = [
     "rms",
 ]
 SUPPORTED_STAGES = ["download", "clip", "build", "all"]
+WORLDCLIM_SOURCE_RESOLUTIONS = ["30s", "2.5m", "5m", "10m"]
 
 
 def _rel_path(path: Path) -> str:
@@ -123,6 +124,43 @@ def _dimensions(source_cfg: dict[str, Any]) -> dict[str, Any]:
     return dimensions
 
 
+def _source_resolution_options(source_cfg: dict[str, Any]) -> list[str]:
+    processing_cfg = source_cfg.get("processing", {}) or {}
+    source_cfg_meta = source_cfg.get("source", {}) or {}
+
+    configured = processing_cfg.get("source_resolutions")
+    if isinstance(configured, list):
+        return [str(item) for item in configured]
+
+    source_resolution = processing_cfg.get("source_resolution")
+    provider = source_cfg_meta.get("provider")
+
+    if provider == "worldclim":
+        return WORLDCLIM_SOURCE_RESOLUTIONS
+
+    return [str(source_resolution)] if source_resolution is not None else []
+
+
+def _keep_raw_after_clip_default(source_cfg: dict[str, Any]) -> bool:
+    download_cfg = source_cfg.get("download", {}) or {}
+
+    if "keep_raw_after_clip" in download_cfg:
+        return bool(download_cfg["keep_raw_after_clip"])
+
+    if "delete_raw_after_clip" in download_cfg:
+        return not bool(download_cfg["delete_raw_after_clip"])
+
+    for key in [
+        "keep_global_file_after_clip",
+        "keep_global_zip_after_clip",
+        "keep_raw_zip_after_clip",
+    ]:
+        if key in download_cfg:
+            return bool(download_cfg[key])
+
+    return True
+
+
 def source_catalog_from_config(
     source_config_path: str | Path,
 ) -> dict[str, Any]:
@@ -152,7 +190,9 @@ def source_catalog_from_config(
         "native_resolution_m": dataset.get("native_resolution_m"),
         "native_resolution_unit": _resolution_unit(cfg),
         "source_resolution": source_resolution,
+        "source_resolution_options": _source_resolution_options(cfg),
         "target_resolution_m": processing.get("target_resolution_m"),
+        "keep_raw_after_clip_default": _keep_raw_after_clip_default(cfg),
         "layer_structure": dataset.get("layer_structure"),
         "file_format": dataset.get("file_format"),
         "data_type": dataset.get("data_type"),

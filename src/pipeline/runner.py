@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from src.io.config import load_yaml, resolve_path
+from src.io.paths import get_source_raw_dir
 from src.sources.registry import get_source_connector
 from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
 from src.pipeline.variable_expansion import expand_source_config
@@ -101,6 +103,36 @@ def _normalize_single_stage(stage: str) -> list[str]:
     return [stage]
 
 
+def _cleanup_raw_after_clip(
+    project_cfg: dict,
+    source_cfg: dict,
+) -> None:
+    download_cfg = source_cfg.get("download", {}) or {}
+    if not bool(download_cfg.get("delete_raw_after_clip", False)):
+        return
+
+    source = source_cfg["source"]
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = processing.get("source_resolution")
+    if source_resolution is None:
+        print("[clip] Raw cleanup skipped: source_resolution is not defined.")
+        return
+
+    raw_dir = get_source_raw_dir(
+        project_cfg=project_cfg,
+        provider=source["provider"],
+        product=source["product"],
+        source_resolution=str(source_resolution),
+    )
+
+    if not raw_dir.exists():
+        print(f"[clip] Raw cleanup skipped: {raw_dir} does not exist.")
+        return
+
+    print(f"[clip] Removing raw source directory after successful clip: {raw_dir}")
+    shutil.rmtree(raw_dir)
+
+
 def run_source_pipeline(
     project_config_path: str,
     source_config_path: str,
@@ -182,6 +214,10 @@ def run_source_pipeline(
                 clip_aoi_cfg=clip_aoi_cfg,
             )
             _print_paths("Clipped files ready", clipped_paths)
+            _cleanup_raw_after_clip(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+            )
             final_paths = clipped_paths
 
         elif current_stage == "build":

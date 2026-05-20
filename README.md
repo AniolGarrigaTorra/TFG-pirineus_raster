@@ -56,7 +56,7 @@ or `HDA_USER` and `HDA_PASSWORD`.
 Create the reference grid for an AOI and resolution:
 
 ```bash
-python -m src.make_grid \
+pirineus-raster make-grid \
   --project-config configs/project.yaml \
   --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
   --resolution 100
@@ -119,6 +119,13 @@ pirineus-raster render-run \
   configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
 ```
 
+Check local WEkEO/HDA credentials before launching Copernicus downloads:
+
+```bash
+pirineus-raster check-credentials
+pirineus-raster check-credentials --setup
+```
+
 ## React Workbench
 
 The React workbench is a visual editor for run configurations. It does not run
@@ -140,6 +147,12 @@ npm run dev
 ```
 
 The Vite dev server proxies `/api` requests to `http://127.0.0.1:8765`.
+
+Alternatively, start both processes with one command:
+
+```bash
+pirineus-raster serve-ui
+```
 
 ## Configuration Model
 

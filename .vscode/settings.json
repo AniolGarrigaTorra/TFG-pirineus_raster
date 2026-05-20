@@ -1,0 +1,28 @@
+{
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/__pycache__/**": true,
+    "**/data_raw/**": true,
+    "**/data_interim/**": true,
+    "**/data_processed/**": true,
+    "**/logs/**": true,
+    "**/ui/node_modules/**": true,
+    "**/ui/dist/**": true
+  },
+  "search.exclude": {
+    "**/data_raw/**": true,
+    "**/data_interim/**": true,
+    "**/data_processed/**": true,
+    "**/logs/**": true,
+    "**/ui/node_modules/**": true,
+    "**/ui/dist/**": true
+  },
+  "python.analysis.exclude": [
+    "**/data_raw/**",
+    "**/data_interim/**",
+    "**/data_processed/**",
+    "**/logs/**",
+    "**/ui/node_modules/**",
+    "**/ui/dist/**"
+  ]
+}

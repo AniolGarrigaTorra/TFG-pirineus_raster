@@ -1,0 +1,75 @@
+run:
+  name: pallars_exp1_100m
+  description: Això es una provaa!
+  project_config: configs/project.yaml
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+  resolution_m: 100
+  stages:
+  - all
+sources:
+- id: copernicus_clms_forest
+  config: configs/sources/copernicus/copernicus_clms_forest.yaml
+  select:
+    variables:
+    - tree_cover_density
+    - dominant_leaf_type
+  overrides:
+    download:
+      keep_raw_after_clip: false
+- id: igme_brgm_pyrenees_geology_400k
+  config: configs/sources/igme_brgm/igme_brgm_pyrenees_geology_400k.yaml
+  select:
+    layers:
+    - quaternary.fgeol_limits
+    - geology.fgeol_limits
+  overrides:
+    download:
+      keep_raw_after_clip: false
+- id: pdca_topoclimate_1950_2012
+  config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+  select:
+    variables:
+    - tmin
+    - tmax
+    - tmean
+    - prec
+    - pet
+    - water_availability
+    - gdd
+    - psr
+    - unknown
+  overrides:
+    download:
+      keep_raw_after_clip: false
+- id: worldclim_v2_1_climate_normals
+  config: configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml
+  select:
+    variables:
+    - tmin
+    - tmax
+    - tavg
+    - prec
+    - srad
+    - wind
+    - vapr
+    aggregations:
+      use:
+      - annual_mean
+      custom:
+      - name: annual_std
+        months:
+        - 1
+        - 12
+        metric: std
+        variables:
+        - tmin
+        - tmax
+  overrides:
+    processing:
+      source_resolution: 30s
+outputs:
+  dataset_dir: data_processed/datasets/pallars_exp1_100m
+  copy_rasters: true
+  overwrite_existing: true
+  write_run_summary: true
+  write_manifest: true

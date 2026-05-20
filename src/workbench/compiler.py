@@ -247,6 +247,52 @@ def _compile_resampling_overrides(
             target[variable] = method
 
 
+def _compile_processing_overrides(
+    cfg: dict[str, Any],
+    source_entry: dict[str, Any],
+) -> None:
+    overrides = source_entry.get("overrides", {}) or {}
+    processing_overrides = overrides.get("processing", {}) or {}
+    if not processing_overrides:
+        return
+
+    processing = cfg.setdefault("processing", {})
+
+    if processing_overrides.get("source_resolution") is not None:
+        processing["source_resolution"] = str(processing_overrides["source_resolution"])
+
+    if processing_overrides.get("target_resolution_m") is not None:
+        processing["target_resolution_m"] = int(processing_overrides["target_resolution_m"])
+
+
+def _compile_download_overrides(
+    cfg: dict[str, Any],
+    source_entry: dict[str, Any],
+) -> None:
+    overrides = source_entry.get("overrides", {}) or {}
+    download_overrides = overrides.get("download", {}) or {}
+    if not download_overrides:
+        return
+
+    download = cfg.setdefault("download", {})
+
+    if "keep_raw_after_clip" in download_overrides:
+        keep_raw = bool(download_overrides["keep_raw_after_clip"])
+        download["keep_raw_after_clip"] = keep_raw
+        download["delete_raw_after_clip"] = not keep_raw
+        download["keep_global_file_after_clip"] = keep_raw
+        download["keep_global_zip_after_clip"] = keep_raw
+        download["keep_raw_zip_after_clip"] = keep_raw
+
+    if "delete_raw_after_clip" in download_overrides:
+        delete_raw = bool(download_overrides["delete_raw_after_clip"])
+        download["delete_raw_after_clip"] = delete_raw
+        download["keep_raw_after_clip"] = not delete_raw
+        download["keep_global_file_after_clip"] = not delete_raw
+        download["keep_global_zip_after_clip"] = not delete_raw
+        download["keep_raw_zip_after_clip"] = not delete_raw
+
+
 def compile_source_config_for_run(
     source_cfg: dict[str, Any],
     source_entry: dict[str, Any] | None = None,
@@ -265,6 +311,8 @@ def compile_source_config_for_run(
         _compile_aggregations(cfg, select_cfg)
 
     _compile_resampling_overrides(cfg, source_entry)
+    _compile_processing_overrides(cfg, source_entry)
+    _compile_download_overrides(cfg, source_entry)
 
     return cfg
 

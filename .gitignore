@@ -1,11 +1,17 @@
 *.egg-info/
 __pycache__/
 *.pyc
+*.tsbuildinfo
 data_raw/
 data_interim/
 data_processed/
+logs/
 logs/*.tar.gz
 *.tar.gz
+Miniconda*.sh
+*Miniconda*.sh
 ui/node_modules/
 ui/dist/
 ui/coverage/
+ui/vite.config.js
+ui/vite.config.d.ts

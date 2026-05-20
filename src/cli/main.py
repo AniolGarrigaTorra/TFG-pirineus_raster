@@ -5,14 +5,6 @@ import json
 from pathlib import Path
 
 from src.io.config import resolve_path
-from src.pipeline.layers import (
-    build_layer_catalog_from_manifest,
-    summarize_layer_catalog,
-)
-from src.pipeline.dataset import run_dataset_pipeline
-from src.pipeline.runner import run_source_pipeline
-from src.sources.registry import list_source_connectors
-from src.validation.validate_dataset import validate_dataset_dir
 from src.workbench.api import serve_workbench_api
 from src.workbench.catalog import source_catalog_from_config, workbench_catalog
 from src.workbench.compiler import (
@@ -64,6 +56,37 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["download", "clip", "build", "all"],
         default="build",
         help="Source pipeline stage to run.",
+    )
+
+    make_grid_parser = subparsers.add_parser(
+        "make-grid",
+        help="Create a project-aligned reference grid for an AOI and resolution.",
+    )
+    make_grid_parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to the project config YAML.",
+    )
+    make_grid_parser.add_argument(
+        "--aoi-config",
+        default=None,
+        help="Path to the AOI config YAML.",
+    )
+    make_grid_parser.add_argument(
+        "--aoi",
+        default=None,
+        help="AOI name under configs/aoi/ or a direct AOI YAML path.",
+    )
+    make_grid_parser.add_argument(
+        "--resolution",
+        type=int,
+        default=None,
+        help="Target grid resolution in meters. Uses project default if omitted.",
+    )
+    make_grid_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite an existing grid.",
     )
 
     inspect_parser = subparsers.add_parser(
@@ -139,6 +162,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the project config YAML.",
     )
 
+    ui_parser = subparsers.add_parser(
+        "serve-ui",
+        help="Start both the config API and the React workbench with one command.",
+    )
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--api-port", default=8765, type=int)
+    ui_parser.add_argument("--ui-port", default=5173, type=int)
+    ui_parser.add_argument(
+        "--project-config",
+        default="configs/project.yaml",
+        help="Path to the project config YAML.",
+    )
+    ui_parser.add_argument(
+        "--ui-dir",
+        default="ui",
+        help="Path to the React workbench directory.",
+    )
+
+    credentials_parser = subparsers.add_parser(
+        "check-credentials",
+        help="Check WEkEO/HDA credentials and HDA package availability.",
+    )
+    credentials_parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Interactively write ~/.hdarc before checking credentials.",
+    )
+    credentials_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing ~/.hdarc when used with --setup.",
+    )
+
     subparsers.add_parser(
         "list-sources",
         help="List available source providers.",
@@ -162,6 +218,11 @@ def _load_manifest(dataset_dir: str | Path) -> dict:
 
 
 def inspect_dataset(dataset_dir: str | Path) -> None:
+    from src.pipeline.layers import (
+        build_layer_catalog_from_manifest,
+        summarize_layer_catalog,
+    )
+
     manifest = _load_manifest(dataset_dir)
 
     if "layer_catalog" in manifest:
@@ -202,21 +263,56 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "run":
+        from src.pipeline.dataset import run_dataset_pipeline
+
         run_dataset_pipeline(
             run_config_path=args.run_config,
         )
 
     elif args.command == "run-source":
+        from src.pipeline.runner import run_source_pipeline
+
         run_source_pipeline(
             project_config_path=args.project_config,
             source_config_path=args.source_config,
             stage=args.stage,
         )
 
+    elif args.command == "make-grid":
+        from src.io.config import load_yaml
+        from src.make_grid import create_grid, resolve_aoi_config_path
+
+        project_config_path = resolve_path(args.project_config, must_exist=True)
+        aoi_config_path = resolve_aoi_config_path(args)
+
+        project_cfg = load_yaml(project_config_path)
+        project_cfg["_config_path"] = str(project_config_path)
+        aoi_cfg = load_yaml(aoi_config_path)
+
+        default_resolution = int(project_cfg["grids"]["default_resolution_m"])
+        resolution = int(args.resolution) if args.resolution is not None else default_resolution
+
+        print("==============================")
+        print("Create project grid")
+        print(f"Project config: {project_config_path}")
+        print(f"AOI config: {aoi_config_path}")
+        print(f"AOI name: {aoi_cfg['name']}")
+        print(f"Resolution: {resolution} m")
+        print("==============================")
+
+        create_grid(
+            project_cfg=project_cfg,
+            aoi_cfg=aoi_cfg,
+            resolution=resolution,
+            overwrite=args.overwrite,
+        )
+
     elif args.command == "inspect":
         inspect_dataset(args.dataset_dir)
 
     elif args.command == "validate-dataset":
+        from src.validation.validate_dataset import validate_dataset_dir
+
         report = validate_dataset_dir(
             dataset_dir=args.dataset_dir,
             strict_metadata=args.strict_metadata,
@@ -301,7 +397,28 @@ def main() -> None:
             project_config_path=args.project_config,
         )
 
+    elif args.command == "serve-ui":
+        from src.cli.ui import serve_ui
+
+        serve_ui(
+            host=args.host,
+            api_port=args.api_port,
+            ui_port=args.ui_port,
+            project_config_path=args.project_config,
+            ui_dir=args.ui_dir,
+        )
+
+    elif args.command == "check-credentials":
+        from src.cli.credentials import print_credentials_report
+
+        print_credentials_report(
+            setup=args.setup,
+            force=args.force,
+        )
+
     elif args.command == "list-sources":
+        from src.sources.registry import list_source_connectors
+
         print("Available raster source providers:")
         for provider in list_source_connectors():
             print(f"  - {provider}")

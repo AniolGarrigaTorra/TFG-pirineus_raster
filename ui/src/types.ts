@@ -47,7 +47,9 @@ export interface SourceCatalog {
   native_resolution_m?: number;
   native_resolution_unit?: string;
   source_resolution?: string;
+  source_resolution_options?: string[];
   target_resolution_m?: number;
+  keep_raw_after_clip_default?: boolean;
   layer_structure?: string;
   file_format?: string;
   data_type?: string;
@@ -79,6 +81,8 @@ export interface SourceSelection {
   config: string;
   selected: boolean;
   stages: string[];
+  sourceResolution?: string;
+  keepRawAfterClip: boolean;
   variables: string[];
   layers: string[];
   dimensions: Record<string, string[]>;

@@ -12,10 +12,22 @@ async function requestJson<T>(
     }
   });
 
-  const payload = await response.json();
+  const text = await response.text();
+  let payload: unknown;
+
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch (error) {
+    throw new Error(
+      `Expected JSON from ${path}, but received a non-JSON response. Is the config API running?`
+    );
+  }
 
   if (!response.ok) {
-    throw new Error(payload.error ?? `Request failed: ${response.status}`);
+    const error = payload && typeof payload === "object" && "error" in payload
+      ? String(payload.error)
+      : `Request failed: ${response.status}`;
+    throw new Error(error);
   }
 
   return payload as T;
@@ -42,4 +54,3 @@ export async function renderRunConfig(runConfig: unknown): Promise<{
     body: JSON.stringify({ run_config: runConfig })
   });
 }
-
