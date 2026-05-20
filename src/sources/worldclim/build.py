@@ -131,6 +131,36 @@ def _get_variable_processing(
     return scale_factor, resampling, resampling_name
 
 
+def _get_temporal_output_mode(source_cfg: dict, default: str = "aggregate") -> str:
+    return str(source_cfg.get("temporal", {}).get("output_mode", default))
+
+
+def _get_raw_months(source_cfg: dict) -> list[int]:
+    raw_cfg = source_cfg.get("temporal", {}).get("raw_slices", {}) or {}
+    return months_from_range(raw_cfg.get("months", [1, 12]))
+
+
+def _years_from_periods(periods: list[str]) -> list[int]:
+    years: list[int] = []
+    for period in periods:
+        text = str(period)
+        if "-" not in text:
+            continue
+        start, end = text.split("-", 1)
+        years.extend(range(int(start), int(end) + 1))
+    return sorted(set(years))
+
+
+def _get_raw_years(source_cfg: dict) -> list[int]:
+    raw_cfg = source_cfg.get("temporal", {}).get("raw_slices", {}) or {}
+    if raw_cfg.get("years"):
+        return years_from_range(raw_cfg["years"])
+    years = _years_from_periods(source_cfg.get("periods", []) or [])
+    if not years:
+        raise ValueError("Raw year-month output requires temporal.raw_slices.years.")
+    return years
+
+
 # =============================================================================
 # Static products: elevation and bioclim
 # =============================================================================
@@ -411,6 +441,111 @@ def _read_monthly_stack_to_grid(
     return np.stack(monthly_arrays, axis=0)
 
 
+def _write_monthly_raw_slices(
+    *,
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_name: str,
+    output_aoi_name: str,
+    target_resolution_m: int,
+    output_options: dict,
+    grid,
+) -> list[Path]:
+    written_paths: list[Path] = []
+    months = _get_raw_months(source_cfg)
+
+    for variable, variable_cfg in get_enabled_variable_items(source_cfg):
+        scale_factor, resampling, resampling_name = _get_variable_processing(
+            source_cfg=source_cfg,
+            variable=variable,
+            variable_cfg=variable_cfg,
+        )
+
+        clipped_dir = _get_worldclim_clipped_base_dir(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            variable=variable,
+        )
+        if not clipped_dir.exists():
+            raise FileNotFoundError(
+                f"Clipped directory not found for variable '{variable}': {clipped_dir}"
+            )
+
+        for month in months:
+            clipped_path = _get_monthly_clipped_path(
+                clipped_dir=clipped_dir,
+                source_cfg=source_cfg,
+                clip_aoi_name=clip_aoi_name,
+                variable=variable,
+                month=month,
+            )
+            if not clipped_path.exists():
+                raise FileNotFoundError(
+                    f"Missing clipped monthly raster for variable={variable}, "
+                    f"month={month}: {clipped_path}"
+                )
+
+            output_path = _get_monthly_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                variable=variable,
+                metric="month",
+                months=[month],
+            )
+
+            print("==============================")
+            print(f"[build-monthly] Raw slice: {variable} month={month}")
+            print(f"[build-monthly] Input: {clipped_path}")
+            print(f"[build-monthly] Output: {output_path}")
+
+            grid_array = read_raster_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                resampling=resampling,
+                band=1,
+                scale_factor=scale_factor,
+            )
+
+            metadata = build_feature_metadata(
+                source_cfg=source_cfg,
+                variable=variable,
+                variable_cfg=variable_cfg,
+                aggregation_cfg={
+                    "name": f"month_{month:02d}",
+                    "metric": "month",
+                    "output_mode": "raw_slices",
+                },
+                months=[month],
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=resampling_name,
+            )
+            metadata.update(
+                {
+                    "temporal_axis": "month",
+                    "temporal_output_mode": "raw_slices",
+                    "month": month,
+                }
+            )
+
+            written_path = write_feature_raster(
+                output_path=output_path,
+                array=grid_array,
+                grid=grid,
+                metadata=metadata,
+                **output_options,
+                validate=True,
+            )
+            print(f"[build-monthly] Written: {written_path}")
+            written_paths.append(written_path)
+
+    return written_paths
+
+
 def build_worldclim_monthly_features(
     project_cfg: dict,
     source_cfg: dict,
@@ -439,6 +574,18 @@ def build_worldclim_monthly_features(
     print("[build-monthly] Clip AOI:", clip_aoi_name)
     print_grid_context(grid, prefix="[build-monthly]")
     print("[build-monthly] Layer structure:", source_cfg["dataset"]["layer_structure"])
+
+    if _get_temporal_output_mode(source_cfg) == "raw_slices":
+        print("[build-monthly] Temporal output mode: raw_slices")
+        return _write_monthly_raw_slices(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            output_aoi_name=output_aoi_name,
+            target_resolution_m=target_resolution_m,
+            output_options=output_options,
+            grid=grid,
+        )
 
     aggregations = get_temporal_aggregations(source_cfg)
     written_paths: list[Path] = []
@@ -585,6 +732,123 @@ def _get_time_series_output_path(
     return output_dir / output_name
 
 
+def _write_time_series_raw_slices(
+    *,
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_name: str,
+    output_aoi_name: str,
+    target_resolution_m: int,
+    output_options: dict,
+    grid,
+) -> list[Path]:
+    written_paths: list[Path] = []
+    years = _get_raw_years(source_cfg)
+    months = _get_raw_months(source_cfg)
+
+    for variable, variable_cfg in get_enabled_variable_items(source_cfg):
+        scale_factor, resampling, resampling_name = _get_variable_processing(
+            source_cfg=source_cfg,
+            variable=variable,
+            variable_cfg=variable_cfg,
+        )
+
+        clipped_dir = _get_worldclim_clipped_base_dir(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            variable=variable,
+        )
+
+        if not clipped_dir.exists():
+            raise FileNotFoundError(
+                f"Clipped directory not found for variable '{variable}': {clipped_dir}"
+            )
+
+        for year in years:
+            for month in months:
+                clipped_name = build_worldclim_clipped_name(
+                    source_cfg=source_cfg,
+                    layer_name=variable,
+                    domain_name=clip_aoi_name,
+                    year=year,
+                    month=month,
+                )
+                clipped_path = clipped_dir / clipped_name
+                if not clipped_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing clipped time-series raster for "
+                        f"variable={variable}, year={year}, month={month}: "
+                        f"{clipped_path}"
+                    )
+
+                output_path = _get_time_series_output_path(
+                    project_cfg=project_cfg,
+                    source_cfg=source_cfg,
+                    output_aoi_name=output_aoi_name,
+                    target_resolution_m=target_resolution_m,
+                    variable=variable,
+                    metric_name="raw",
+                    years=[year],
+                    months=[month],
+                )
+
+                print("==============================")
+                print(
+                    f"[build-time-series] Raw slice: "
+                    f"{variable} year={year} month={month}"
+                )
+                print(f"[build-time-series] Input: {clipped_path}")
+                print(f"[build-time-series] Output: {output_path}")
+
+                grid_array = read_raster_to_grid(
+                    raster_path=clipped_path,
+                    grid=grid,
+                    resampling=resampling,
+                    band=1,
+                    scale_factor=scale_factor,
+                )
+
+                metadata = build_feature_metadata(
+                    source_cfg=source_cfg,
+                    variable=variable,
+                    variable_cfg=variable_cfg,
+                    aggregation_cfg={
+                        "name": f"raw_{year}_{month:02d}",
+                        "metric": "raw",
+                        "output_mode": "raw_slices",
+                    },
+                    months=[month],
+                    clip_aoi_name=clip_aoi_name,
+                    output_aoi_name=output_aoi_name,
+                    target_resolution_m=target_resolution_m,
+                    resampling_method_name=resampling_name,
+                )
+                metadata.update(
+                    {
+                        "years": [year],
+                        "year": year,
+                        "year_start": year,
+                        "year_end": year,
+                        "temporal_axis": "year_month",
+                        "temporal_output_mode": "raw_slices",
+                    }
+                )
+
+                written_path = write_feature_raster(
+                    output_path=output_path,
+                    array=grid_array,
+                    grid=grid,
+                    metadata=metadata,
+                    **output_options,
+                    validate=True,
+                )
+                print(f"[build-time-series] Written: {written_path}")
+                written_paths.append(written_path)
+
+    return written_paths
+
+
 def build_worldclim_monthly_time_series_features(
     project_cfg: dict,
     source_cfg: dict,
@@ -611,6 +875,18 @@ def build_worldclim_monthly_time_series_features(
     print("[build-time-series] Clip AOI:", clip_aoi_name)
     print_grid_context(grid, prefix="[build-time-series]")
     print("[build-time-series] Layer structure:", source_cfg["dataset"]["layer_structure"])
+
+    if _get_temporal_output_mode(source_cfg) == "raw_slices":
+        print("[build-time-series] Temporal output mode: raw_slices")
+        return _write_time_series_raw_slices(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            output_aoi_name=output_aoi_name,
+            target_resolution_m=target_resolution_m,
+            output_options=output_options,
+            grid=grid,
+        )
 
     written_paths: list[Path] = []
 
@@ -861,6 +1137,127 @@ def _aggregate_future_clipped_months(
     )
 
 
+def _write_future_raw_slices(
+    *,
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_name: str,
+    output_aoi_name: str,
+    target_resolution_m: int,
+    output_options: dict,
+    grid,
+) -> list[Path]:
+    variables_cfg = source_cfg.get("variables", {})
+    file_specs = get_file_specs(source_cfg)
+    months = _get_raw_months(source_cfg)
+    written_paths: list[Path] = []
+
+    for file_spec in file_specs:
+        variable = file_spec["variable"]
+        variable_cfg = variables_cfg.get(variable)
+        if variable_cfg is None or not variable_cfg.get("enabled", False):
+            continue
+
+        scale_factor, resampling, resampling_name = _get_variable_processing(
+            source_cfg=source_cfg,
+            variable=variable,
+            variable_cfg=variable_cfg,
+        )
+
+        clipped_dir = _get_future_clipped_dir(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            file_spec=file_spec,
+        )
+        if not clipped_dir.exists():
+            raise FileNotFoundError(
+                f"Clipped directory not found for CMIP6 variable '{variable}': "
+                f"{clipped_dir}"
+            )
+
+        for month in months:
+            clipped_path = _get_future_month_path(
+                clipped_dir=clipped_dir,
+                source_cfg=source_cfg,
+                file_spec=file_spec,
+                clip_aoi_name=clip_aoi_name,
+                month=month,
+            )
+            if not clipped_path.exists():
+                raise FileNotFoundError(
+                    f"Missing clipped CMIP6 raster for variable={variable}, "
+                    f"GCM={file_spec['gcm']}, SSP={file_spec['ssp']}, "
+                    f"period={file_spec['period']}, month={month}: {clipped_path}"
+                )
+
+            output_path = _get_future_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                file_spec=file_spec,
+                metric="month",
+                months=[month],
+            )
+
+            print("==============================")
+            print(
+                f"[build-future] Raw slice: {variable} "
+                f"{file_spec['gcm']} {file_spec['ssp']} "
+                f"{file_spec['period']} month={month}"
+            )
+            print(f"[build-future] Input: {clipped_path}")
+            print(f"[build-future] Output: {output_path}")
+
+            grid_array = read_raster_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                resampling=resampling,
+                band=1,
+                scale_factor=scale_factor,
+            )
+
+            metadata = build_feature_metadata(
+                source_cfg=source_cfg,
+                variable=variable,
+                variable_cfg=variable_cfg,
+                aggregation_cfg={
+                    "name": f"month_{month:02d}",
+                    "metric": "month",
+                    "output_mode": "raw_slices",
+                },
+                months=[month],
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=resampling_name,
+            )
+            metadata.update(
+                {
+                    "gcm": file_spec["gcm"],
+                    "ssp": file_spec["ssp"],
+                    "period": file_spec["period"],
+                    "temporal_axis": "future_month",
+                    "temporal_output_mode": "raw_slices",
+                    "month": month,
+                }
+            )
+
+            written_path = write_feature_raster(
+                output_path=output_path,
+                array=grid_array,
+                grid=grid,
+                metadata=metadata,
+                **output_options,
+                validate=True,
+            )
+            print(f"[build-future] Written: {written_path}")
+            written_paths.append(written_path)
+
+    return written_paths
+
+
 def build_worldclim_future_monthly_multiband_features(
     project_cfg: dict,
     source_cfg: dict,
@@ -891,6 +1288,18 @@ def build_worldclim_future_monthly_multiband_features(
     print("[build-future] Clip AOI:", clip_aoi_name)
     print_grid_context(grid, prefix="[build-future]")
     print("[build-future] Layer structure:", source_cfg["dataset"]["layer_structure"])
+
+    if _get_temporal_output_mode(source_cfg) == "raw_slices":
+        print("[build-future] Temporal output mode: raw_slices")
+        return _write_future_raw_slices(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_name=clip_aoi_name,
+            output_aoi_name=output_aoi_name,
+            target_resolution_m=target_resolution_m,
+            output_options=output_options,
+            grid=grid,
+        )
 
     variables_cfg = source_cfg.get("variables", {})
     file_specs = get_file_specs(source_cfg)

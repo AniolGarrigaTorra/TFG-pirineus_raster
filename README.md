@@ -172,10 +172,23 @@ Simplified run configs may also define source-level selections:
 - `sources[].select.variables`: variables or indices to enable.
 - `sources[].select.layers`: vector layers to enable.
 - `sources[].select.dimensions`: selected GCMs, SSPs, periods or other dimensions.
-- `sources[].select.aggregations.use`: named aggregation presets to enable.
-- `sources[].select.aggregations.custom`: custom month/metric aggregations.
+- `sources[].select.temporal`: temporal output mode and source-aware temporal
+  choices.
 - `sources[].overrides.resampling`: explicit resampling overrides.
 - `derived_feature_groups`: recipe-based derived features such as thermal range.
+
+Temporal selections are explicit because sources do not all behave the same:
+
+- static and vector sources use `output_mode: static`.
+- WorldClim monthly climatologies and CMIP6 can use `output_mode: aggregate`
+  with named/custom aggregations, or `output_mode: raw_slices` to write one
+  output per selected month.
+- CRU-TS year-month series can aggregate with year/month ranges, two-step
+  yearly summaries, or `raw_slices` for one output per selected year-month.
+- PDCA uses `output_mode: supplied_layers` because annual, monthly and
+  seasonal layers are supplied by the source rather than computed here.
+- HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
+  are generated during the Copernicus download/postprocess stage.
 
 Source configs define provider-specific details:
 
@@ -184,7 +197,7 @@ Source configs define provider-specific details:
 - source CRS and native resolution.
 - enabled variables or indices.
 - resampling method per variable.
-- temporal aggregations.
+- temporal capability and aggregation presets where the source supports them.
 - output format and dtype.
 
 Relative config paths are resolved robustly from the declaring config file, the

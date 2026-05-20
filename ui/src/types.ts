@@ -31,6 +31,32 @@ export interface VariableCatalog {
   dataset?: string;
   layer?: string;
   geometry_type?: string;
+  temporal?: Dict;
+  generated_from?: string;
+}
+
+export interface TemporalCapability {
+  kind: string;
+  label?: string;
+  temporal_axis?: string | null;
+  aggregation_stage?: string;
+  default_output_mode: string;
+  output_modes: string[];
+  aggregation_forms: string[];
+  supports_custom_aggregations: boolean;
+  supports_raw_slices: boolean;
+  raw_timesteps_implemented?: boolean;
+  default_months?: [number, number];
+  default_years?: [number, number];
+  available_years?: [number, number];
+  temporal_layers?: {
+    annual?: boolean;
+    annual_index?: boolean;
+    months?: string[];
+    seasons?: string[];
+  };
+  postprocess_outputs?: Dict[];
+  dimensioned_by?: string[];
 }
 
 export interface SourceCatalog {
@@ -57,6 +83,7 @@ export interface SourceCatalog {
   layers?: VariableCatalog[];
   dimensions?: Record<string, string[]>;
   aggregations?: Dict[];
+  temporal?: TemporalCapability;
   resampling?: Dict;
 }
 
@@ -71,9 +98,28 @@ export interface WorkbenchCatalog {
 
 export interface CustomAggregation {
   name: string;
+  form: string;
   metric: string;
   months: [number, number];
+  years?: [number, number];
+  within_year_metric?: string;
+  across_year_metric?: string;
+  output_metric_name?: string;
   variables: string[];
+}
+
+export interface TemporalSelection {
+  outputMode: string;
+  months: [number, number];
+  years?: [number, number];
+  layers: {
+    annual: boolean;
+    annual_index: boolean;
+    months: string[];
+    seasons: string[];
+  };
+  aggregationUse: string[];
+  customAggregations: CustomAggregation[];
 }
 
 export interface SourceSelection {
@@ -86,8 +132,7 @@ export interface SourceSelection {
   variables: string[];
   layers: string[];
   dimensions: Record<string, string[]>;
-  aggregationUse: string[];
-  customAggregations: CustomAggregation[];
+  temporal: TemporalSelection;
   resamplingByVariable: Record<string, string>;
 }
 
@@ -114,5 +159,6 @@ export interface ValidationReport {
     variables?: string[];
     indices?: string[];
     aggregations?: string[];
+    temporal_output_mode?: string;
   }>;
 }

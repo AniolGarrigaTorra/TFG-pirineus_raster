@@ -382,6 +382,45 @@ button:disabled {
   grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(110px, 0.65fr));
 }
 
+.temporal-mode-grid {
+  grid-template-columns: minmax(220px, 360px);
+  margin: 14px 0;
+}
+
+.temporal-kind {
+  min-width: 0;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #253834;
+  background: #f1f6f3;
+  border: 1px solid #d6e2dd;
+  border-radius: 6px;
+}
+
+.temporal-kind strong,
+.temporal-kind span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.temporal-kind span {
+  color: #5b6c67;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.temporal-layer-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.token-grid {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
 .custom-actions {
   justify-content: flex-start;
 }

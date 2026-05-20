@@ -5,6 +5,7 @@ from typing import Any
 
 from src.io.config import get_repo_root, load_yaml, resolve_path
 from src.pipeline.variable_expansion import expand_source_config
+from src.workbench.temporal import infer_temporal_capability
 
 
 SUPPORTED_METRICS = ["mean", "sum", "std", "min", "max"]
@@ -86,6 +87,8 @@ def _variable_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 "native_resolution_m": cfg.get("native_resolution_m"),
                 "index": cfg.get("index"),
                 "resampling": cfg.get("resampling"),
+                "temporal": cfg.get("temporal"),
+                "generated_from": cfg.get("generated_from"),
             }
             items.append({key: value for key, value in item.items() if value is not None})
 
@@ -200,6 +203,7 @@ def source_catalog_from_config(
         "layers": _vector_layer_items(expanded_cfg),
         "dimensions": _dimensions(expanded_cfg),
         "aggregations": expanded_cfg.get("temporal_aggregations", []) or [],
+        "temporal": infer_temporal_capability(expanded_cfg),
         "resampling": expanded_cfg.get("resampling", {}) or {},
         "citation": source.get("citation"),
         "page_url": source.get("page_url"),

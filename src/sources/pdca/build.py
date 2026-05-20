@@ -104,6 +104,35 @@ def _tags_lower(tags: dict[str, str]) -> dict[str, str]:
     return {str(k).lower(): v for k, v in tags.items()}
 
 
+def _pdca_layer_selected(source_cfg: dict, source_tags: dict[str, str]) -> bool:
+    temporal_cfg = source_cfg.get("temporal", {}) or {}
+    if temporal_cfg.get("output_mode") != "supplied_layers":
+        return True
+
+    selected_layers = temporal_cfg.get("layers", {}) or {}
+    if not selected_layers:
+        return True
+
+    temporal_kind = str(source_tags.get("temporal_kind", "")).lower()
+    period = str(source_tags.get("period", "")).lower()
+
+    if temporal_kind == "annual":
+        return bool(selected_layers.get("annual", True))
+
+    if temporal_kind == "annual_index":
+        return bool(selected_layers.get("annual_index", True))
+
+    if temporal_kind == "monthly":
+        months = selected_layers.get("months", []) or []
+        return period in months
+
+    if temporal_kind == "seasonal":
+        seasons = selected_layers.get("seasons", []) or []
+        return period in seasons
+
+    return True
+
+
 def build_pdca_features(
     project_cfg: dict,
     source_cfg: dict,
@@ -148,6 +177,15 @@ def build_pdca_features(
 
         variable_key = variable_key_from_layer_id(layer_id, source_tags)
         var_cfg = _variable_cfg(source_cfg, variable_key)
+        if var_cfg and not bool(var_cfg.get("enabled", True)):
+            print(
+                f"[pdca:build] Skipping disabled variable: "
+                f"{variable_key} ({layer_id})"
+            )
+            continue
+        if not _pdca_layer_selected(source_cfg, source_tags):
+            print(f"[pdca:build] Skipping unselected temporal layer: {layer_id}")
+            continue
         resampling = get_variable_resampling_method(source_cfg, variable_key)
         resampling_name = get_variable_resampling_method_name(source_cfg, variable_key)
         scale_factor = _scale_factor(var_cfg)

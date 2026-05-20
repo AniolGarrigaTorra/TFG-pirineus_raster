@@ -33,7 +33,18 @@ const catalog: WorkbenchCatalog = {
       },
       aggregations: [
         { name: "annual_mean", metric: "mean", months: [1, 12] }
-      ]
+      ],
+      temporal: {
+        kind: "future_monthly",
+        label: "Future monthly climatology",
+        default_output_mode: "aggregate",
+        output_modes: ["aggregate", "raw_slices"],
+        aggregation_forms: ["month_range_metric"],
+        supports_custom_aggregations: true,
+        supports_raw_slices: true,
+        default_months: [1, 12],
+        dimensioned_by: ["gcms", "ssps", "periods"]
+      }
     }
   ],
   supported_metrics: ["mean", "sum"],

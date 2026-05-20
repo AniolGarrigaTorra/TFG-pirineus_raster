@@ -10,6 +10,11 @@ from src.io.config import load_yaml, resolve_path
 from src.pipeline.config import validate_run_config
 from src.pipeline.variable_expansion import expand_source_config
 from src.workbench.catalog import SUPPORTED_METRICS, SUPPORTED_RESAMPLING
+from src.workbench.temporal import (
+    MONTH_NAMES,
+    SEASON_NAMES,
+    infer_temporal_capability,
+)
 
 
 class ConfigValidationError(ValueError):
@@ -152,6 +157,30 @@ def _aggregation_variable_names(cfg: dict[str, Any]) -> set[str]:
     return set(cfg.get("variables", {}) or {}) | set(cfg.get("indices", {}) or {})
 
 
+def _validate_range_pair(
+    value: Any,
+    *,
+    name: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> list[int]:
+    values = [int(item) for item in _as_list(value)]
+    if len(values) != 2:
+        raise ConfigValidationError(f"{name} must have exactly two values.")
+
+    start, end = values
+    if start > end:
+        raise ConfigValidationError(f"{name} must be ordered start <= end.")
+
+    if minimum is not None and start < minimum:
+        raise ConfigValidationError(f"{name} starts before {minimum}: {values}")
+
+    if maximum is not None and end > maximum:
+        raise ConfigValidationError(f"{name} ends after {maximum}: {values}")
+
+    return [start, end]
+
+
 def _validate_aggregation(
     aggregation: dict[str, Any],
     cfg: dict[str, Any],
@@ -176,6 +205,68 @@ def _validate_aggregation(
             "or within_year_metric + across_year_metric."
         )
 
+    form = aggregation.get("form")
+    layer_structure = cfg.get("dataset", {}).get("layer_structure")
+
+    if layer_structure in {"monthly_climatology", "future_monthly_multiband"}:
+        if form not in [None, "month_range_metric"]:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} uses form {form!r}, "
+                f"but {layer_structure} only supports month_range_metric."
+            )
+        if "months" not in aggregation:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} must define months."
+            )
+        _validate_range_pair(
+            aggregation["months"],
+            name=f"Aggregation {aggregation['name']!r} months",
+            minimum=1,
+            maximum=12,
+        )
+
+    elif layer_structure == "monthly_time_series":
+        if form not in [
+            None,
+            "year_range_month_range_metric",
+            "year_then_across_years",
+        ]:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} uses form {form!r}, "
+                "but monthly time series only supports year range forms."
+            )
+        if "years" not in aggregation:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} must define years."
+            )
+        if "months" not in aggregation:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} must define months."
+            )
+        _validate_range_pair(
+            aggregation["years"],
+            name=f"Aggregation {aggregation['name']!r} years",
+        )
+        _validate_range_pair(
+            aggregation["months"],
+            name=f"Aggregation {aggregation['name']!r} months",
+            minimum=1,
+            maximum=12,
+        )
+
+    elif layer_structure in {
+        "static_single",
+        "static_multi",
+        "static_index_set",
+        "vector_categorical",
+        "pdca_nested_zip_geotiff_collection",
+        "temporal_aggregation",
+    }:
+        raise ConfigValidationError(
+            f"Source layer_structure={layer_structure!r} does not support "
+            "build-time temporal aggregations."
+        )
+
     known_variables = _aggregation_variable_names(cfg)
     selected_variables = [str(item) for item in aggregation.get("variables", [])]
     unknown = sorted(set(selected_variables) - known_variables)
@@ -185,11 +276,10 @@ def _validate_aggregation(
         )
 
 
-def _compile_aggregations(
+def _compile_aggregation_selection(
     cfg: dict[str, Any],
-    select_cfg: dict[str, Any],
+    aggregation_select: Any,
 ) -> None:
-    aggregation_select = select_cfg.get("aggregations")
     if aggregation_select is None:
         return
 
@@ -218,6 +308,135 @@ def _compile_aggregations(
         _validate_aggregation(aggregation, cfg)
 
     cfg["temporal_aggregations"] = selected
+
+
+def _compile_aggregations(
+    cfg: dict[str, Any],
+    select_cfg: dict[str, Any],
+) -> None:
+    _compile_aggregation_selection(cfg, select_cfg.get("aggregations"))
+
+
+def _selected_temporal_layers(layers_cfg: dict[str, Any]) -> dict[str, Any]:
+    months = [str(item).lower() for item in _as_list(layers_cfg.get("months"))]
+    seasons = [str(item).lower() for item in _as_list(layers_cfg.get("seasons"))]
+
+    invalid_months = sorted(set(months) - set(MONTH_NAMES))
+    if invalid_months:
+        raise ConfigValidationError(
+            f"Unknown temporal month layers: {invalid_months}. "
+            f"Available: {MONTH_NAMES}"
+        )
+
+    invalid_seasons = sorted(set(seasons) - set(SEASON_NAMES))
+    if invalid_seasons:
+        raise ConfigValidationError(
+            f"Unknown temporal season layers: {invalid_seasons}. "
+            f"Available: {SEASON_NAMES}"
+        )
+
+    selected: dict[str, Any] = {}
+    if "annual" in layers_cfg:
+        selected["annual"] = bool(layers_cfg["annual"])
+    if "annual_index" in layers_cfg:
+        selected["annual_index"] = bool(layers_cfg["annual_index"])
+    if months:
+        selected["months"] = months
+    if seasons:
+        selected["seasons"] = seasons
+    return selected
+
+
+def _compile_temporal_selection(
+    cfg: dict[str, Any],
+    select_cfg: dict[str, Any],
+) -> None:
+    temporal_select = select_cfg.get("temporal")
+    if temporal_select is None:
+        return
+
+    if not isinstance(temporal_select, dict):
+        raise ConfigValidationError("select.temporal must be a dictionary.")
+
+    capability = infer_temporal_capability(cfg)
+    output_mode = temporal_select.get(
+        "output_mode",
+        capability.get("default_output_mode", "static"),
+    )
+    output_modes = capability.get("output_modes", [])
+    if output_mode not in output_modes:
+        raise ConfigValidationError(
+            f"Temporal output_mode {output_mode!r} is not supported for "
+            f"{capability.get('kind')}. Available: {output_modes}"
+        )
+
+    temporal_cfg = cfg.setdefault("temporal", {})
+    temporal_cfg["output_mode"] = output_mode
+
+    if output_mode == "static":
+        if temporal_select.get("aggregations"):
+            raise ConfigValidationError("Static sources do not support aggregations.")
+        return
+
+    if output_mode == "aggregate":
+        _compile_aggregation_selection(
+            cfg,
+            temporal_select.get("aggregations"),
+        )
+        if not cfg.get("temporal_aggregations"):
+            raise ConfigValidationError(
+                "Temporal output_mode='aggregate' requires at least one aggregation."
+            )
+        return
+
+    if output_mode == "raw_slices":
+        raw_cfg: dict[str, Any] = {}
+
+        if "months" in temporal_select:
+            raw_cfg["months"] = _validate_range_pair(
+                temporal_select["months"],
+                name="select.temporal.months",
+                minimum=1,
+                maximum=12,
+            )
+        else:
+            raw_cfg["months"] = capability.get("default_months", [1, 12])
+
+        if capability.get("kind") == "year_month_series":
+            if "years" in temporal_select:
+                raw_cfg["years"] = _validate_range_pair(
+                    temporal_select["years"],
+                    name="select.temporal.years",
+                )
+            else:
+                raw_cfg["years"] = (
+                    capability.get("default_years")
+                    or capability.get("available_years")
+                )
+            if not raw_cfg.get("years"):
+                raise ConfigValidationError(
+                    "Raw year-month slices require select.temporal.years."
+                )
+
+        temporal_cfg["raw_slices"] = raw_cfg
+        cfg["temporal_aggregations"] = []
+        return
+
+    if output_mode == "supplied_layers":
+        layers = temporal_select.get("layers", {}) or {}
+        if not isinstance(layers, dict):
+            raise ConfigValidationError("select.temporal.layers must be a dictionary.")
+        temporal_cfg["layers"] = _selected_temporal_layers(layers)
+        return
+
+    if output_mode == "postprocess_aggregate":
+        if temporal_select.get("raw_timesteps"):
+            raise ConfigValidationError(
+                "Raw timestep export is not implemented for this temporal product yet."
+            )
+        return
+
+    raise ConfigValidationError(f"Unsupported temporal output_mode: {output_mode}")
 
 
 def _compile_resampling_overrides(
@@ -308,7 +527,9 @@ def compile_source_config_for_run(
         _compile_variable_selection(cfg, select_cfg)
         _compile_layer_selection(cfg, select_cfg)
         _compile_dimensions(cfg, select_cfg)
-        _compile_aggregations(cfg, select_cfg)
+        _compile_temporal_selection(cfg, select_cfg)
+        if "temporal" not in select_cfg:
+            _compile_aggregations(cfg, select_cfg)
 
     _compile_resampling_overrides(cfg, source_entry)
     _compile_processing_overrides(cfg, source_entry)
@@ -445,6 +666,15 @@ def validate_researcher_run_config(
             source_summary = _source_summary(source_entry, compiled_source)
             source_summary["config"] = str(source_config_path)
             source_summaries.append(source_summary)
+            if (
+                source_summary.get("temporal_output_mode") == "raw_slices"
+                and source_summary.get("estimated_layers", 0) > 500
+            ):
+                warnings.append(
+                    f"{source_summary['id']}: raw_slices will generate "
+                    f"{source_summary['estimated_layers']} rasters. "
+                    "This is valid but can be slow and storage-heavy."
+                )
         except Exception as exc:
             source_id = source_entry.get("id") or source_entry.get("config")
             errors.append(f"{source_id}: {exc}")
@@ -475,6 +705,57 @@ def _enabled_keys(collection: dict[str, Any]) -> list[str]:
     ]
 
 
+def _range_count(value: Any, default: int = 1) -> int:
+    if not value:
+        return default
+    values = [int(item) for item in _as_list(value)]
+    if len(values) == 2:
+        return max(0, values[1] - values[0] + 1)
+    return len(values)
+
+
+def _estimate_pdca_layers(
+    source_cfg: dict[str, Any],
+    enabled_variables: list[str],
+) -> int:
+    expected = source_cfg.get("dataset", {}).get("expected_variables", []) or []
+    temporal_cfg = source_cfg.get("temporal", {}) or {}
+    selected_layers = temporal_cfg.get("layers", {}) or {}
+
+    month_filter = set(selected_layers.get("months", []) or [])
+    season_filter = set(selected_layers.get("seasons", []) or [])
+    annual_filter = selected_layers.get("annual")
+    annual_index_filter = selected_layers.get("annual_index")
+    has_filter = bool(selected_layers)
+
+    total = 0
+    enabled = set(enabled_variables)
+
+    for item in expected:
+        variable_key = item.get("variable_key")
+        if variable_key not in enabled:
+            continue
+
+        for layer in item.get("temporal_layers", []) or []:
+            if layer is None:
+                if not has_filter or annual_index_filter is not False:
+                    total += 1
+                continue
+
+            layer_name = str(layer).lower()
+            if layer_name == "annual":
+                if not has_filter or annual_filter is not False:
+                    total += 1
+            elif layer_name in MONTH_NAMES:
+                if not has_filter or layer_name in month_filter:
+                    total += 1
+            elif layer_name in SEASON_NAMES:
+                if not has_filter or layer_name in season_filter:
+                    total += 1
+
+    return total
+
+
 def _source_summary(
     source_entry: dict[str, Any],
     source_cfg: dict[str, Any],
@@ -492,6 +773,8 @@ def _source_summary(
     }
     dataset = source_cfg.get("dataset", {}) or {}
     layer_structure = dataset.get("layer_structure")
+    temporal_cfg = source_cfg.get("temporal", {}) or {}
+    output_mode = temporal_cfg.get("output_mode")
     output_dimension_keys = (
         ["gcms", "ssps", "periods"]
         if layer_structure == "future_monthly_multiband"
@@ -503,7 +786,21 @@ def _source_summary(
         layer_count *= max(1, len(values))
 
     aggregations = source_cfg.get("temporal_aggregations", []) or []
-    if aggregations:
+    if output_mode == "raw_slices":
+        raw_cfg = temporal_cfg.get("raw_slices", {}) or {}
+        month_count = _range_count(raw_cfg.get("months"), default=12)
+        year_count = (
+            _range_count(raw_cfg.get("years"), default=1)
+            if layer_structure == "monthly_time_series"
+            else 1
+        )
+        layer_count = (len(variables) + len(indices)) * month_count * year_count
+        for key in output_dimension_keys:
+            values = dimensions.get(key, [])
+            layer_count *= max(1, len(values))
+    elif layer_structure == "pdca_nested_zip_geotiff_collection":
+        layer_count = _estimate_pdca_layers(source_cfg, variables)
+    elif aggregations:
         layer_count = 0
         enabled_names = set(variables) | set(indices)
         for aggregation in aggregations:
@@ -529,6 +826,7 @@ def _source_summary(
         "variables": variables,
         "indices": indices,
         "dimensions": dimensions,
+        "temporal_output_mode": output_mode,
         "aggregations": [item.get("name") for item in aggregations],
         "vector_layers": vector_layers,
         "estimated_layers": layer_count,

@@ -6,13 +6,14 @@ import type {
   SourceCatalog,
   SourceSelection,
   ThermalRangeRow,
+  TemporalSelection,
   ValidationReport,
   WorkbenchCatalog
 } from "./types";
 import { renderYaml } from "./yaml";
 import "./App.css";
 
-const tabs = ["Project", "Sources", "Variables", "Aggregations", "Derived", "Review"];
+const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"];
 
 function sourceVariables(source: SourceCatalog) {
   return [...(source.variables ?? []), ...(source.layers ?? [])];
@@ -24,10 +25,99 @@ function sourceAggregationNames(source: SourceCatalog) {
     .filter(Boolean);
 }
 
+function defaultRange(value?: [number, number], fallback: [number, number] = [1, 12]): [number, number] {
+  return Array.isArray(value) && value.length === 2 ? [Number(value[0]), Number(value[1])] : fallback;
+}
+
+function sourceTemporalSelection(source: SourceCatalog): TemporalSelection {
+  const temporal = source.temporal;
+  const layerOptions = temporal?.temporal_layers;
+
+  return {
+    outputMode: temporal?.default_output_mode ?? "static",
+    months: defaultRange(temporal?.default_months),
+    years: temporal?.default_years ? defaultRange(temporal.default_years) : undefined,
+    layers: {
+      annual: layerOptions?.annual ?? true,
+      annual_index: layerOptions?.annual_index ?? true,
+      months: [...(layerOptions?.months ?? [])],
+      seasons: [...(layerOptions?.seasons ?? [])]
+    },
+    aggregationUse: sourceAggregationNames(source),
+    customAggregations: []
+  };
+}
+
 function toggleValue(values: string[], value: string) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
     : [...values, value];
+}
+
+function buildTemporalConfig(source: SourceCatalog | undefined, selection: SourceSelection) {
+  const capability = source?.temporal;
+  const temporal = selection.temporal;
+  const mode = temporal.outputMode;
+
+  if (!capability || mode === "static") {
+    return undefined;
+  }
+
+  if (mode === "aggregate") {
+    const custom = temporal.customAggregations.map((item) => {
+      const base: Record<string, unknown> = {
+        name: item.name,
+        form: item.form,
+        months: item.months,
+        variables: item.variables
+      };
+      if (item.years) base.years = item.years;
+      if (item.form === "year_then_across_years") {
+        base.within_year_metric = item.within_year_metric ?? "sum";
+        base.across_year_metric = item.across_year_metric ?? "mean";
+        if (item.output_metric_name) base.output_metric_name = item.output_metric_name;
+      } else {
+        base.metric = item.metric;
+      }
+      return base;
+    });
+
+    return {
+      output_mode: "aggregate",
+      aggregations: {
+        use: temporal.aggregationUse,
+        custom
+      }
+    };
+  }
+
+  if (mode === "raw_slices") {
+    return {
+      output_mode: "raw_slices",
+      months: temporal.months,
+      years: capability.kind === "year_month_series" ? temporal.years : undefined
+    };
+  }
+
+  if (mode === "supplied_layers") {
+    return {
+      output_mode: "supplied_layers",
+      layers: {
+        annual: temporal.layers.annual,
+        annual_index: temporal.layers.annual_index,
+        months: temporal.layers.months,
+        seasons: temporal.layers.seasons
+      }
+    };
+  }
+
+  if (mode === "postprocess_aggregate") {
+    return {
+      output_mode: "postprocess_aggregate"
+    };
+  }
+
+  return undefined;
 }
 
 function createSelection(source: SourceCatalog): SourceSelection {
@@ -37,7 +127,7 @@ function createSelection(source: SourceCatalog): SourceSelection {
 
   const dimensions: Record<string, string[]> = {};
   for (const [key, values] of Object.entries(source.dimensions ?? {})) {
-    dimensions[key] = values.length > 0 ? [values[0]] : [];
+    dimensions[key] = [...values];
   }
 
   return {
@@ -50,8 +140,7 @@ function createSelection(source: SourceCatalog): SourceSelection {
     variables,
     layers: [],
     dimensions,
-    aggregationUse: sourceAggregationNames(source),
-    customAggregations: [],
+    temporal: sourceTemporalSelection(source),
     resamplingByVariable: {}
   };
 }
@@ -136,18 +225,7 @@ function App() {
         Object.entries(selection.dimensions).filter(([, values]) => values.length > 0)
       );
 
-      const custom = selection.customAggregations.map((item) => ({
-        name: item.name,
-        months: item.months,
-        metric: item.metric,
-        variables: item.variables
-      }));
-      const aggregations = selection.aggregationUse.length > 0 || custom.length > 0
-        ? {
-            use: selection.aggregationUse,
-            custom
-          }
-        : undefined;
+      const temporal = buildTemporalConfig(source, selection);
       const resamplingOverrides = Object.keys(selection.resamplingByVariable).length > 0
         ? {
             by_variable: selection.resamplingByVariable
@@ -173,7 +251,7 @@ function App() {
         variables: variableNames.length > 0 ? variableNames : undefined,
         layers: layerNames.length > 0 ? layerNames : undefined,
         dimensions: Object.keys(dimensions).length > 0 ? dimensions : undefined,
-        aggregations
+        temporal
       };
       const hasSelect = Object.values(select).some((value) => value !== undefined);
 
@@ -359,8 +437,8 @@ function App() {
         <NoSelectedSourcesPanel title="Variables" />
       )}
 
-      {activeTab === "Aggregations" && catalog && activeSource && (
-        <AggregationPanel
+      {activeTab === "Temporal" && catalog && activeSource && (
+        <TemporalPanel
           catalog={catalog}
           sources={selectedCatalogSources}
           source={activeSource}
@@ -371,8 +449,8 @@ function App() {
         />
       )}
 
-      {activeTab === "Aggregations" && catalog && !activeSource && (
-        <NoSelectedSourcesPanel title="Aggregations" />
+      {activeTab === "Temporal" && catalog && !activeSource && (
+        <NoSelectedSourcesPanel title="Temporal" />
       )}
 
       {activeTab === "Derived" && catalog && (
@@ -721,7 +799,7 @@ function VariablesPanel({
   );
 }
 
-function AggregationPanel({
+function TemporalPanel({
   catalog,
   sources,
   source,
@@ -738,93 +816,117 @@ function AggregationPanel({
   setActiveSourceId: (value: string) => void;
   patchSelectionMut: (sourceId: string, edit: (selection: SourceSelection) => SourceSelection) => void;
 }) {
+  const capability = source.temporal;
+  const temporal = selection.temporal;
+  const isTimeSeries = capability?.kind === "year_month_series";
+  const defaultForm = isTimeSeries ? "year_then_across_years" : "month_range_metric";
   const [custom, setCustom] = useState<CustomAggregation>({
     name: "custom_mean",
+    form: defaultForm,
     metric: "mean",
     months: [1, 12],
+    years: temporal.years,
+    within_year_metric: "sum",
+    across_year_metric: "mean",
     variables: selection.variables.slice(0, 1)
   });
 
-  const canAddCustom = custom.name.trim().length > 0 && custom.variables.length > 0;
+  useEffect(() => {
+    setCustom({
+      name: isTimeSeries ? "custom_period" : "custom_mean",
+      form: isTimeSeries ? "year_then_across_years" : "month_range_metric",
+      metric: "mean",
+      months: temporal.months,
+      years: temporal.years,
+      within_year_metric: "sum",
+      across_year_metric: "mean",
+      output_metric_name: isTimeSeries ? "mean_period_sum" : undefined,
+      variables: selection.variables.slice(0, 1)
+    });
+  }, [source.id]);
 
-  return (
-    <main className="workspace two-col wide-left">
-      <section className="panel custom-aggregation-panel">
-        <div className="panel-head">
-          <h2>Custom Aggregation</h2>
-          <SourceChooser sources={sources} activeSourceId={activeSourceId} setActiveSourceId={setActiveSourceId} />
-        </div>
-        <div className="form-grid custom-aggregation-grid">
-          <label>
-            Name
-            <input value={custom.name} onChange={(event) => setCustom({ ...custom, name: event.target.value })} />
-          </label>
-          <label>
-            Metric
-            <select value={custom.metric} onChange={(event) => setCustom({ ...custom, metric: event.target.value })}>
-              {catalog.supported_metrics.map((metric) => (
-                <option key={metric} value={metric}>{metric}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Start month
-            <input type="number" min={1} max={12} value={custom.months[0]} onChange={(event) => setCustom({ ...custom, months: [Number(event.target.value), custom.months[1]] })} />
-          </label>
-          <label>
-            End month
-            <input type="number" min={1} max={12} value={custom.months[1]} onChange={(event) => setCustom({ ...custom, months: [custom.months[0], Number(event.target.value)] })} />
-          </label>
-        </div>
-        <h3>Variables</h3>
-        <div className="choice-list compact custom-vars">
-          {selection.variables.map((variable) => (
-            <label key={variable} className="check-row">
+  const selectedCustomVariables = custom.variables.filter((variable) => selection.variables.includes(variable));
+  const canAddCustom = custom.name.trim().length > 0 && selectedCustomVariables.length > 0;
+  const supportsAggregate = capability?.output_modes.includes("aggregate") ?? false;
+  const supportsRaw = capability?.output_modes.includes("raw_slices") ?? false;
+  const supportsSupplied = capability?.output_modes.includes("supplied_layers") ?? false;
+  const supportsPostprocess = capability?.output_modes.includes("postprocess_aggregate") ?? false;
+
+  function patchTemporal(patch: Partial<TemporalSelection>) {
+    patchSelectionMut(source.id, (current) => ({
+      ...current,
+      temporal: {
+        ...current.temporal,
+        ...patch
+      }
+    }));
+  }
+
+  function patchTemporalLayers(patch: Partial<TemporalSelection["layers"]>) {
+    patchSelectionMut(source.id, (current) => ({
+      ...current,
+      temporal: {
+        ...current.temporal,
+        layers: {
+          ...current.temporal.layers,
+          ...patch
+        }
+      }
+    }));
+  }
+
+  const aggregationPresetPanel = supportsAggregate ? (
+    <section className="panel preset-panel">
+      <h2>Presets</h2>
+      <div className="choice-list compact">
+        {(source.aggregations ?? []).map((aggregation) => {
+          const name = String(aggregation.name);
+          return (
+            <label key={name} className="check-row rich preset-row">
               <input
                 type="checkbox"
-                checked={custom.variables.includes(variable)}
-                onChange={() => setCustom({ ...custom, variables: toggleValue(custom.variables, variable) })}
+                checked={temporal.aggregationUse.includes(name)}
+                onChange={() =>
+                  patchSelectionMut(source.id, (current) => ({
+                    ...current,
+                    temporal: {
+                      ...current.temporal,
+                      aggregationUse: toggleValue(current.temporal.aggregationUse, name)
+                    }
+                  }))
+                }
               />
-              <span>{variable}</span>
-            </label>
-          ))}
-        </div>
-        <div className="button-row custom-actions">
-          <button
-            className="primary"
-            disabled={!canAddCustom}
-            onClick={() => {
-              if (!canAddCustom) return;
-              const nextCustom = {
-                ...custom,
-                name: custom.name.trim()
-              };
-              patchSelectionMut(source.id, (current) => ({
-                ...current,
-                customAggregations: [...current.customAggregations, nextCustom]
-              }));
-              setCustom({
-                ...custom,
-                name: `${custom.name.trim() || "custom_mean"}_copy`
-              });
-            }}
-          >
-            Add aggregation
-          </button>
-        </div>
-        <div className="aggregation-list">
-          {selection.customAggregations.map((item, index) => (
-            <div className="aggregation-chip" key={`${item.name}-${index}`}>
               <span>
-                <strong>{item.name}</strong>
-                <small>{item.metric} · months {item.months.join("-")} · {item.variables.join(", ")}</small>
+                <strong>{name}</strong>
+                <small>{String(aggregation.metric ?? aggregation.output_metric_name ?? "two-step")}</small>
               </span>
+              <em>
+                {Array.isArray(aggregation.years) ? `y${aggregation.years.join("-")} ` : ""}
+                {Array.isArray(aggregation.months) ? `m${aggregation.months.join("-")}` : ""}
+              </em>
+            </label>
+          );
+        })}
+      </div>
+      {(source.aggregations ?? []).length === 0 && (
+        <div className="notice info">
+          This source has no predefined build-time aggregations.
+        </div>
+      )}
+      {temporal.aggregationUse.length > 0 && (
+        <div className="aggregation-list compact-summary">
+          {temporal.aggregationUse.map((name) => (
+            <div className="aggregation-chip preset-chip" key={name}>
+              <span>{name}</span>
               <button
                 className="ghost danger"
                 onClick={() =>
                   patchSelectionMut(source.id, (current) => ({
                     ...current,
-                    customAggregations: current.customAggregations.filter((_, itemIndex) => itemIndex !== index)
+                    temporal: {
+                      ...current.temporal,
+                      aggregationUse: current.temporal.aggregationUse.filter((item) => item !== name)
+                    }
                   }))
                 }
               >
@@ -833,60 +935,289 @@ function AggregationPanel({
             </div>
           ))}
         </div>
-      </section>
+      )}
+    </section>
+  ) : null;
 
-      <section className="panel preset-panel">
-        <h2>Aggregation Presets</h2>
-        <div className="choice-list compact">
-          {(source.aggregations ?? []).map((aggregation) => {
-            const name = String(aggregation.name);
-            return (
-              <label key={name} className="check-row rich preset-row">
-                <input
-                  type="checkbox"
-                  checked={selection.aggregationUse.includes(name)}
-                  onChange={() =>
-                    patchSelectionMut(source.id, (current) => ({
-                      ...current,
-                      aggregationUse: toggleValue(current.aggregationUse, name)
-                    }))
-                  }
-                />
-                <span>
-                  <strong>{name}</strong>
-                  <small>{String(aggregation.metric ?? aggregation.output_metric_name ?? "two-step")}</small>
-                </span>
-                <em>{Array.isArray(aggregation.months) ? aggregation.months.join("-") : ""}</em>
-              </label>
-            );
-          })}
+  return (
+    <main className="workspace two-col wide-left">
+      <section className="panel custom-aggregation-panel">
+        <div className="panel-head">
+          <h2>Temporal Output</h2>
+          <SourceChooser sources={sources} activeSourceId={activeSourceId} setActiveSourceId={setActiveSourceId} />
         </div>
-        {source.aggregations?.length === 0 && (
+
+        <div className="temporal-kind">
+          <strong>{capability?.label ?? source.layer_structure ?? "Source temporal model"}</strong>
+          <span>{capability?.kind ?? "unknown"}</span>
+        </div>
+
+        <div className="form-grid temporal-mode-grid">
+          <label>
+            Output mode
+            <select value={temporal.outputMode} onChange={(event) => patchTemporal({ outputMode: event.target.value })}>
+              {(capability?.output_modes ?? ["static"]).map((mode) => (
+                <option key={mode} value={mode}>{mode}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {temporal.outputMode === "static" && (
           <div className="notice info">
-            This source does not define preset aggregations.
+            This source is spatial only for the current pipeline. Variables are written directly without temporal aggregation.
           </div>
         )}
-        {selection.aggregationUse.length > 0 && (
-          <div className="aggregation-list compact-summary">
-            {selection.aggregationUse.map((name) => (
-              <div className="aggregation-chip preset-chip" key={name}>
-                <span>{name}</span>
+
+        {temporal.outputMode === "raw_slices" && supportsRaw && (
+          <div className="form-grid custom-aggregation-grid">
+            {isTimeSeries && (
+              <>
+                <label>
+                  Start year
+                  <input type="number" value={temporal.years?.[0] ?? ""} onChange={(event) => patchTemporal({ years: [Number(event.target.value), temporal.years?.[1] ?? Number(event.target.value)] })} />
+                </label>
+                <label>
+                  End year
+                  <input type="number" value={temporal.years?.[1] ?? ""} onChange={(event) => patchTemporal({ years: [temporal.years?.[0] ?? Number(event.target.value), Number(event.target.value)] })} />
+                </label>
+              </>
+            )}
+            <label>
+              Start month
+              <input type="number" min={1} max={12} value={temporal.months[0]} onChange={(event) => patchTemporal({ months: [Number(event.target.value), temporal.months[1]] })} />
+            </label>
+            <label>
+              End month
+              <input type="number" min={1} max={12} value={temporal.months[1]} onChange={(event) => patchTemporal({ months: [temporal.months[0], Number(event.target.value)] })} />
+            </label>
+          </div>
+        )}
+
+        {temporal.outputMode === "supplied_layers" && supportsSupplied && (
+          <div className="temporal-layer-editor">
+            <div className="choice-list compact">
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={temporal.layers.annual}
+                  onChange={() => patchTemporalLayers({ annual: !temporal.layers.annual })}
+                />
+                <span>Annual layers</span>
+              </label>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={temporal.layers.annual_index}
+                  onChange={() => patchTemporalLayers({ annual_index: !temporal.layers.annual_index })}
+                />
+                <span>Annual index layers</span>
+              </label>
+            </div>
+            <h3>Months</h3>
+            <div className="choice-list compact token-grid">
+              {(capability?.temporal_layers?.months ?? []).map((month) => (
+                <label key={month} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={temporal.layers.months.includes(month)}
+                    onChange={() => patchTemporalLayers({ months: toggleValue(temporal.layers.months, month) })}
+                  />
+                  <span>{month}</span>
+                </label>
+              ))}
+            </div>
+            <h3>Seasons</h3>
+            <div className="choice-list compact token-grid">
+              {(capability?.temporal_layers?.seasons ?? []).map((season) => (
+                <label key={season} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={temporal.layers.seasons.includes(season)}
+                    onChange={() => patchTemporalLayers({ seasons: toggleValue(temporal.layers.seasons, season) })}
+                  />
+                  <span>{season}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {temporal.outputMode === "postprocess_aggregate" && supportsPostprocess && (
+          <>
+            <div className="notice info">
+              This source creates temporal products during download/postprocess. Select the generated output variables in the Variables tab.
+            </div>
+            <div className="aggregation-list">
+              {(capability?.postprocess_outputs ?? []).map((item) => (
+                <div className="aggregation-chip" key={String(item.name)}>
+                  <span>
+                    <strong>{String(item.name)}</strong>
+                    <small>
+                      {String(item.method ?? "")}
+                      {Array.isArray(item.months) ? ` · months ${item.months.join(", ")}` : ""}
+                    </small>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {temporal.outputMode === "aggregate" && supportsAggregate && (
+          <>
+            <h3>Custom aggregation</h3>
+            <div className="form-grid custom-aggregation-grid">
+              <label>
+                Name
+                <input value={custom.name} onChange={(event) => setCustom({ ...custom, name: event.target.value })} />
+              </label>
+              {isTimeSeries && (
+                <label>
+                  Form
+                  <select value={custom.form} onChange={(event) => setCustom({ ...custom, form: event.target.value })}>
+                    <option value="year_range_month_range_metric">Direct across year-months</option>
+                    <option value="year_then_across_years">Yearly then across years</option>
+                  </select>
+                </label>
+              )}
+              {isTimeSeries && (
+                <>
+                  <label>
+                    Start year
+                    <input type="number" value={custom.years?.[0] ?? ""} onChange={(event) => setCustom({ ...custom, years: [Number(event.target.value), custom.years?.[1] ?? Number(event.target.value)] })} />
+                  </label>
+                  <label>
+                    End year
+                    <input type="number" value={custom.years?.[1] ?? ""} onChange={(event) => setCustom({ ...custom, years: [custom.years?.[0] ?? Number(event.target.value), Number(event.target.value)] })} />
+                  </label>
+                </>
+              )}
+              {(!isTimeSeries || custom.form === "year_range_month_range_metric") && (
+                <label>
+                  Metric
+                  <select value={custom.metric} onChange={(event) => setCustom({ ...custom, metric: event.target.value })}>
+                    {catalog.supported_metrics.map((metric) => (
+                      <option key={metric} value={metric}>{metric}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {isTimeSeries && custom.form === "year_then_across_years" && (
+                <>
+                  <label>
+                    Within-year metric
+                    <select value={custom.within_year_metric ?? "sum"} onChange={(event) => setCustom({ ...custom, within_year_metric: event.target.value })}>
+                      {catalog.supported_metrics.map((metric) => (
+                        <option key={metric} value={metric}>{metric}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Across-years metric
+                    <select value={custom.across_year_metric ?? "mean"} onChange={(event) => setCustom({ ...custom, across_year_metric: event.target.value })}>
+                      {catalog.supported_metrics.map((metric) => (
+                        <option key={metric} value={metric}>{metric}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Output metric name
+                    <input value={custom.output_metric_name ?? ""} onChange={(event) => setCustom({ ...custom, output_metric_name: event.target.value || undefined })} />
+                  </label>
+                </>
+              )}
+              <label>
+                Start month
+                <input type="number" min={1} max={12} value={custom.months[0]} onChange={(event) => setCustom({ ...custom, months: [Number(event.target.value), custom.months[1]] })} />
+              </label>
+              <label>
+                End month
+                <input type="number" min={1} max={12} value={custom.months[1]} onChange={(event) => setCustom({ ...custom, months: [custom.months[0], Number(event.target.value)] })} />
+              </label>
+            </div>
+            <h3>Variables</h3>
+            <div className="choice-list compact custom-vars">
+              {selection.variables.map((variable) => (
+                <label key={variable} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={custom.variables.includes(variable)}
+                    onChange={() => setCustom({ ...custom, variables: toggleValue(custom.variables, variable) })}
+                  />
+                  <span>{variable}</span>
+                </label>
+              ))}
+            </div>
+            <div className="button-row custom-actions">
+              <button
+                className="primary"
+                disabled={!canAddCustom}
+                onClick={() => {
+                  if (!canAddCustom) return;
+                  const nextCustom = {
+                    ...custom,
+                    name: custom.name.trim(),
+                    variables: selectedCustomVariables
+                  };
+                  patchSelectionMut(source.id, (current) => ({
+                    ...current,
+                    temporal: {
+                      ...current.temporal,
+                      customAggregations: [...current.temporal.customAggregations, nextCustom]
+                    }
+                  }));
+                  setCustom({
+                    ...custom,
+                    name: `${custom.name.trim() || "custom_mean"}_copy`
+                  });
+                }}
+              >
+                Add aggregation
+              </button>
+            </div>
+            <div className="aggregation-list">
+              {temporal.customAggregations.map((item, index) => (
+                <div className="aggregation-chip" key={`${item.name}-${index}`}>
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>
+                      {item.form === "year_then_across_years"
+                        ? `${item.within_year_metric ?? "sum"} then ${item.across_year_metric ?? "mean"}`
+                        : item.metric}
+                      {item.years ? ` · years ${item.years.join("-")}` : ""}
+                      · months {item.months.join("-")} · {item.variables.join(", ")}
+                    </small>
+                  </span>
                 <button
                   className="ghost danger"
                   onClick={() =>
                     patchSelectionMut(source.id, (current) => ({
                       ...current,
-                      aggregationUse: current.aggregationUse.filter((item) => item !== name)
+                      temporal: {
+                        ...current.temporal,
+                        customAggregations: current.temporal.customAggregations.filter((_, itemIndex) => itemIndex !== index)
+                      }
                     }))
                   }
                 >
                   Remove
                 </button>
               </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </section>
+
+      {aggregationPresetPanel ?? (
+        <section className="panel preset-panel">
+          <h2>Temporal Notes</h2>
+          <div className="notice info">
+            This source does not use build-time aggregation presets.
+          </div>
+        </section>
+      )}
     </main>
   );
 }
@@ -905,8 +1236,8 @@ function DerivedPanel({
   const eligibleSources = selectedSources.filter((selection) => {
     const names = new Set(selection.variables);
     const aggregationNames = [
-      ...selection.aggregationUse,
-      ...selection.customAggregations.map((item) => item.name)
+      ...selection.temporal.aggregationUse,
+      ...selection.temporal.customAggregations.map((item) => item.name)
     ];
     return names.has("tmin") && names.has("tmax") && aggregationNames.length > 0;
   });
@@ -916,8 +1247,8 @@ function DerivedPanel({
   function aggregationOptions(selection?: SourceSelection) {
     if (!selection) return [];
     return [
-      ...selection.aggregationUse,
-      ...selection.customAggregations.map((item) => item.name)
+      ...selection.temporal.aggregationUse,
+      ...selection.temporal.customAggregations.map((item) => item.name)
     ];
   }
 
@@ -1055,6 +1386,9 @@ function ReviewPanel({
         )}
         {validation?.errors.map((error) => (
           <div className="notice error" key={error}>{error}</div>
+        ))}
+        {validation?.warnings.map((warning) => (
+          <div className="notice info" key={warning}>{warning}</div>
         ))}
         {validation?.sources.map((source) => (
           <div className="summary-row" key={source.id}>

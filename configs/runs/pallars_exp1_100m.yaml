@@ -52,18 +52,21 @@ sources:
     - srad
     - wind
     - vapr
-    aggregations:
-      use:
-      - annual_mean
-      custom:
-      - name: annual_std
-        months:
-        - 1
-        - 12
-        metric: std
-        variables:
-        - tmin
-        - tmax
+    temporal:
+      output_mode: aggregate
+      aggregations:
+        use:
+        - annual_mean
+        custom:
+        - name: annual_std
+          form: month_range_metric
+          months:
+          - 1
+          - 12
+          metric: std
+          variables:
+          - tmin
+          - tmax
   overrides:
     processing:
       source_resolution: 30s

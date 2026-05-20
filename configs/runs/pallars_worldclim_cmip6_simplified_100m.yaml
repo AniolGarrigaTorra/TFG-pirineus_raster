@@ -16,11 +16,13 @@ sources:
         gcms: [ACCESS-CM2]
         ssps: [ssp126]
         periods: ["2021-2040"]
-      aggregations:
-        use:
-          - annual_mean
-          - may_sep_mean
-          - annual_precip_sum
+      temporal:
+        output_mode: aggregate
+        aggregations:
+          use:
+            - annual_mean
+            - may_sep_mean
+            - annual_precip_sum
     overrides:
       resampling:
         by_variable:
@@ -41,4 +43,3 @@ outputs:
   overwrite_existing: true
   write_run_summary: true
   write_manifest: true
-
