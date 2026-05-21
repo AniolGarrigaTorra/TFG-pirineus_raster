@@ -15,3 +15,6 @@ ui/dist/
 ui/coverage/
 ui/vite.config.js
 ui/vite.config.d.ts
+*.xlsx
+*.csv
+.venv/
