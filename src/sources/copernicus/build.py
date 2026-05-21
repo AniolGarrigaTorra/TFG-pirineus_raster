@@ -263,6 +263,7 @@ def build_copernicus_features(
             resampling=resampling,
             band=1,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_name,
         )
 
         grid_array = _postprocess_array(

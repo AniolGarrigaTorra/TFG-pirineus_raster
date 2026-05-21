@@ -4,7 +4,14 @@ source:
   product: v2_1_elevation
   product_group: elevation
   version: "2.1"
+  title: "WorldClim v2.1 Elevation"
   description: "Elevation data used to produce WorldClim v2.1, derived from SRTM"
+  summary: "Global elevation layer distributed with WorldClim v2.1 and used as a topographic source for raster feature generation."
+  long_description: >-
+    This layer represents the elevation surface distributed by WorldClim for
+    the v2.1 climate products. It is a continuous topographic variable and is
+    useful both as a direct environmental predictor and as context for the
+    spatial interpolation behind climate surfaces.
   base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
   page_url: "https://www.worldclim.org/data/worldclim21.html"
   source_crs: EPSG:4326
@@ -41,6 +48,7 @@ variables:
     enabled: true
     description: "Elevation"
     unit: m
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [-500, 9000]
 

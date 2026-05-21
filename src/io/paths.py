@@ -7,6 +7,14 @@ def build_resolution_suffix(resolution_m: int) -> str:
     return f"{int(resolution_m)}m"
 
 
+def build_output_grid_suffix(project_cfg: dict, resolution_m: int) -> str:
+    suffix = build_resolution_suffix(resolution_m)
+    crs_suffix = project_cfg.get("_grid_crs_suffix")
+    if crs_suffix:
+        return f"{suffix}_{crs_suffix}"
+    return suffix
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -40,6 +48,9 @@ def get_grid_path(project_cfg: dict, aoi_cfg: dict, resolution_m: int) -> Path:
     grid_dir = get_grid_dir(project_cfg)
     aoi_name = aoi_cfg["name"]
     resolution_suffix = build_resolution_suffix(resolution_m)
+    crs_suffix = project_cfg.get("_grid_crs_suffix")
+    if crs_suffix:
+        return grid_dir / f"grid_{aoi_name}_{resolution_suffix}_{crs_suffix}.tif"
     return grid_dir / f"grid_{aoi_name}_{resolution_suffix}.tif"
 
 def get_source_raw_dir(
@@ -110,7 +121,7 @@ def get_feature_output_dir(
     data_processed/features/worldclim/v2_1_base/experimental_pallars_sobira/100m/
     """
     processed_dir = get_project_path(project_cfg, "processed_dir")
-    resolution_suffix = build_resolution_suffix(target_resolution_m)
+    resolution_suffix = build_output_grid_suffix(project_cfg, target_resolution_m)
 
     return (
         processed_dir

@@ -4,7 +4,14 @@ source:
   product: clms_corine_land_cover
   product_group: land_cover
   version: "2018"
+  title: "CORINE Land Cover"
   description: "Copernicus Land Monitoring Service CORINE Land Cover"
+  summary: "Pan-European land cover and land-use inventory with 44 thematic classes."
+  long_description: >-
+    CORINE Land Cover is a long-running European land cover inventory with a
+    standard level-3 nomenclature. It is a categorical product and is best used
+    for broad land-cover context rather than fine crop-type or within-field
+    mapping. Pirineus Raster handles it as categorical raster information.
   page_url: "https://land.copernicus.eu/en/products/corine-land-cover"
   source_crs: EPSG:3035
   source_period: "2018"
@@ -64,6 +71,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 255]
     data_type: categorical
+    value_semantics: categorical
     native_resolution_m: 100
     round_values: true
     temporal:

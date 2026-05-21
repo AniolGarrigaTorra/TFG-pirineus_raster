@@ -163,6 +163,7 @@ Run configs define the final dataset:
 - `run.aoi_config`: final AOI/grid config.
 - `run.clip_aoi_config`: optional larger clipping AOI.
 - `run.resolution_m`: final output resolution.
+- `run.crs`: optional output CRS override such as `EPSG:3035` or `EPSG:25831`.
 - `sources`: source configs and stages to execute.
 - `derived_features`: optional raster expressions from generated layers.
 - `outputs.dataset_dir`: packaged dataset output directory.
@@ -174,7 +175,7 @@ Simplified run configs may also define source-level selections:
 - `sources[].select.dimensions`: selected GCMs, SSPs, periods or other dimensions.
 - `sources[].select.temporal`: temporal output mode and source-aware temporal
   choices.
-- `sources[].overrides.resampling`: explicit resampling overrides.
+- `sources[].overrides.resampling`: explicit per-variable resampling overrides.
 - `derived_feature_groups`: recipe-based derived features such as thermal range.
 
 Temporal selections are explicit because sources do not all behave the same:
@@ -189,6 +190,16 @@ Temporal selections are explicit because sources do not all behave the same:
   seasonal layers are supplied by the source rather than computed here.
 - HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
   are generated during the Copernicus download/postprocess stage.
+
+Resampling is variable-aware. Source configs expose defaults per variable and
+the UI can override them for a run. Standard raster reprojection methods include
+`nearest`, `bilinear`, `cubic`, `average`, `mode`, `sum` and related GDAL/rasterio
+methods. `conservative_sum` is reserved for truly extensive variables whose cell
+values are totals/counts and should be redistributed by target/source pixel area.
+Precipitation in `mm` is treated as `intensive_depth`, not as an extensive cell
+total. Kriging-style methods are listed in the workbench as advanced interpolation
+families, but they are not direct raster warp methods and require a future
+geostatistical backend.
 
 Source configs define provider-specific details:
 

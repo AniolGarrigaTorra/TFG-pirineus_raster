@@ -5,9 +5,10 @@ from pathlib import Path
 
 from src.io.config import load_yaml, resolve_path
 from src.io.paths import get_source_raw_dir
-from src.sources.registry import get_source_connector
+from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg
 from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
 from src.pipeline.variable_expansion import expand_source_config
+from src.sources.registry import get_source_connector
 from src.workbench.compiler import compile_source_config_for_run
 
 
@@ -168,6 +169,7 @@ def run_source_pipeline(
 
     project_cfg = load_yaml(project_config_path)
     project_cfg["_config_path"] = str(project_config_path)
+    project_cfg = apply_run_overrides_to_project_cfg(project_cfg, run_cfg)
     source_cfg = load_yaml(source_config_path)
     source_cfg["_config_path"] = str(source_config_path)
 

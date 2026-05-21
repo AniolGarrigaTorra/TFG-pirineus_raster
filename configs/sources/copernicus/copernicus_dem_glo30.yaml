@@ -4,7 +4,14 @@ source:
   product: dem_glo30
   product_group: topography
   version: "2023_1"
+  title: "Copernicus DEM GLO-30"
   description: "Copernicus DEM GLO-30 Digital Surface Model"
+  summary: "Global 30 m digital surface model from the Copernicus DEM product family."
+  long_description: >-
+    Copernicus DEM GLO-30 provides a global elevation/surface-height reference
+    derived from the WorldDEM/TanDEM-X lineage. In Pirineus Raster it is a
+    continuous topographic source used for elevation-like environmental
+    predictors and should preserve its native vertical meaning in metadata.
   page_url: "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM"
   source_crs: EPSG:4326
   source_period: "2011-2015"
@@ -72,6 +79,7 @@ variables:
     scale_factor: 1.0
     valid_range: [-500, 9000]
     data_type: continuous
+    value_semantics: intensive
     native_resolution_m: 30
     temporal:
       type: static

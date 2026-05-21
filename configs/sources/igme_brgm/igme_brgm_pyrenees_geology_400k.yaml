@@ -4,8 +4,16 @@ source:
   product: pyrenees_geology_400k
   product_group: geology
   version: "2009"
+  title: "Instituto Geologico y Minero de Espana (IGME) / Bureau de Recherches Geologiques et Minieres (BRGM) Pyrenees Geological Maps 1:400,000"
   description: "Transboundary geological and Quaternary geological maps of the Pyrenees at 1:400,000 scale, produced by IGME and BRGM."
-  page_url: "https://info.igme.es/cartografiadigital/geologica/mapa.aspx?Id=27&parent=%27..%2Fgeologica%2Fgeologiaregionalaspx%27"
+  summary: "Joint Spanish-French geological and Quaternary mapping of the Pyrenees for categorical geology rasters."
+  long_description: >-
+    This source contains transboundary geological and Quaternary geological
+    information produced through collaboration between IGME and BRGM. The
+    original product is vector cartography at 1:400,000 scale; Pirineus Raster
+    converts selected geological attributes to categorical raster layers aligned
+    to the project grid.
+  page_url: "https://info.igme.es/cartografiadigital/geologica/mapa.aspx?Id=14&language=es&parent=%27..%2Ftematica%2Ftematicossingularesaspx%27"
   source_crs: EPSG:27572
   source_scale: "1:400000"
   citation: "IGME-BRGM, 2009. Mapa Geológico de los Pirineos a escala 1:400.000 y Mapa Geológico del Cuaternario de los Pirineos a escala 1:400.000."

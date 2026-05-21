@@ -19,6 +19,7 @@ from src.pipeline.config import (
     normalize_stages,
 )
 from src.pipeline.derived import build_derived_features
+from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg
 from src.pipeline.layers import (
     build_layer_catalog_from_manifest,
     layer_specs_to_dicts,
@@ -232,6 +233,7 @@ def build_manifest(
     run_aoi_config_path: Path | None = None,
     run_aoi_name: str | None = None,
     run_resolution_m: int | None = None,
+    run_crs: str | None = None,
 ) -> dict[str, Any]:
     """
     Build the dataset manifest.
@@ -250,6 +252,7 @@ def build_manifest(
         "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
         "run_aoi_name": run_aoi_name,
         "run_resolution_m": run_resolution_m,
+        "run_crs": run_crs,
         "n_sources": len(source_results),
         "n_rasters": len(copied_rasters),
         "sources": source_results,
@@ -315,6 +318,7 @@ def run_dataset_pipeline(
     )
     project_cfg = load_yaml(project_config_path)
     project_cfg["_config_path"] = str(project_config_path)
+    project_cfg = apply_run_overrides_to_project_cfg(project_cfg, run_cfg)
     dataset_dir = resolve_path(
         get_dataset_dir(run_cfg),
         base_path=get_project_base_dir(project_cfg),
@@ -465,6 +469,7 @@ def run_dataset_pipeline(
         "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
         "run_aoi_name": run_aoi_name,
         "run_resolution_m": run_resolution_m,
+        "run_crs": project_cfg.get("crs"),
         "started_at": started_at,
         "finished_at": finished_at,
         "copy_rasters": copy_rasters,
@@ -492,6 +497,7 @@ def run_dataset_pipeline(
             run_aoi_config_path=run_aoi_config_path,
             run_aoi_name=run_aoi_name,
             run_resolution_m=run_resolution_m,
+            run_crs=project_cfg.get("crs"),
         )
 
         write_json(

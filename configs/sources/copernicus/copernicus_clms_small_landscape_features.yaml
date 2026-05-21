@@ -4,7 +4,15 @@ source:
   product: clms_small_landscape_features
   product_group: land_cover
   version: "2021"
+  title: "Copernicus HRL Small Landscape Features"
   description: "Copernicus Land Monitoring Service High Resolution Layer Small Landscape Features / Small Woody Features"
+  summary: "Small woody and landscape feature layers such as hedgerows, shrubs and small clusters relevant for habitat connectivity."
+  long_description: >-
+    The Small Landscape Features product family focuses on small woody
+    landscape elements such as hedgerows, shrubs and small tree patches, with
+    broader non-woody mapping under development. These features are important
+    for ecological connectivity, erosion control, biodiversity and rural
+    landscape structure.
   page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-small-landscape-features"
   source_crs: EPSG:3035
   source_period: "2021"
@@ -65,6 +73,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 100]
     data_type: percentage
+    value_semantics: percentage
     native_resolution_m: 100
     temporal:
       type: static

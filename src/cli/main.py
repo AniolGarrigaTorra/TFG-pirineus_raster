@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target grid resolution in meters. Uses project default if omitted.",
     )
     make_grid_parser.add_argument(
+        "--crs",
+        default=None,
+        help="Optional output CRS override, e.g. EPSG:3035 or EPSG:25831.",
+    )
+    make_grid_parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite an existing grid.",
@@ -281,12 +286,20 @@ def main() -> None:
     elif args.command == "make-grid":
         from src.io.config import load_yaml
         from src.make_grid import create_grid, resolve_aoi_config_path
+        from src.pipeline.project_overrides import normalize_crs
 
         project_config_path = resolve_path(args.project_config, must_exist=True)
         aoi_config_path = resolve_aoi_config_path(args)
 
         project_cfg = load_yaml(project_config_path)
         project_cfg["_config_path"] = str(project_config_path)
+        if args.crs:
+            normalized_crs = normalize_crs(args.crs)
+            if normalized_crs != project_cfg.get("crs"):
+                project_cfg["_default_crs"] = project_cfg.get("crs")
+                project_cfg["_crs_overridden"] = True
+                project_cfg["_grid_crs_suffix"] = normalized_crs.lower().replace(":", "")
+            project_cfg["crs"] = normalized_crs
         aoi_cfg = load_yaml(aoi_config_path)
 
         default_resolution = int(project_cfg["grids"]["default_resolution_m"])

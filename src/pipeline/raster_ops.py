@@ -15,6 +15,10 @@ from rasterio.transform import Affine
 from rasterio.warp import reproject
 
 from src.io.paths import get_grid_path
+from src.pipeline.resampling import (
+    get_resampling_enum,
+    is_conservative_resampling,
+)
 
 
 # =============================================================================
@@ -101,40 +105,11 @@ def print_grid_context(
 # =============================================================================
 
 
-_RESAMPLING_METHODS: dict[str, Resampling] = {
-    "nearest": Resampling.nearest,
-    "bilinear": Resampling.bilinear,
-    "cubic": Resampling.cubic,
-    "cubic_spline": Resampling.cubic_spline,
-    "lanczos": Resampling.lanczos,
-    "average": Resampling.average,
-    "mode": Resampling.mode,
-    "max": Resampling.max,
-    "min": Resampling.min,
-    "med": Resampling.med,
-    "q1": Resampling.q1,
-    "q3": Resampling.q3,
-    "sum": Resampling.sum,
-}
-
-
 def get_resampling_method(method_name: str | None) -> Resampling:
     """
     Convert a string resampling method name to rasterio.enums.Resampling.
     """
-    if method_name is None:
-        method_name = "nearest"
-
-    method_name = str(method_name).lower()
-
-    if method_name not in _RESAMPLING_METHODS:
-        valid = ", ".join(sorted(_RESAMPLING_METHODS))
-        raise ValueError(
-            f"Unsupported resampling method '{method_name}'. "
-            f"Valid methods are: {valid}"
-        )
-
-    return _RESAMPLING_METHODS[method_name]
+    return get_resampling_enum(method_name)
 
 
 def get_variable_resampling_method_name(
@@ -160,11 +135,13 @@ def get_variable_resampling_method_name(
     variable_cfg = source_cfg.get("variables", {}).get(variable, {})
     index_cfg = source_cfg.get("indices", {}).get(variable, {})
 
-    if "resampling" in variable_cfg:
-        return str(variable_cfg["resampling"])
+    for key in ["resampling", "default_resampling"]:
+        if key in variable_cfg:
+            return str(variable_cfg[key])
 
-    if "resampling" in index_cfg:
-        return str(index_cfg["resampling"])
+    for key in ["resampling", "default_resampling"]:
+        if key in index_cfg:
+            return str(index_cfg[key])
 
     resampling_cfg = source_cfg.get("resampling", {}) or {}
 
@@ -205,6 +182,7 @@ def read_raster_to_grid(
     resampling: Resampling,
     band: int = 1,
     scale_factor: float = 1.0,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Read one raster band and align it to the target project grid.
@@ -226,6 +204,7 @@ def read_raster_to_grid(
     with rasterio.open(raster_path) as src:
         src_array = src.read(band).astype(np.float32)
         src_nodata = src.nodata
+        source_pixel_area_m2 = _source_pixel_area_m2(src)
 
         if src_nodata is not None:
             src_array = np.where(src_array == src_nodata, np.nan, src_array)
@@ -242,6 +221,15 @@ def read_raster_to_grid(
             resampling=resampling,
         )
 
+    if is_conservative_resampling(resampling_method_name):
+        target_pixel_area_m2 = abs(grid.transform.a * grid.transform.e)
+        if source_pixel_area_m2 is None or source_pixel_area_m2 <= 0:
+            raise ValueError(
+                "conservative_sum/extensive_sum requires a projected source raster "
+                "with metre-like units so source pixel area can be estimated."
+            )
+        dst = dst * float(target_pixel_area_m2 / source_pixel_area_m2)
+
     if scale_factor != 1.0:
         dst = dst * float(scale_factor)
 
@@ -251,12 +239,20 @@ def read_raster_to_grid(
     return dst
 
 
+def _source_pixel_area_m2(src) -> float | None:
+    crs = src.crs
+    if crs is None or not crs.is_projected:
+        return None
+    return abs(float(src.transform.a) * float(src.transform.e))
+
+
 def stack_rasters_to_grid(
     raster_paths: list[Path],
     grid: GridContext,
     resampling: Resampling,
     scale_factor: float = 1.0,
     band: int = 1,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Read several rasters and return a stack aligned to the target grid.
@@ -271,6 +267,7 @@ def stack_rasters_to_grid(
             resampling=resampling,
             band=band,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_method_name,
         )
         for path in raster_paths
     ]
@@ -581,6 +578,8 @@ def build_feature_metadata(
         "variable_description": variable_cfg.get("description"),
         "unit": variable_cfg.get("unit"),
         "valid_range": variable_cfg.get("valid_range"),
+        "data_type": variable_cfg.get("data_type"),
+        "value_semantics": variable_cfg.get("value_semantics"),
         "scale_factor": variable_cfg.get("scale_factor", 1.0),
         "native_resolution_m": native_resolution_m,
         "native_resolution_unit": _infer_resolution_unit(
@@ -597,6 +596,11 @@ def build_feature_metadata(
         "output_aoi_name": output_aoi_name,
         "target_resolution_m": target_resolution_m,
         "resampling": resampling_method_name,
+        "resampling_effective_method": (
+            "average+area_ratio"
+            if is_conservative_resampling(resampling_method_name)
+            else resampling_method_name
+        ),
     }
 
     return _clean_metadata(metadata)
@@ -627,6 +631,8 @@ def build_static_feature_metadata(
         "variable_description": layer_cfg.get("description"),
         "unit": layer_cfg.get("unit"),
         "valid_range": layer_cfg.get("valid_range"),
+        "data_type": layer_cfg.get("data_type"),
+        "value_semantics": layer_cfg.get("value_semantics"),
         "scale_factor": layer_cfg.get("scale_factor", 1.0),
         "native_resolution_m": native_resolution_m,
         "native_resolution_unit": _infer_resolution_unit(
@@ -637,6 +643,11 @@ def build_static_feature_metadata(
         "output_aoi_name": output_aoi_name,
         "target_resolution_m": target_resolution_m,
         "resampling": resampling_method_name,
+        "resampling_effective_method": (
+            "average+area_ratio"
+            if is_conservative_resampling(resampling_method_name)
+            else resampling_method_name
+        ),
     }
 
     return _clean_metadata(metadata)

@@ -4,7 +4,15 @@ source:
   product: hrsi_snow
   product_group: snow
   version: "2022"
+  title: "Copernicus HRSI Fractional Snow Cover"
   description: "Copernicus High Resolution Snow and Ice Fractional Snow Cover temporal aggregations"
+  summary: "Daily 20 m Fractional Snow Cover observations for Europe, configured for seasonal and yearly snow metrics."
+  long_description: >-
+    The Copernicus High Resolution Snow and Ice Fractional Snow Cover product
+    is derived from Sentinel-2 observations and represents snow fraction at
+    high spatial resolution. Pirineus Raster uses it as a temporal source whose
+    daily observations can be post-processed into seasonal or annual snow-cover
+    metrics.
   page_url: "https://land.copernicus.eu/en/products/snow/fractional-snow-cover"
   source_crs: EPSG:3035
   source_period: "2022"
@@ -103,6 +111,7 @@ temporal_postprocess:
     variable_name_pattern: "snow_fraction_{date}"
     unit: percent
     data_type: percentage
+    value_semantics: percentage
     native_resolution_m: 20
 
   output_variable_groups:
@@ -116,6 +125,7 @@ temporal_postprocess:
         unit: percent
         valid_range: [0, 100]
         data_type: percentage
+        value_semantics: percentage
         native_resolution_m: 20
         temporal:
           type: seasonal_aggregation
@@ -147,6 +157,7 @@ temporal_postprocess:
         unit: days
         valid_range: [0, 250]
         data_type: continuous
+        value_semantics: count
         native_resolution_m: 20
         temporal:
           type: seasonal_aggregation
@@ -172,6 +183,7 @@ temporal_postprocess:
         unit: observations
         valid_range: [0, 365]
         data_type: continuous
+        value_semantics: count
         native_resolution_m: 20
         temporal:
           type: seasonal_aggregation

@@ -2,6 +2,7 @@ run:
   name: pallars_exp1_100m
   description: Això es una provaa!
   project_config: configs/project.yaml
+  crs: EPSG:3035
   aoi_config: configs/aoi/experimental_pallars_sobira.yaml
   resolution_m: 100
   stages:

@@ -4,7 +4,14 @@ source:
   product: clms_water_wetness
   product_group: land_cover
   version: "2018"
+  title: "Copernicus HRL Water and Wetness"
   description: "Copernicus Land Monitoring Service High Resolution Layer Water and Wetness"
+  summary: "European water and wetness status layers describing permanent and temporary water or wet surfaces."
+  long_description: >-
+    The Copernicus HRL Water and Wetness product provides information about
+    water bodies and wet surfaces across Europe. These layers support
+    hydrological, habitat, land-cover and planning analyses. The output is
+    categorical and should be rasterized/resampled with categorical semantics.
   page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-water-and-wetness"
   source_crs: EPSG:3035
   source_period: "2018"
@@ -68,6 +75,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 255]
     data_type: categorical
+    value_semantics: categorical
     native_resolution_m: 10
     round_values: true
     temporal:

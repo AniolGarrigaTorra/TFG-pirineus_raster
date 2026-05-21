@@ -4,7 +4,15 @@ source:
   product: clms_imperviousness
   product_group: land_cover
   version: "2021"
+  title: "Copernicus HRL Imperviousness"
   description: "Copernicus Land Monitoring Service High Resolution Layer Imperviousness"
+  summary: "European imperviousness and built-up surface layers for sealed/artificial areas."
+  long_description: >-
+    The Copernicus HRL Imperviousness product captures sealed and built-up
+    artificial surfaces across Europe. It is relevant for urban expansion,
+    hydrology, heat-island and soil-sealing analyses. Density-like variables
+    should usually be treated as continuous proportions or percentages rather
+    than categorical classes.
   page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-imperviousness"
   source_crs: EPSG:3035
   source_period: "2021"
@@ -73,6 +81,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 100]
     data_type: percentage
+    value_semantics: percentage
     native_resolution_m: 10
     temporal:
       type: static

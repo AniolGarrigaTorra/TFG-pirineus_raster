@@ -4,7 +4,14 @@ source:
   product: clms_grasslands
   product_group: land_cover
   version: "2021"
+  title: "Copernicus HRL Grasslands"
   description: "Copernicus Land Monitoring Service High Resolution Layer Grasslands"
+  summary: "Yearly European grassland status layers available at 10 m and 100 m source resolutions."
+  long_description: >-
+    The Copernicus High Resolution Layer Grasslands product maps grassland
+    status across Europe using Sentinel-1 and Sentinel-2 inputs. The source is
+    useful for habitat, land-cover and agricultural context and offers both
+    10 m and 100 m native product resolutions where configured.
   page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-grasslands"
   source_crs: EPSG:3035
   source_period: "2021"
@@ -71,6 +78,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 255]
     data_type: categorical
+    value_semantics: categorical
     native_resolution_m: 10
     round_values: true
     temporal:

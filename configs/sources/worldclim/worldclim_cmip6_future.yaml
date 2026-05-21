@@ -4,7 +4,16 @@ source:
   product: cmip6_future
   product_group: future_climate
   version: "CMIP6"
+  title: "WorldClim CMIP6 Future Climate Projections"
   description: "WorldClim CMIP6 downscaled future climate projections"
+  summary: "Downscaled monthly CMIP6 future climate projections with selectable GCM, SSP, period, variable and native WorldClim resolution."
+  long_description: >-
+    WorldClim CMIP6 provides bias-corrected, downscaled future climate layers
+    derived with WorldClim v2.1 as the baseline climate. The source is
+    dimensioned by climate model, SSP scenario, 20-year future period and
+    variable. Monthly minimum temperature, maximum temperature and precipitation
+    should be interpreted as future monthly climatological summaries, not daily
+    weather observations.
   base_url: "https://geodata.ucdavis.edu/cmip6"
   page_url: "https://www.worldclim.org/data/cmip6/cmip6climate.html"
   source_crs: EPSG:4326
@@ -54,6 +63,7 @@ variables:
     enabled: true
     worldclim_code: tmin
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [-80, 80]
 
@@ -61,6 +71,7 @@ variables:
     enabled: true
     worldclim_code: tmax
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [-80, 80]
 
@@ -68,6 +79,7 @@ variables:
     enabled: true
     worldclim_code: prec
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
     valid_range: [0, 20000]
 

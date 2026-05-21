@@ -4,7 +4,15 @@ source:
   product: clms_forest
   product_group: land_cover
   version: "2021"
+  title: "Copernicus HRL Tree Cover and Forests"
   description: "Copernicus Land Monitoring Service High Resolution Layer Forest products: Tree Cover Density and Dominant Leaf Type"
+  summary: "Pan-European high-resolution forest layers including tree cover density and dominant leaf type."
+  long_description: >-
+    The Copernicus High Resolution Layer Tree Cover and Forests product family
+    provides harmonised forest-related raster layers for Europe. The configured
+    variables mix continuous percentage data, such as tree cover density, and
+    categorical forest attributes, such as dominant leaf type, so each variable
+    carries its own resampling semantics.
   page_url: "https://land.copernicus.eu/en/products/high-resolution-layer-forests-and-tree-cover"
   source_crs: EPSG:3035
   source_period: "2021"
@@ -91,6 +99,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 100]
     data_type: percentage
+    value_semantics: percentage
     native_resolution_m: 10
     temporal:
       type: static
@@ -103,6 +112,7 @@ variables:
     scale_factor: 1.0
     valid_range: [0, 255]
     data_type: categorical
+    value_semantics: categorical
     native_resolution_m: 10
     round_values: true
     temporal:

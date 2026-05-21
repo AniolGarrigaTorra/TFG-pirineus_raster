@@ -26,8 +26,10 @@ export interface VariableCatalog {
   scale_factor?: number;
   valid_range?: number[];
   data_type?: string;
+  value_semantics?: string;
   native_resolution_m?: number;
   index?: number;
+  resampling?: string;
   dataset?: string;
   layer?: string;
   geometry_type?: string;
@@ -61,11 +63,22 @@ export interface TemporalCapability {
 
 export interface SourceCatalog {
   id: string;
+  title?: string;
   provider: string;
+  provider_title?: string;
+  provider_url?: string;
   product: string;
   product_group?: string;
   version?: string;
   description?: string;
+  summary?: string;
+  long_description?: string;
+  official_url?: string;
+  documentation_url?: string;
+  page_url?: string;
+  doi?: string;
+  article_url?: string;
+  citation?: string;
   config_path: string;
   source_crs?: string;
   source_period?: string;
@@ -87,12 +100,24 @@ export interface SourceCatalog {
   resampling?: Dict;
 }
 
+export interface SourceGroupCatalog {
+  id: string;
+  title: string;
+  official_url?: string;
+  summary?: string;
+  long_description?: string;
+}
+
 export interface WorkbenchCatalog {
   project: ProjectCatalog;
   aois: AoiCatalog[];
+  source_groups?: SourceGroupCatalog[];
   sources: SourceCatalog[];
   supported_metrics: string[];
   supported_resampling: string[];
+  advanced_interpolation_methods?: Dict[];
+  derived_operation_groups?: Record<string, string[]>;
+  value_semantics?: string[];
   supported_stages: string[];
 }
 
@@ -142,6 +167,35 @@ export interface ThermalRangeRow {
   gcm?: string;
   ssp?: string;
   period?: string;
+}
+
+export interface DerivedInputQuery {
+  source_id?: string;
+  provider?: string;
+  product?: string;
+  variable?: string;
+  aggregation_name?: string;
+  aggregation_metric?: string;
+  months?: number[];
+  gcm?: string;
+  ssp?: string;
+  period?: string;
+}
+
+export interface DerivedFeatureConfig {
+  name: string;
+  operation: "expression" | "recipe" | "terrain" | "focal" | "distance";
+  recipe?: string;
+  method?: string;
+  expression?: string;
+  description?: string;
+  unit?: string;
+  value_semantics?: string;
+  valid_range?: number[];
+  output_dtype?: string;
+  temporal_meaning?: string;
+  parameters?: Dict;
+  inputs: Record<string, DerivedInputQuery>;
 }
 
 export interface ValidationReport {

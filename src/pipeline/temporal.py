@@ -109,6 +109,7 @@ def read_temporal_stack_to_grid(
     grid,
     resampling: Resampling,
     scale_factor: float = 1.0,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Read a list of temporal raster specs into one aligned stack.
@@ -131,6 +132,7 @@ def read_temporal_stack_to_grid(
             resampling=resampling,
             band=spec.band,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_method_name,
         )
         arrays.append(array)
 
@@ -143,6 +145,7 @@ def aggregate_temporal_specs(
     resampling: Resampling,
     scale_factor: float,
     metric: str,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Aggregate a simple list of temporal raster specs with one metric.
@@ -156,6 +159,7 @@ def aggregate_temporal_specs(
         grid=grid,
         resampling=resampling,
         scale_factor=scale_factor,
+        resampling_method_name=resampling_method_name,
     )
 
     return aggregate_stack(
@@ -173,6 +177,7 @@ def aggregate_year_then_across_years(
     scale_factor: float,
     within_year_metric: str,
     across_year_metric: str,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Aggregate monthly rasters in two steps:
@@ -206,6 +211,7 @@ def aggregate_year_then_across_years(
             resampling=resampling,
             scale_factor=scale_factor,
             metric=within_year_metric,
+            resampling_method_name=resampling_method_name,
         )
 
         yearly_arrays.append(year_array)
@@ -226,6 +232,7 @@ def aggregate_time_series(
     resampling: Resampling,
     scale_factor: float,
     aggregation_cfg: dict,
+    resampling_method_name: str | None = None,
 ) -> tuple[np.ndarray, str]:
     """
     Generic aggregation for year-month time series.
@@ -257,6 +264,7 @@ def aggregate_time_series(
             resampling=resampling,
             scale_factor=scale_factor,
             metric=metric,
+            resampling_method_name=resampling_method_name,
         )
 
         return array, metric
@@ -278,6 +286,7 @@ def aggregate_time_series(
             scale_factor=scale_factor,
             within_year_metric=within_year_metric,
             across_year_metric=across_year_metric,
+            resampling_method_name=resampling_method_name,
         )
 
         return array, metric_name
@@ -296,6 +305,7 @@ def aggregate_monthly_bands(
     resampling: Resampling,
     scale_factor: float,
     metric: str,
+    resampling_method_name: str | None = None,
 ) -> np.ndarray:
     """
     Aggregate selected monthly bands from one multiband raster.
@@ -319,4 +329,5 @@ def aggregate_monthly_bands(
         resampling=resampling,
         scale_factor=scale_factor,
         metric=metric,
+        resampling_method_name=resampling_method_name,
     )

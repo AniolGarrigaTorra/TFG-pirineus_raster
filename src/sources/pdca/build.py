@@ -213,6 +213,7 @@ def build_pdca_features(
             resampling=resampling,
             band=1,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_name,
         )
 
         metadata = _clean_metadata(

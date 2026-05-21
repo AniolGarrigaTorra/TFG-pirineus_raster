@@ -4,7 +4,15 @@ source:
   product: v2_1_climate_normals
   product_group: historical_climate
   version: "2.1"
+  title: "WorldClim v2.1 Monthly Climate Normals"
   description: "WorldClim v2.1 monthly climate normals, 1970-2000"
+  summary: "Monthly climate normals for temperature, precipitation, radiation, wind and water vapour pressure over 1970-2000."
+  long_description: >-
+    These WorldClim v2.1 layers provide long-term monthly climate normals,
+    typically used as baseline climate predictors. Variables are monthly
+    climatological summaries rather than time series of individual years. The
+    native CRS is EPSG:4326 and the configured WorldClim resolution values are
+    angular resolutions such as arc-seconds or arc-minutes.
   base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
   page_url: "https://www.worldclim.org/data/worldclim21.html"
   source_crs: EPSG:4326
@@ -37,42 +45,49 @@ variables:
   tmin:
     enabled: true
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [-50, 50]
 
   tmax:
     enabled: true
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [-40, 60]
 
   tavg:
     enabled: true
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [-50, 60]
 
   prec:
     enabled: true
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
     valid_range: [0, 20000]
 
   srad:
     enabled: true
     unit: kJ m-2 day-1
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [0, 40000]
 
   wind:
     enabled: true
     unit: m s-1
+    value_semantics: intensive
     scale_factor: 0.1
     valid_range: [0, 100]
 
   vapr:
     enabled: true
     unit: kPa
+    value_semantics: intensive
     scale_factor: 0.01
     valid_range: [0, 20]
 

@@ -4,7 +4,15 @@ source:
   product: cruts4_09_monthly
   product_group: historical_monthly_weather
   version: "CRU-TS-4.09"
+  title: "WorldClim Historical Monthly Weather (CRU-TS 4.09)"
   description: "WorldClim historical monthly weather data, 1950-2024"
+  summary: "Downscaled historical monthly weather grids from CRU-TS 4.09 using WorldClim v2.1 for bias correction."
+  long_description: >-
+    This source exposes historical monthly weather data as year-month slices.
+    WorldClim distributes the data in decade archives with monthly GeoTIFFs for
+    minimum temperature, maximum temperature and precipitation. Pirineus Raster
+    can preserve raw temporal slices or build researcher-defined temporal
+    aggregations across months and years.
   base_url: "https://geodata.ucdavis.edu/climate/worldclim/2_1/hist/cts4.09"
   page_url: "https://www.worldclim.org/data/monthlywth.html"
   source_crs: EPSG:4326
@@ -51,14 +59,17 @@ variables:
   tmin:
     enabled: true
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
   tmax:
     enabled: true
     unit: degC
+    value_semantics: intensive
     scale_factor: 0.1
   prec:
     enabled: true
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
 
 temporal_aggregations:

@@ -2,6 +2,7 @@ run:
   name: pallars_worldclim_cmip6_simplified_100m
   description: "Example researcher-facing run config using simplified source selections for WorldClim CMIP6."
   project_config: configs/project.yaml
+  crs: EPSG:3035
   aoi_config: configs/aoi/experimental_pallars_sobira.yaml
   resolution_m: 100
   stages: [build]

@@ -595,6 +595,81 @@ def _expand_thermal_range_group(
     return features
 
 
+def _derived_query_from_row(
+    row: dict[str, Any],
+    *,
+    variable: str,
+) -> dict[str, Any]:
+    query = {
+        "source_id": row["source_id"],
+        "variable": row.get(f"{variable}_variable", variable),
+    }
+    for key in ["aggregation", "aggregation_name", "gcm", "ssp", "period", "months"]:
+        if row.get(key) is not None:
+            query["aggregation_name" if key == "aggregation" else key] = row[key]
+    return query
+
+
+def _expand_simple_recipe_group(
+    group: dict[str, Any],
+) -> list[dict[str, Any]]:
+    recipe = str(group.get("recipe"))
+    rows = group.get("foreach", []) or []
+    if not isinstance(rows, list):
+        raise ConfigValidationError(f"{recipe}.foreach must be a list.")
+
+    specs = {
+        "water_balance": {
+            "inputs": ["prec", "pet"],
+            "unit": "mm",
+            "description": "Water balance computed as precipitation minus potential evapotranspiration.",
+        },
+        "aridity_index": {
+            "inputs": ["prec", "pet"],
+            "unit": "ratio",
+            "description": "Aridity index computed from precipitation and potential evapotranspiration.",
+        },
+        "snow_persistence_ratio": {
+            "inputs": ["snow_days", "valid_days"],
+            "unit": "ratio",
+            "description": "Snow persistence ratio computed as snow days divided by valid observation days.",
+        },
+        "seasonal_contrast": {
+            "inputs": ["a", "b"],
+            "unit": "source_units",
+            "description": "Contrast between two selected environmental layers.",
+        },
+    }
+    if recipe not in specs:
+        raise ConfigValidationError(f"Unsupported recipe group: {recipe}")
+
+    features: list[dict[str, Any]] = []
+    spec = specs[recipe]
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ConfigValidationError(f"Each {recipe} foreach item must be a dict.")
+        name = row.get("name") or "_".join(
+            _sanitize_token(item)
+            for item in [recipe, row["source_id"], row.get("aggregation", row.get("aggregation_name", "layer"))]
+        )
+        features.append(
+            {
+                "name": name,
+                "operation": "recipe",
+                "recipe": recipe,
+                "description": row.get("description", spec["description"]),
+                "unit": row.get("unit", spec["unit"]),
+                "output_dtype": row.get("output_dtype", "float32"),
+                "parameters": row.get("parameters", {}),
+                "inputs": {
+                    input_name: _derived_query_from_row(row, variable=input_name)
+                    for input_name in spec["inputs"]
+                },
+            }
+        )
+    return features
+
+
 def expand_derived_feature_groups(
     run_cfg: dict[str, Any],
 ) -> dict[str, Any]:
@@ -609,6 +684,13 @@ def expand_derived_feature_groups(
         recipe = group.get("recipe")
         if recipe == "thermal_range":
             derived_features.extend(_expand_thermal_range_group(group))
+        elif recipe in {
+            "water_balance",
+            "aridity_index",
+            "snow_persistence_ratio",
+            "seasonal_contrast",
+        }:
+            derived_features.extend(_expand_simple_recipe_group(group))
         else:
             raise ConfigValidationError(f"Unsupported derived feature recipe: {recipe}")
 

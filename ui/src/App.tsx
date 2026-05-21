@@ -3,9 +3,10 @@ import { fetchCatalog, renderRunConfig, validateRunConfig } from "./api";
 import type {
   AoiCatalog,
   CustomAggregation,
+  DerivedFeatureConfig,
+  DerivedInputQuery,
   SourceCatalog,
   SourceSelection,
-  ThermalRangeRow,
   TemporalSelection,
   ValidationReport,
   WorkbenchCatalog
@@ -17,6 +18,54 @@ const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"
 
 function sourceVariables(source: SourceCatalog) {
   return [...(source.variables ?? []), ...(source.layers ?? [])];
+}
+
+function humanizeId(value: string) {
+  const acronyms: Record<string, string> = {
+    cmip6: "CMIP6",
+    clms: "CLMS",
+    corine: "CORINE",
+    dem: "DEM",
+    glo30: "GLO-30",
+    hrsi: "HRSI",
+    igme: "IGME",
+    brgm: "BRGM",
+    pdca: "PDCA",
+    epsg: "EPSG"
+  };
+  return value
+    .replace(/[_-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => acronyms[word.toLowerCase()] ?? `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function sourceDisplayName(source: SourceCatalog) {
+  return source.title ?? humanizeId(source.product ?? source.id);
+}
+
+function sourceOfficialUrl(source: SourceCatalog) {
+  if (source.official_url) return source.official_url;
+  if (source.page_url) return source.page_url;
+  if (source.documentation_url) return source.documentation_url;
+  if (source.article_url) return source.article_url;
+  if (source.doi) return `https://doi.org/${source.doi}`;
+  return undefined;
+}
+
+function MetaChip({ label, value }: { label: string; value?: string | number }) {
+  if (value === undefined || value === null || value === "") return null;
+  return (
+    <span>
+      <strong>{label}</strong>
+      {value}
+    </span>
+  );
+}
+
+function providerDisplayName(source: SourceCatalog) {
+  return source.provider_title ?? humanizeId(source.provider);
 }
 
 function sourceAggregationNames(source: SourceCatalog) {
@@ -154,12 +203,13 @@ function App() {
   const [runName, setRunName] = useState("pallars_workbench_100m");
   const [description, setDescription] = useState("Workbench-generated Pirineus Raster dataset.");
   const [projectConfig, setProjectConfig] = useState("configs/project.yaml");
+  const [targetCrs, setTargetCrs] = useState("EPSG:3035");
   const [aoiPath, setAoiPath] = useState("configs/aoi/experimental_pallars_sobira.yaml");
   const [resolution, setResolution] = useState(100);
   const [stages, setStages] = useState<string[]>(["build"]);
   const [datasetDir, setDatasetDir] = useState("data_processed/datasets/pallars_workbench_100m");
   const [selections, setSelections] = useState<Record<string, SourceSelection>>({});
-  const [thermalRows, setThermalRows] = useState<ThermalRangeRow[]>([]);
+  const [derivedFeatures, setDerivedFeatures] = useState<DerivedFeatureConfig[]>([]);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [serverYaml, setServerYaml] = useState("");
   const [apiError, setApiError] = useState<string | null>(null);
@@ -170,6 +220,7 @@ function App() {
         setCatalog(data);
         setCatalogError(null);
         setProjectConfig(data.project.config_path);
+        setTargetCrs(data.project.crs ?? "EPSG:3035");
         setResolution(data.project.default_resolution_m ?? data.project.available_resolutions_m[0] ?? 100);
         if (data.aois[0]) {
           setAoiPath(data.aois[0].path);
@@ -269,19 +320,13 @@ function App() {
         name: runName,
         description,
         project_config: projectConfig,
+        crs: targetCrs,
         aoi_config: aoiPath,
         resolution_m: resolution,
         stages
       },
       sources: sourceEntries,
-      derived_feature_groups: thermalRows.length > 0
-        ? [
-            {
-              recipe: "thermal_range",
-              foreach: thermalRows
-            }
-          ]
-        : undefined,
+      derived_features: derivedFeatures.length > 0 ? derivedFeatures : undefined,
       outputs: {
         dataset_dir: datasetDir,
         copy_rasters: true,
@@ -296,11 +341,12 @@ function App() {
     datasetDir,
     description,
     projectConfig,
+    targetCrs,
     resolution,
     runName,
     selectedSources,
     stages,
-    thermalRows
+    derivedFeatures
   ]);
 
   const localYaml = useMemo(() => renderYaml(runConfig), [runConfig]);
@@ -364,7 +410,7 @@ function App() {
       <header className="topbar">
         <div>
           <h1>Pirineus Raster Workbench</h1>
-          <p>{catalog?.project.crs ?? "EPSG:3035"} · {selectedSources.length} sources · {validation?.estimated_layers ?? 0} estimated layers</p>
+          <p>{targetCrs} · {selectedSources.length} sources · {validation?.estimated_layers ?? 0} estimated layers</p>
         </div>
         <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
           {apiStatus}
@@ -400,6 +446,8 @@ function App() {
           setDescription={setDescription}
           projectConfig={projectConfig}
           setProjectConfig={setProjectConfig}
+          targetCrs={targetCrs}
+          setTargetCrs={setTargetCrs}
           aoiPath={aoiPath}
           setAoiPath={setAoiPath}
           resolution={resolution}
@@ -457,8 +505,8 @@ function App() {
         <DerivedPanel
           selectedSources={selectedSources}
           catalog={catalog}
-          thermalRows={thermalRows}
-          setThermalRows={setThermalRows}
+          derivedFeatures={derivedFeatures}
+          setDerivedFeatures={setDerivedFeatures}
         />
       )}
 
@@ -485,6 +533,8 @@ interface ProjectPanelProps {
   setDescription: (value: string) => void;
   projectConfig: string;
   setProjectConfig: (value: string) => void;
+  targetCrs: string;
+  setTargetCrs: (value: string) => void;
   aoiPath: string;
   setAoiPath: (value: string) => void;
   resolution: number;
@@ -520,6 +570,10 @@ function ProjectPanel(props: ProjectPanelProps) {
           <label>
             Project config
             <input value={props.projectConfig} onChange={(event) => props.setProjectConfig(event.target.value)} />
+          </label>
+          <label>
+            Output CRS
+            <input value={props.targetCrs} onChange={(event) => props.setTargetCrs(event.target.value)} />
           </label>
           <label>
             AOI
@@ -572,113 +626,209 @@ function SourcePanel({
   setActiveSourceId: (sourceId: string) => void;
   setActiveTab: (tab: string) => void;
 }) {
+  const [expandedInfo, setExpandedInfo] = useState<Record<string, boolean>>({});
+  const groupedSources = useMemo(() => {
+    const groupMap = new Map<string, SourceCatalog[]>();
+    for (const source of catalog.sources) {
+      const key = source.provider ?? "other";
+      groupMap.set(key, [...(groupMap.get(key) ?? []), source]);
+    }
+    const groupMeta = new Map((catalog.source_groups ?? []).map((group) => [group.id, group]));
+    const groupOrder = new Map((catalog.source_groups ?? []).map((group, index) => [group.id, index]));
+    return [...groupMap.entries()].sort(([left], [right]) => {
+      const leftOrder = groupOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = groupOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder || left.localeCompare(right);
+    }).map(([provider, sources]) => {
+      const first = sources[0];
+      const meta = groupMeta.get(provider);
+      return {
+        provider,
+        title: meta?.title ?? (first ? providerDisplayName(first) : humanizeId(provider)),
+        summary: meta?.summary,
+        longDescription: meta?.long_description,
+        officialUrl: meta?.official_url ?? first?.provider_url,
+        sources: sources.sort((a, b) => sourceDisplayName(a).localeCompare(sourceDisplayName(b)))
+      };
+    });
+  }, [catalog.source_groups, catalog.sources]);
+
   return (
     <main className="workspace">
-      <section className="source-grid">
-        {catalog.sources.map((source) => {
-          const selection = selections[source.id];
-          const sourceResolutionOptions = source.source_resolution_options?.length
-            ? source.source_resolution_options
-            : source.source_resolution
-              ? [source.source_resolution]
-              : [];
-          const sourceResolution = selection?.sourceResolution ?? source.source_resolution ?? "";
-          return (
-            <article key={source.id} className={`source-card ${selection?.selected ? "selected" : ""}`}>
-              <div className="source-head">
-                <label className="switch-row">
-                  <input
-                    type="checkbox"
-                    checked={selection?.selected ?? false}
-                    onChange={(event) => patchSelection(source.id, { selected: event.target.checked })}
-                  />
-                  <span>{source.id}</span>
-                </label>
-                <button
-                  className="ghost"
-                  onClick={() => {
-                    setActiveSourceId(source.id);
-                    if (!selection?.selected) {
-                      patchSelection(source.id, { selected: true });
-                    }
-                    setActiveTab("Variables");
-                  }}
-                >
-                  Edit
-                </button>
-              </div>
-              <div className="source-meta">
-                <span>{source.provider}</span>
-                <span>{source.product}</span>
-                <span>{source.native_resolution ?? source.source_resolution ?? "native"}</span>
-              </div>
-              <p>{source.description ?? source.layer_structure}</p>
-              {selection?.selected && (
-                <div className="source-controls">
-                  <label className="switch-row subtle">
-                    <input
-                      type="checkbox"
-                      checked={selection.stages.length === 0}
-                      onChange={(event) =>
-                        patchSelection(source.id, {
-                          stages: event.target.checked ? [] : ["build"]
-                        })
-                      }
-                    />
-                    <span>Use project stages</span>
-                  </label>
-                  {selection.stages.length > 0 && (
-                    <div className="choice-list compact">
-                      {catalog.supported_stages.map((stage) => (
-                        <label key={stage} className="check-row">
+      <section className="source-groups">
+        {groupedSources.map((group) => (
+          <details key={group.provider} className="source-group" open>
+            <summary>
+              <span>
+                <strong>{group.title}</strong>
+                <small>{group.summary ?? `${group.sources.length} configured sources`}</small>
+              </span>
+              {group.officialUrl && (
+                <a href={group.officialUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                  Official website
+                </a>
+              )}
+            </summary>
+            {group.longDescription && <p className="source-group-description">{group.longDescription}</p>}
+            <div className="source-stack">
+              {group.sources.map((source) => {
+                const selection = selections[source.id];
+                const sourceResolutionOptions = source.source_resolution_options?.length
+                  ? source.source_resolution_options
+                  : source.source_resolution
+                    ? [source.source_resolution]
+                    : [];
+                const sourceResolution = selection?.sourceResolution ?? source.source_resolution ?? "";
+                const officialUrl = sourceOfficialUrl(source);
+                const isExpanded = Boolean(expandedInfo[source.id]);
+                return (
+                  <article key={source.id} className={`source-card detailed ${selection?.selected ? "selected" : ""}`}>
+                    <div className="source-head">
+                      <label className="switch-row source-title-row">
+                        <input
+                          type="checkbox"
+                          checked={selection?.selected ?? false}
+                          onChange={(event) => patchSelection(source.id, { selected: event.target.checked })}
+                        />
+                        <span>
+                          <strong>{sourceDisplayName(source)}</strong>
+                          <small>{source.id}</small>
+                        </span>
+                      </label>
+                      <div className="source-actions">
+                        <button
+                          className="info-button"
+                          aria-expanded={isExpanded}
+                          aria-label={`More information about ${sourceDisplayName(source)}`}
+                          onClick={() =>
+                            setExpandedInfo((current) => ({
+                              ...current,
+                              [source.id]: !current[source.id]
+                            }))
+                          }
+                        >
+                          i
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => {
+                            setActiveSourceId(source.id);
+                            if (!selection?.selected) {
+                              patchSelection(source.id, { selected: true });
+                            }
+                            setActiveTab("Variables");
+                          }}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                    <div className="source-meta">
+                      <MetaChip label="Source product" value={source.product_group ?? source.product} />
+                      <MetaChip label="Source period" value={source.source_period ?? source.version ?? "current"} />
+                      <MetaChip label="Source native resolution" value={source.native_resolution ?? source.source_resolution ?? "native"} />
+                      <MetaChip label="Source CRS" value={source.source_crs} />
+                    </div>
+                    <p>{source.summary ?? source.description ?? source.layer_structure}</p>
+                    {isExpanded && (
+                      <div className="source-info-panel">
+                        <p>{source.long_description ?? source.description ?? "No extended source notes are configured yet."}</p>
+                        <dl>
+                          <div>
+                            <dt>Native structure</dt>
+                            <dd>{source.layer_structure ?? source.file_format ?? "raster/vector source"}</dd>
+                          </div>
+                          <div>
+                            <dt>Source data type</dt>
+                            <dd>{source.data_type ?? "mixed/unspecified"}</dd>
+                          </div>
+                          <div>
+                            <dt>Variables/layers</dt>
+                            <dd>{sourceVariables(source).length}</dd>
+                          </div>
+                          {source.citation && (
+                            <div>
+                              <dt>Citation</dt>
+                              <dd>{source.citation}</dd>
+                            </div>
+                          )}
+                        </dl>
+                        {officialUrl && (
+                          <a href={officialUrl} target="_blank" rel="noreferrer">
+                            Open official source page
+                          </a>
+                        )}
+                      </div>
+                    )}
+                    {selection?.selected && (
+                      <div className="source-controls">
+                        <label className="switch-row subtle">
                           <input
                             type="checkbox"
-                            checked={selection.stages.includes(stage)}
-                            onChange={() =>
+                            checked={selection.stages.length === 0}
+                            onChange={(event) =>
                               patchSelection(source.id, {
-                                stages: toggleValue(selection.stages, stage)
+                                stages: event.target.checked ? [] : ["build"]
                               })
                             }
                           />
-                          <span>{stage}</span>
+                          <span>Use project stages</span>
                         </label>
-                      ))}
-                    </div>
-                  )}
-                  {sourceResolutionOptions.length > 0 && (
-                    <label>
-                      Source resolution
-                      <select
-                        value={sourceResolution}
-                        onChange={(event) =>
-                          patchSelection(source.id, {
-                            sourceResolution: event.target.value
-                          })
-                        }
-                      >
-                        {sourceResolutionOptions.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <label className="switch-row subtle">
-                    <input
-                      type="checkbox"
-                      checked={selection.keepRawAfterClip}
-                      onChange={(event) =>
-                        patchSelection(source.id, {
-                          keepRawAfterClip: event.target.checked
-                        })
-                      }
-                    />
-                    <span>Keep raw after clip</span>
-                  </label>
-                </div>
-              )}
-            </article>
-          );
-        })}
+                        {selection.stages.length > 0 && (
+                          <div className="choice-list compact stage-grid">
+                            {catalog.supported_stages.map((stage) => (
+                              <label key={stage} className="check-row">
+                                <input
+                                  type="checkbox"
+                                  checked={selection.stages.includes(stage)}
+                                  onChange={() =>
+                                    patchSelection(source.id, {
+                                      stages: toggleValue(selection.stages, stage)
+                                    })
+                                  }
+                                />
+                                <span>{stage}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        {sourceResolutionOptions.length > 0 && (
+                          <label>
+                            Source resolution
+                            <select
+                              value={sourceResolution}
+                              onChange={(event) =>
+                                patchSelection(source.id, {
+                                  sourceResolution: event.target.value
+                                })
+                              }
+                            >
+                              {sourceResolutionOptions.map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        <label className="switch-row subtle">
+                          <input
+                            type="checkbox"
+                            checked={selection.keepRawAfterClip}
+                            onChange={(event) =>
+                              patchSelection(source.id, {
+                                keepRawAfterClip: event.target.checked
+                              })
+                            }
+                          />
+                          <span>Keep raw after clip</span>
+                        </label>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </details>
+        ))}
       </section>
     </main>
   );
@@ -711,7 +861,7 @@ function SourceChooser({
       Source
       <select value={activeSourceId} onChange={(event) => setActiveSourceId(event.target.value)}>
         {sources.map((source) => (
-          <option key={source.id} value={source.id}>{source.id}</option>
+          <option key={source.id} value={source.id}>{sourceDisplayName(source)} ({source.id})</option>
         ))}
       </select>
     </label>
@@ -736,6 +886,7 @@ function VariablesPanel({
   patchSelectionMut: (sourceId: string, edit: (selection: SourceSelection) => SourceSelection) => void;
 }) {
   const variables = sourceVariables(source);
+  const selectedVariableItems = variables.filter((variable) => selection.variables.includes(variable.name));
 
   return (
     <main className="workspace two-col wide-left">
@@ -746,29 +897,52 @@ function VariablesPanel({
         </div>
         <div className="choice-list">
           {variables.map((variable) => (
-            <label key={variable.name} className="check-row rich">
-              <input
-                type="checkbox"
-                checked={selection.variables.includes(variable.name)}
-                onChange={() =>
-                  patchSelectionMut(source.id, (current) => ({
-                    ...current,
-                    variables: toggleValue(current.variables, variable.name)
-                  }))
-                }
-              />
-              <span>
-                <strong>{variable.name}</strong>
-                <small>{variable.description ?? variable.kind}</small>
-              </span>
-              <em>{variable.unit ?? variable.geometry_type ?? ""}</em>
-            </label>
+            <div key={variable.name} className="variable-card">
+              <label className="check-row rich variable-main-row">
+                <input
+                  type="checkbox"
+                  checked={selection.variables.includes(variable.name)}
+                  onChange={() =>
+                    patchSelectionMut(source.id, (current) => ({
+                      ...current,
+                      variables: toggleValue(current.variables, variable.name)
+                    }))
+                  }
+                />
+                <span>
+                  <strong>{variable.description ?? humanizeId(variable.name)}</strong>
+                  <small>{variable.name} · {variable.kind}</small>
+                </span>
+                <em>{variable.unit ?? variable.geometry_type ?? ""}</em>
+              </label>
+              <div className="variable-detail-grid">
+                <span><strong>Semantics</strong>{variable.value_semantics ?? variable.data_type ?? "continuous"}</span>
+                <span><strong>Default resampling</strong>{variable.resampling ?? "nearest"}</span>
+                <span><strong>Native resolution</strong>{variable.native_resolution_m ? `${variable.native_resolution_m} m` : source.native_resolution ?? "source default"}</span>
+                {variable.valid_range && (
+                  <span><strong>Valid range</strong>{variable.valid_range.join(" to ")}</span>
+                )}
+                {variable.scale_factor !== undefined && variable.scale_factor !== 1 && (
+                  <span><strong>Scale factor</strong>{variable.scale_factor}</span>
+                )}
+              </div>
+              {(variable.temporal || variable.generated_from) && (
+                <details className="inline-details">
+                  <summary>Variable notes</summary>
+                  {variable.generated_from && <p>Generated from: {variable.generated_from}</p>}
+                  {variable.temporal && <pre>{JSON.stringify(variable.temporal, null, 2)}</pre>}
+                </details>
+              )}
+            </div>
           ))}
         </div>
       </section>
 
       <section className="panel">
         <h2>Dimensions</h2>
+        {Object.entries(source.dimensions ?? {}).length === 0 && (
+          <div className="notice info">This source has no selectable dimensions.</div>
+        )}
         {Object.entries(source.dimensions ?? {}).map(([key, values]) => (
           <div className="dimension-block" key={key}>
             <h3>{key}</h3>
@@ -794,6 +968,52 @@ function VariablesPanel({
             </div>
           </div>
         ))}
+
+        <div className="dimension-block">
+          <h2>Resampling</h2>
+          <div className="choice-list compact">
+            {selectedVariableItems.map((variable) => {
+              const defaultMethod = variable.resampling ?? "nearest";
+              const currentMethod = selection.resamplingByVariable[variable.name] ?? defaultMethod;
+              return (
+                <label key={variable.name}>
+                  {variable.name}
+                  <select
+                    value={currentMethod}
+                    onChange={(event) =>
+                      patchSelectionMut(source.id, (current) => {
+                        const next = { ...current.resamplingByVariable };
+                        if (event.target.value === defaultMethod) {
+                          delete next[variable.name];
+                        } else {
+                          next[variable.name] = event.target.value;
+                        }
+                        return { ...current, resamplingByVariable: next };
+                      })
+                    }
+                  >
+                    {catalog.supported_resampling.map((method) => (
+                      <option key={method} value={method}>
+                        {method}{method === defaultMethod ? " (default)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <small className="field-hint">
+                    {variable.value_semantics ?? variable.data_type ?? "continuous"}
+                  </small>
+                </label>
+              );
+            })}
+          </div>
+          {(catalog.advanced_interpolation_methods ?? []).length > 0 && (
+            <div className="advanced-methods">
+              <strong>Advanced interpolation backends</strong>
+              {(catalog.advanced_interpolation_methods ?? []).map((method) => (
+                <span key={String(method.name)}>{String(method.label ?? method.name)} · {String(method.status)}</span>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
     </main>
   );
@@ -1222,127 +1442,373 @@ function TemporalPanel({
   );
 }
 
+interface PlannedLayer {
+  id: string;
+  label: string;
+  sourceTitle: string;
+  query: DerivedInputQuery;
+  variable: string;
+  unit?: string | null;
+  valueSemantics?: string;
+}
+
+function buildPlannedLayers(
+  catalog: WorkbenchCatalog,
+  selectedSources: SourceSelection[]
+): PlannedLayer[] {
+  const layers: PlannedLayer[] = [];
+
+  for (const selection of selectedSources) {
+    const source = catalog.sources.find((item) => item.id === selection.id);
+    if (!source) continue;
+
+    const variables = sourceVariables(source).filter((item) => selection.variables.includes(item.name));
+    const aggregations = [
+      ...selection.temporal.aggregationUse,
+      ...selection.temporal.customAggregations.map((item) => item.name)
+    ];
+    const temporalAggregations = selection.temporal.outputMode === "aggregate" && aggregations.length > 0
+      ? aggregations
+      : [undefined];
+    const gcms = selection.dimensions.gcms?.length ? selection.dimensions.gcms : [undefined];
+    const ssps = selection.dimensions.ssps?.length ? selection.dimensions.ssps : [undefined];
+    const periods = selection.dimensions.periods?.length ? selection.dimensions.periods : [undefined];
+
+    for (const variable of variables) {
+      for (const aggregation of temporalAggregations) {
+        for (const gcm of gcms) {
+          for (const ssp of ssps) {
+            for (const period of periods) {
+              const query: DerivedInputQuery = {
+                source_id: source.id,
+                variable: variable.name,
+                aggregation_name: aggregation,
+                gcm,
+                ssp,
+                period
+              };
+              const labelBits = [
+                sourceDisplayName(source),
+                variable.name,
+                aggregation,
+                gcm,
+                ssp,
+                period
+              ].filter(Boolean);
+              layers.push({
+                id: JSON.stringify(query),
+                label: labelBits.join(" · "),
+                sourceTitle: sourceDisplayName(source),
+                query,
+                variable: variable.name,
+                unit: variable.unit,
+                valueSemantics: variable.value_semantics ?? variable.data_type
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return layers;
+}
+
+function sanitizeDerivedName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    || "derived_feature";
+}
+
 function DerivedPanel({
   selectedSources,
   catalog,
-  thermalRows,
-  setThermalRows
+  derivedFeatures,
+  setDerivedFeatures
 }: {
   selectedSources: SourceSelection[];
   catalog: WorkbenchCatalog;
-  thermalRows: ThermalRangeRow[];
-  setThermalRows: (rows: ThermalRangeRow[]) => void;
+  derivedFeatures: DerivedFeatureConfig[];
+  setDerivedFeatures: (rows: DerivedFeatureConfig[]) => void;
 }) {
-  const eligibleSources = selectedSources.filter((selection) => {
-    const names = new Set(selection.variables);
-    const aggregationNames = [
-      ...selection.temporal.aggregationUse,
-      ...selection.temporal.customAggregations.map((item) => item.name)
-    ];
-    return names.has("tmin") && names.has("tmax") && aggregationNames.length > 0;
-  });
-  const first = eligibleSources[0];
-  const firstCatalog = catalog.sources.find((source) => source.id === first?.id);
+  const plannedLayers = useMemo(
+    () => buildPlannedLayers(catalog, selectedSources),
+    [catalog, selectedSources]
+  );
+  const [recipe, setRecipe] = useState("thermal_range");
+  const [primaryLayerId, setPrimaryLayerId] = useState("");
+  const [secondaryLayerId, setSecondaryLayerId] = useState("");
+  const [outputName, setOutputName] = useState("");
+  const [expression, setExpression] = useState("x - y");
+  const [unit, setUnit] = useState("");
+  const [valueSemantics, setValueSemantics] = useState("intensive");
+  const [description, setDescription] = useState("");
+  const [method, setMethod] = useState("slope");
+  const [radius, setRadius] = useState(1);
+  const [threshold, setThreshold] = useState(0);
+  const [classValue, setClassValue] = useState(1);
 
-  function aggregationOptions(selection?: SourceSelection) {
-    if (!selection) return [];
-    return [
-      ...selection.temporal.aggregationUse,
-      ...selection.temporal.customAggregations.map((item) => item.name)
-    ];
+  const layerById = useMemo(
+    () => new Map(plannedLayers.map((layer) => [layer.id, layer])),
+    [plannedLayers]
+  );
+  const firstLayer = plannedLayers[0];
+  const primaryLayer = layerById.get(primaryLayerId) ?? firstLayer;
+  const secondaryLayer = layerById.get(secondaryLayerId) ?? plannedLayers[1] ?? firstLayer;
+
+  function findLayer(variable: string, sameAs?: PlannedLayer) {
+    return plannedLayers.find((layer) =>
+      layer.variable === variable &&
+      (!sameAs ||
+        (
+          layer.query.source_id === sameAs.query.source_id &&
+          layer.query.aggregation_name === sameAs.query.aggregation_name &&
+          layer.query.gcm === sameAs.query.gcm &&
+          layer.query.ssp === sameAs.query.ssp &&
+          layer.query.period === sameAs.query.period
+        ))
+    );
   }
 
-  function addThermalRange() {
-    if (!first || !firstCatalog) return;
-    const aggregations = aggregationOptions(first);
-    setThermalRows([
-      ...thermalRows,
-      {
-        source_id: first.id,
-        aggregation: aggregations[0] ?? sourceAggregationNames(firstCatalog)[0] ?? "annual_mean",
-        gcm: first.dimensions.gcms?.[0],
-        ssp: first.dimensions.ssps?.[0],
-        period: first.dimensions.periods?.[0]
+  function addFeature(feature: DerivedFeatureConfig) {
+    setDerivedFeatures([...derivedFeatures, feature]);
+    setOutputName("");
+    setDescription("");
+  }
+
+  function addGuidedRecipe() {
+    if (!primaryLayer) return;
+
+    let inputs: Record<string, DerivedInputQuery> = {};
+    let parameters: Record<string, unknown> = {};
+    let defaultUnit = unit || primaryLayer.unit || "unitless";
+    let defaultExpressionName = recipe;
+
+    if (recipe === "thermal_range") {
+      const tmax = findLayer("tmax", primaryLayer) ?? findLayer("tmax");
+      const tmin = findLayer("tmin", tmax ?? primaryLayer) ?? findLayer("tmin");
+      if (!tmax || !tmin) return;
+      inputs = { tmax: tmax.query, tmin: tmin.query };
+      defaultUnit = unit || "degC";
+    } else if (recipe === "water_balance" || recipe === "aridity_index") {
+      const prec = findLayer("prec", primaryLayer) ?? findLayer("prec");
+      const pet = findLayer("pet", prec ?? primaryLayer) ?? findLayer("pet");
+      if (!prec || !pet) return;
+      inputs = { prec: prec.query, pet: pet.query };
+      defaultUnit = recipe === "aridity_index" ? "ratio" : (unit || "mm");
+      parameters = recipe === "aridity_index" ? { convention: "prec_over_pet" } : {};
+    } else if (recipe === "snow_persistence_ratio") {
+      const snow = findLayer("snow_days", primaryLayer) ?? primaryLayer;
+      const valid = findLayer("valid_days", snow) ?? secondaryLayer;
+      if (!snow || !valid) return;
+      inputs = { snow_days: snow.query, valid_days: valid.query };
+      defaultUnit = "ratio";
+    } else if (recipe === "seasonal_contrast") {
+      if (!secondaryLayer) return;
+      inputs = { a: primaryLayer.query, b: secondaryLayer.query };
+      parameters = { metric: "difference" };
+      defaultUnit = unit || primaryLayer.unit || "source_units";
+    } else if (recipe === "binary_threshold_mask") {
+      inputs = { x: primaryLayer.query };
+      parameters = { operator: ">=", threshold };
+      defaultUnit = "binary";
+      defaultExpressionName = `${primaryLayer.variable}_threshold_mask`;
+    } else if (recipe === "class_mask") {
+      inputs = { x: primaryLayer.query };
+      parameters = { class_value: classValue };
+      defaultUnit = "binary";
+      defaultExpressionName = `${primaryLayer.variable}_class_${classValue}_mask`;
+    }
+
+    addFeature({
+      name: sanitizeDerivedName(outputName || defaultExpressionName),
+      operation: "recipe",
+      recipe,
+      description: description || humanizeId(outputName || defaultExpressionName),
+      unit: defaultUnit,
+      value_semantics: recipe.includes("mask") ? "categorical" : valueSemantics,
+      output_dtype: recipe.includes("mask") ? "uint8" : "float32",
+      parameters,
+      inputs
+    });
+  }
+
+  function addExpression() {
+    if (!primaryLayer) return;
+    const inputs: Record<string, DerivedInputQuery> = { x: primaryLayer.query };
+    if (secondaryLayer) inputs.y = secondaryLayer.query;
+    addFeature({
+      name: sanitizeDerivedName(outputName || "custom_expression"),
+      operation: "expression",
+      expression,
+      description: description || "Custom derived raster expression.",
+      unit: unit || primaryLayer.unit || "unitless",
+      value_semantics: valueSemantics,
+      output_dtype: "float32",
+      inputs
+    });
+  }
+
+  function addSpatialOperation(operation: "terrain" | "focal" | "distance") {
+    if (!primaryLayer) return;
+    const spatialMethod = operation === "terrain" ? method : operation === "focal" ? method : "distance_to_mask";
+    addFeature({
+      name: sanitizeDerivedName(outputName || `${primaryLayer.variable}_${spatialMethod}`),
+      operation,
+      method: spatialMethod,
+      description: description || `${humanizeId(spatialMethod)} derived from ${primaryLayer.label}.`,
+      unit: operation === "distance" ? "m" : unit || primaryLayer.unit || "unitless",
+      value_semantics: operation === "distance" ? "intensive" : valueSemantics,
+      output_dtype: "float32",
+      parameters: {
+        radius: operation === "focal" || ["ruggedness", "tpi", "roughness"].includes(spatialMethod) ? radius : undefined,
+        class_value: operation === "distance" ? classValue : undefined
+      },
+      inputs: {
+        [operation === "terrain" ? "dem" : operation === "distance" ? "mask" : "x"]: primaryLayer.query
       }
-    ]);
+    });
   }
 
   return (
-    <main className="workspace">
+    <main className="workspace two-col wide-left">
       <section className="panel">
         <div className="panel-head">
           <h2>Derived Features</h2>
-          <button className="primary" onClick={addThermalRange} disabled={!first}>Add thermal range</button>
+          <span className="field-hint">{plannedLayers.length} planned input layers</span>
         </div>
         {selectedSources.length === 0 && (
-          <div className="notice info">
-            Select at least one source before adding derived features.
-          </div>
+          <div className="notice info">Select at least one source before adding derived features.</div>
         )}
-        {selectedSources.length > 0 && eligibleSources.length === 0 && (
-          <div className="notice info">
-            Thermal range needs a selected source with tmin, tmax and at least one aggregation.
-          </div>
+        {selectedSources.length > 0 && plannedLayers.length === 0 && (
+          <div className="notice info">Select variables before adding derived features.</div>
         )}
-        <div className="table">
-          <div className="table-row table-head">
-            <span>Source</span>
-            <span>Aggregation</span>
-            <span>GCM</span>
-            <span>SSP</span>
-            <span>Period</span>
-            <span></span>
+
+        <div className="derived-builder">
+          <h3>Guided recipes</h3>
+          <div className="form-grid">
+            <label>
+              Recipe
+              <select value={recipe} onChange={(event) => setRecipe(event.target.value)}>
+                <option value="thermal_range">Thermal range</option>
+                <option value="water_balance">Water balance</option>
+                <option value="aridity_index">Aridity index</option>
+                <option value="seasonal_contrast">Seasonal contrast</option>
+                <option value="snow_persistence_ratio">Snow persistence ratio</option>
+                <option value="binary_threshold_mask">Binary threshold mask</option>
+                <option value="class_mask">Class mask</option>
+              </select>
+            </label>
+            <label>
+              Main input
+              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Secondary input
+              <select value={secondaryLayer?.id ?? ""} onChange={(event) => setSecondaryLayerId(event.target.value)}>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Output name
+              <input value={outputName} onChange={(event) => setOutputName(event.target.value)} placeholder="auto if blank" />
+            </label>
+            <label>
+              Threshold
+              <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+            </label>
+            <label>
+              Class value
+              <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
+            </label>
           </div>
-          {thermalRows.map((row, index) => {
-            const sourceSelection = eligibleSources.find((item) => item.id === row.source_id);
-            return (
-              <div className="table-row" key={`${row.source_id}-${index}`}>
-                <select value={row.source_id} onChange={(event) => {
-                  const source_id = event.target.value;
-                  const nextSource = eligibleSources.find((item) => item.id === source_id);
-                  const next = [...thermalRows];
-                  next[index] = {
-                    ...row,
-                    source_id,
-                    aggregation: aggregationOptions(nextSource)[0] ?? row.aggregation,
-                    gcm: nextSource?.dimensions.gcms?.[0],
-                    ssp: nextSource?.dimensions.ssps?.[0],
-                    period: nextSource?.dimensions.periods?.[0]
-                  };
-                  setThermalRows(next);
-                }}>
-                  {eligibleSources.map((item) => (
-                    <option key={item.id} value={item.id}>{item.id}</option>
-                  ))}
-                </select>
-                <select value={row.aggregation} onChange={(event) => {
-                  const next = [...thermalRows];
-                  next[index] = { ...row, aggregation: event.target.value };
-                  setThermalRows(next);
-                }}>
-                  {aggregationOptions(sourceSelection).map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-                <input value={row.gcm ?? ""} onChange={(event) => {
-                  const next = [...thermalRows];
-                  next[index] = { ...row, gcm: event.target.value || undefined };
-                  setThermalRows(next);
-                }} />
-                <input value={row.ssp ?? ""} onChange={(event) => {
-                  const next = [...thermalRows];
-                  next[index] = { ...row, ssp: event.target.value || undefined };
-                  setThermalRows(next);
-                }} />
-                <input value={row.period ?? ""} onChange={(event) => {
-                  const next = [...thermalRows];
-                  next[index] = { ...row, period: event.target.value || undefined };
-                  setThermalRows(next);
-                }} />
-                <button className="ghost danger" onClick={() => setThermalRows(thermalRows.filter((_, rowIndex) => rowIndex !== index))}>Remove</button>
-              </div>
-            );
-          })}
+          <button className="primary" onClick={addGuidedRecipe} disabled={!primaryLayer}>Add guided feature</button>
+        </div>
+
+        <div className="derived-builder">
+          <h3>Advanced expression</h3>
+          <div className="form-grid">
+            <label className="span-2">
+              Expression
+              <input value={expression} onChange={(event) => setExpression(event.target.value)} />
+              <small className="field-hint">Use aliases x and y, plus safe functions such as where, sqrt, log, minimum and maximum.</small>
+            </label>
+            <label>
+              Unit
+              <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
+            </label>
+            <label>
+              Value semantics
+              <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
+                {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+            <label className="span-2">
+              Description
+              <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+            </label>
+          </div>
+          <button className="primary" onClick={addExpression} disabled={!primaryLayer}>Add expression feature</button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Spatial operations</h2>
+        <div className="form-grid single">
+          <label>
+            Spatial method
+            <select value={method} onChange={(event) => setMethod(event.target.value)}>
+              <option value="slope">Slope</option>
+              <option value="aspect">Aspect</option>
+              <option value="ruggedness">Ruggedness</option>
+              <option value="tpi">TPI</option>
+              <option value="roughness">Roughness</option>
+              <option value="mean">Focal mean</option>
+              <option value="std">Focal std</option>
+              <option value="min">Focal min</option>
+              <option value="max">Focal max</option>
+              <option value="sum">Focal sum</option>
+              <option value="majority">Focal majority</option>
+              <option value="diversity">Focal diversity</option>
+            </select>
+          </label>
+          <label>
+            Radius in cells
+            <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
+          </label>
+          <div className="button-row">
+            <button onClick={() => addSpatialOperation("terrain")} disabled={!primaryLayer}>Add terrain</button>
+            <button onClick={() => addSpatialOperation("focal")} disabled={!primaryLayer}>Add focal</button>
+            <button onClick={() => addSpatialOperation("distance")} disabled={!primaryLayer}>Add distance-to</button>
+          </div>
+        </div>
+
+        <div className="advanced-methods">
+          <strong>Geostatistical interpolation</strong>
+          <span>IDW, kriging and splines are intentionally kept outside derived features. They create rasters from points/covariates and belong in a future interpolation module.</span>
+        </div>
+
+        <div className="aggregation-list">
+          {derivedFeatures.map((feature, index) => (
+            <div className="aggregation-chip" key={`${feature.name}-${index}`}>
+              <span>
+                <strong>{feature.name}</strong>
+                <small>{feature.operation}{feature.recipe ? ` · ${feature.recipe}` : ""}{feature.method ? ` · ${feature.method}` : ""}</small>
+              </span>
+              <button className="ghost danger" onClick={() => setDerivedFeatures(derivedFeatures.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+            </div>
+          ))}
         </div>
       </section>
     </main>

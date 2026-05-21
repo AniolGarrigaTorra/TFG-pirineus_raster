@@ -305,6 +305,7 @@ def build_worldclim_static_features(
             resampling=resampling,
             band=1,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_name,
         )
 
         metadata = build_static_feature_metadata(
@@ -404,6 +405,7 @@ def _read_monthly_stack_to_grid(
     months: list[int],
     grid,
     resampling,
+    resampling_name: str,
     scale_factor: float,
 ) -> np.ndarray:
     monthly_arrays: list[np.ndarray] = []
@@ -429,6 +431,7 @@ def _read_monthly_stack_to_grid(
             resampling=resampling,
             band=1,
             scale_factor=scale_factor,
+            resampling_method_name=resampling_name,
         )
 
         monthly_arrays.append(monthly_grid)
@@ -507,6 +510,7 @@ def _write_monthly_raw_slices(
                 resampling=resampling,
                 band=1,
                 scale_factor=scale_factor,
+                resampling_method_name=resampling_name,
             )
 
             metadata = build_feature_metadata(
@@ -637,6 +641,7 @@ def build_worldclim_monthly_features(
                 months=months,
                 grid=grid,
                 resampling=resampling,
+                resampling_name=resampling_name,
                 scale_factor=scale_factor,
             )
 
@@ -807,6 +812,7 @@ def _write_time_series_raw_slices(
                     resampling=resampling,
                     band=1,
                     scale_factor=scale_factor,
+                    resampling_method_name=resampling_name,
                 )
 
                 metadata = build_feature_metadata(
@@ -955,6 +961,7 @@ def build_worldclim_monthly_time_series_features(
                 resampling=resampling,
                 scale_factor=scale_factor,
                 aggregation_cfg=aggregation_cfg,
+                resampling_method_name=resampling_name,
             )
 
             output_path = _get_time_series_output_path(
@@ -1110,6 +1117,7 @@ def _aggregate_future_clipped_months(
     months: list[int],
     grid,
     resampling,
+    resampling_name: str,
     scale_factor: float,
     metric: str,
 ) -> np.ndarray:
@@ -1134,6 +1142,7 @@ def _aggregate_future_clipped_months(
         resampling=resampling,
         scale_factor=scale_factor,
         metric=metric,
+        resampling_method_name=resampling_name,
     )
 
 
@@ -1216,6 +1225,7 @@ def _write_future_raw_slices(
                 resampling=resampling,
                 band=1,
                 scale_factor=scale_factor,
+                resampling_method_name=resampling_name,
             )
 
             metadata = build_feature_metadata(
@@ -1363,6 +1373,7 @@ def build_worldclim_future_monthly_multiband_features(
                 months=months,
                 grid=grid,
                 resampling=resampling,
+                resampling_name=resampling_name,
                 scale_factor=scale_factor,
                 metric=metric,
             )

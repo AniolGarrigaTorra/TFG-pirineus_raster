@@ -4,29 +4,112 @@ from pathlib import Path
 from typing import Any
 
 from src.io.config import get_repo_root, load_yaml, resolve_path
+from src.pipeline.raster_ops import get_variable_resampling_method_name
+from src.pipeline.resampling import (
+    ADVANCED_INTERPOLATION_METHODS,
+    VALUE_SEMANTICS,
+    executable_resampling_names,
+)
+from src.pipeline.derived import DERIVED_OPERATION_GROUPS
 from src.pipeline.variable_expansion import expand_source_config
 from src.workbench.temporal import infer_temporal_capability
 
 
 SUPPORTED_METRICS = ["mean", "sum", "std", "min", "max"]
-SUPPORTED_RESAMPLING = [
-    "nearest",
-    "bilinear",
-    "cubic",
-    "cubic_spline",
-    "lanczos",
-    "average",
-    "mode",
-    "max",
-    "min",
-    "med",
-    "q1",
-    "q3",
-    "sum",
-    "rms",
-]
+SUPPORTED_RESAMPLING = executable_resampling_names()
 SUPPORTED_STAGES = ["download", "clip", "build", "all"]
 WORLDCLIM_SOURCE_RESOLUTIONS = ["30s", "2.5m", "5m", "10m"]
+
+VARIABLE_DESCRIPTION_FALLBACKS: dict[str, str] = {
+    "tmin": "Monthly average minimum air temperature",
+    "tmax": "Monthly average maximum air temperature",
+    "tavg": "Monthly average air temperature",
+    "prec": "Monthly total precipitation depth",
+    "srad": "Monthly solar radiation",
+    "wind": "Monthly wind speed",
+    "vapr": "Monthly water vapour pressure",
+    "elev": "Elevation / surface height",
+    "pet": "Potential evapotranspiration",
+    "water_availability": "Water availability from precipitation and evapotranspiration",
+    "gdd": "Growing degree-days",
+    "rsds": "Potential solar radiation",
+}
+
+SOURCE_GROUPS: dict[str, dict[str, str]] = {
+    "worldclim": {
+        "id": "worldclim",
+        "title": "WorldClim",
+        "official_url": "https://www.worldclim.org/",
+        "summary": (
+            "Global gridded climate and weather data used in mapping, "
+            "ecological modelling, species distribution modelling and climate "
+            "impact studies."
+        ),
+        "long_description": (
+            "WorldClim provides high spatial resolution global climate and "
+            "weather surfaces for historical, near-current and future climate "
+            "conditions. In Pirineus Raster it is treated as a climate source "
+            "whose native grid is geographic EPSG:4326 and whose variables need "
+            "careful clipping, reprojection and metadata preservation because "
+            "arc-second and arc-minute resolutions are not metre resolutions."
+        ),
+    },
+    "copernicus": {
+        "id": "copernicus",
+        "title": "Copernicus Land Monitoring Service",
+        "official_url": "https://land.copernicus.eu/",
+        "summary": (
+            "European Earth observation products describing land cover, land "
+            "use, vegetation, water, snow, elevation references and related "
+            "terrestrial variables."
+        ),
+        "long_description": (
+            "The Copernicus Land Monitoring Service provides harmonised "
+            "geospatial information for Europe and global land monitoring. The "
+            "sources integrated here include pan-European high-resolution layers "
+            "such as forest, grassland, imperviousness, water and wetness, CORINE "
+            "land cover, HRSI snow products and the Copernicus DEM family."
+        ),
+    },
+    "pdca": {
+        "id": "pdca",
+        "title": "Pyrenean Digital Climate Atlas (PDCA)",
+        "official_url": "https://doi.org/10.5281/zenodo.1186639",
+        "summary": (
+            "Topoclimate rasters for the Pyrenees built from meteorological "
+            "stations, terrain predictors and geostatistical modelling."
+        ),
+        "long_description": (
+            "The Pyrenean Digital Climate Atlas is especially valuable for this "
+            "project because it is already focused on the Pyrenees. It provides "
+            "long-term temperature, precipitation, evapotranspiration, water "
+            "availability, growing degree-day and potential solar radiation "
+            "surfaces for monthly, seasonal and annual climatological summaries."
+        ),
+    },
+    "igme_brgm": {
+        "id": "igme_brgm",
+        "title": (
+            "Instituto Geologico y Minero de Espana (IGME) / Bureau de "
+            "Recherches Geologiques et Minieres (BRGM)"
+        ),
+        "official_url": (
+            "https://info.igme.es/cartografiadigital/geologica/"
+            "mapa.aspx?Id=14&language=es&parent=%27..%2Ftematica%2Ftematicossingularesaspx%27"
+        ),
+        "summary": (
+            "Transboundary geological and Quaternary geological mapping of the "
+            "Pyrenees at 1:400,000 scale."
+        ),
+        "long_description": (
+            "This source contributes categorical geological information from the "
+            "joint IGME and BRGM Pyrenees mapping work. Because the input is "
+            "vector geology, Pirineus Raster rasterizes selected attributes onto "
+            "the project grid with categorical semantics and nearest-neighbour "
+            "handling."
+        ),
+    },
+}
 
 
 def _rel_path(path: Path) -> str:
@@ -79,14 +162,16 @@ def _variable_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": name,
                 "kind": kind,
                 "enabled_default": bool(cfg.get("enabled", False)),
-                "description": cfg.get("description"),
+                "description": cfg.get("description")
+                or VARIABLE_DESCRIPTION_FALLBACKS.get(name),
                 "unit": cfg.get("unit"),
                 "scale_factor": cfg.get("scale_factor", 1.0),
                 "valid_range": cfg.get("valid_range"),
                 "data_type": cfg.get("data_type"),
+                "value_semantics": cfg.get("value_semantics"),
                 "native_resolution_m": cfg.get("native_resolution_m"),
                 "index": cfg.get("index"),
-                "resampling": cfg.get("resampling"),
+                "resampling": get_variable_resampling_method_name(source_cfg, name),
                 "temporal": cfg.get("temporal"),
                 "generated_from": cfg.get("generated_from"),
             }
@@ -164,6 +249,24 @@ def _keep_raw_after_clip_default(source_cfg: dict[str, Any]) -> bool:
     return True
 
 
+def _source_title(source: dict[str, Any]) -> str:
+    title = source.get("title") or source.get("display_name")
+    if title:
+        return str(title)
+
+    product = str(source.get("product") or source.get("id") or "")
+    return product.replace("_", " ").replace("-", " ").title()
+
+
+def _source_url(source: dict[str, Any]) -> str | None:
+    for key in ["official_url", "documentation_url", "page_url", "article_url"]:
+        if source.get(key):
+            return str(source[key])
+    if source.get("doi"):
+        return f"https://doi.org/{source['doi']}"
+    return None
+
+
 def source_catalog_from_config(
     source_config_path: str | Path,
 ) -> dict[str, Any]:
@@ -174,17 +277,26 @@ def source_catalog_from_config(
     source = cfg.get("source", {}) or {}
     dataset = cfg.get("dataset", {}) or {}
     processing = cfg.get("processing", {}) or {}
+    provider = source.get("provider")
+    group = SOURCE_GROUPS.get(str(provider), {})
 
     source_resolution = processing.get("source_resolution")
     native_resolution = dataset.get("native_resolution", source_resolution)
 
     catalog = {
         "id": source.get("id") or path.stem,
-        "provider": source.get("provider"),
+        "title": _source_title(source),
+        "provider": provider,
+        "provider_title": source.get("provider_title") or group.get("title"),
+        "provider_url": source.get("provider_url") or group.get("official_url"),
         "product": source.get("product"),
         "product_group": source.get("product_group"),
         "version": source.get("version"),
         "description": source.get("description"),
+        "summary": source.get("summary") or source.get("description"),
+        "long_description": source.get("long_description"),
+        "official_url": _source_url(source),
+        "documentation_url": source.get("documentation_url"),
         "config_path": _rel_path(path),
         "source_crs": source.get("source_crs") or dataset.get("source_crs"),
         "source_period": source.get("source_period"),
@@ -208,6 +320,7 @@ def source_catalog_from_config(
         "citation": source.get("citation"),
         "page_url": source.get("page_url"),
         "doi": source.get("doi"),
+        "article_url": source.get("article_url"),
     }
 
     return _clean(
@@ -272,8 +385,12 @@ def workbench_catalog(
     return {
         "project": project_catalog(project_config_path),
         "aois": list_aoi_catalogs(),
+        "source_groups": list(SOURCE_GROUPS.values()),
         "sources": list_source_catalogs(),
         "supported_metrics": SUPPORTED_METRICS,
         "supported_resampling": SUPPORTED_RESAMPLING,
+        "advanced_interpolation_methods": ADVANCED_INTERPOLATION_METHODS,
+        "derived_operation_groups": DERIVED_OPERATION_GROUPS,
+        "value_semantics": VALUE_SEMANTICS,
         "supported_stages": SUPPORTED_STAGES,
     }

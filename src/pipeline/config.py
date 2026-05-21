@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from src.pipeline.project_overrides import normalize_crs
+
 from src.io.config import load_yaml
 
 
@@ -54,6 +56,13 @@ def validate_run_config(
         run_cfg.get("stages", ["build"]),
         context="run.stages",
     )
+
+    for crs_key in ["crs", "target_crs", "output_crs"]:
+        if crs_key in run_cfg:
+            try:
+                normalize_crs(run_cfg[crs_key])
+            except Exception as exc:
+                raise ValueError(f"Invalid run.{crs_key}: {run_cfg[crs_key]!r}") from exc
 
     sources = cfg["sources"]
     if not isinstance(sources, list) or not sources:
@@ -126,7 +135,14 @@ def validate_derived_features_config(
                 f"derived_features[{idx}] must be a dictionary{location}."
             )
 
-        for key in ["name", "expression", "inputs"]:
+        operation = item.get("operation", "expression")
+        required = ["name", "inputs"]
+        if operation == "expression":
+            required.append("expression")
+        if operation == "recipe":
+            required.append("recipe")
+
+        for key in required:
             if key not in item:
                 raise ValueError(
                     f"Missing required key 'derived_features[{idx}].{key}'{location}."
@@ -213,6 +229,17 @@ def get_run_resolution_m(cfg: dict[str, Any]) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def get_run_crs(cfg: dict[str, Any]) -> str | None:
+    value = (
+        cfg["run"].get("crs")
+        or cfg["run"].get("target_crs")
+        or cfg["run"].get("output_crs")
+    )
+    if value is None:
+        return None
+    return normalize_crs(value)
 
 
 def get_dataset_dir(cfg: dict[str, Any]) -> Path:

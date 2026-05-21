@@ -4,7 +4,16 @@ source:
   product: topoclimate_1950_2012
   product_group: climate
   version: "1.0.0"
+  title: "Pyrenean Digital Climate Atlas (PDCA) Topoclimate 1950-2012"
   description: "Pyrenean Digital Climate Atlas long-term topoclimate surfaces for the Pyrenees, 1950-2012."
+  summary: "Pyrenees-specific long-term topoclimate rasters for temperature, precipitation, PET, water availability, GDD and solar radiation."
+  long_description: >-
+    The Pyrenean Digital Climate Atlas provides topoclimate surfaces designed
+    specifically for the Pyrenees. The dataset combines meteorological station
+    observations, terrain information and geostatistical modelling to produce
+    monthly, seasonal and annual climatological layers for the 1950-2012
+    period, making it one of the most regionally relevant sources in the
+    project.
   doi: "10.5281/zenodo.1186639"
   article_url: "https://doi.org/10.1002/gdj3.52"
   source_crs: EPSG:25830
@@ -98,6 +107,7 @@ variables:
     enabled: true
     description: "Mean minimum air temperature"
     unit: degC
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [-50, 50]
 
@@ -105,6 +115,7 @@ variables:
     enabled: true
     description: "Mean maximum air temperature"
     unit: degC
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [-40, 60]
 
@@ -112,6 +123,7 @@ variables:
     enabled: true
     description: "Mean air temperature"
     unit: degC
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [-50, 60]
 
@@ -119,6 +131,7 @@ variables:
     enabled: true
     description: "Total precipitation"
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
     valid_range: [0, 5000]
 
@@ -126,6 +139,7 @@ variables:
     enabled: true
     description: "Potential evapotranspiration using the Thornthwaite method"
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
     valid_range: [0, 3000]
 
@@ -133,6 +147,7 @@ variables:
     enabled: true
     description: "Water availability computed from precipitation and potential evapotranspiration"
     unit: mm
+    value_semantics: intensive_depth
     scale_factor: 1.0
     valid_range: [-3000, 5000]
 
@@ -140,6 +155,7 @@ variables:
     enabled: true
     description: "Growing degree-days above 0 degrees Celsius"
     unit: degC_day
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [0, 8000]
 
@@ -147,6 +163,7 @@ variables:
     enabled: true
     description: "Potential solar radiation"
     unit: "10 kJ m-2 day-1"
+    value_semantics: intensive
     scale_factor: 1.0
     valid_range: [0, 4000]
 
@@ -154,6 +171,7 @@ variables:
     enabled: true
     description: "PDCA layer not mapped to a known variable key"
     unit: null
+    value_semantics: intensive
     scale_factor: 1.0
 
 output:

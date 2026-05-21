@@ -3,10 +3,13 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+from pyproj import Transformer
+from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
 from src.io.config import load_yaml, resolve_path
 from src.io.paths import ensure_dir, get_grid_dir, get_grid_path
+from src.pipeline.project_overrides import normalize_crs
 
 
 def parse_args():
@@ -40,6 +43,11 @@ def parse_args():
         type=int,
         default=None,
         help="Target grid resolution in meters. If omitted, project default is used.",
+    )
+    parser.add_argument(
+        "--crs",
+        default=None,
+        help="Optional output CRS override, e.g. EPSG:3035 or EPSG:25831.",
     )
 
     parser.add_argument(
@@ -92,13 +100,6 @@ def validate_grid_inputs(
             f"Available: {available_resolutions}"
         )
 
-    aoi_crs = aoi_cfg["crs"]
-    if aoi_crs != crs:
-        raise ValueError(
-            f"AOI CRS ({aoi_crs}) does not match project CRS ({crs}). "
-            "Reproject or redefine the AOI bounds before creating the grid."
-        )
-
     bounds = aoi_cfg["bounds"]
     xmin = int(bounds["xmin"])
     xmax = int(bounds["xmax"])
@@ -121,6 +122,40 @@ def validate_grid_inputs(
         )
 
 
+def _aoi_bounds_in_target_crs(aoi_cfg: dict, target_crs: str) -> dict[str, float]:
+    bounds = aoi_cfg["bounds"]
+    aoi_crs = aoi_cfg["crs"]
+
+    if CRS.from_user_input(aoi_crs) == CRS.from_user_input(target_crs):
+        return {
+            "xmin": float(bounds["xmin"]),
+            "ymin": float(bounds["ymin"]),
+            "xmax": float(bounds["xmax"]),
+            "ymax": float(bounds["ymax"]),
+        }
+
+    transformer = Transformer.from_crs(aoi_crs, target_crs, always_xy=True)
+    xmin, ymin, xmax, ymax = transformer.transform_bounds(
+        float(bounds["xmin"]),
+        float(bounds["ymin"]),
+        float(bounds["xmax"]),
+        float(bounds["ymax"]),
+        densify_pts=21,
+    )
+    return {"xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax}
+
+
+def _snap_bounds_to_resolution(
+    bounds: dict[str, float],
+    resolution: int,
+) -> dict[str, int]:
+    xmin = int(np.floor(float(bounds["xmin"]) / resolution) * resolution)
+    ymin = int(np.floor(float(bounds["ymin"]) / resolution) * resolution)
+    xmax = int(np.ceil(float(bounds["xmax"]) / resolution) * resolution)
+    ymax = int(np.ceil(float(bounds["ymax"]) / resolution) * resolution)
+    return {"xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax}
+
+
 def create_grid(
     project_cfg: dict,
     aoi_cfg: dict,
@@ -136,7 +171,10 @@ def create_grid(
         resolution=resolution,
     )
 
-    bounds = aoi_cfg["bounds"]
+    bounds = _snap_bounds_to_resolution(
+        _aoi_bounds_in_target_crs(aoi_cfg, crs),
+        resolution=resolution,
+    )
     xmin = int(bounds["xmin"])
     xmax = int(bounds["xmax"])
     ymin = int(bounds["ymin"])
@@ -185,6 +223,7 @@ def create_grid(
             GRID_TYPE="project_alignment_grid",
             AOI_NAME=aoi_cfg["name"],
             CRS=crs,
+            AOI_SOURCE_CRS=aoi_cfg.get("crs"),
             RESOLUTION_M=str(resolution),
             NODATA=str(nodata),
             BOUNDS=f"xmin={xmin}, ymin={ymin}, xmax={xmax}, ymax={ymax}",
@@ -221,6 +260,13 @@ def main():
 
     project_cfg = load_yaml(project_config_path)
     project_cfg["_config_path"] = str(project_config_path)
+    if args.crs:
+        normalized_crs = normalize_crs(args.crs)
+        if normalized_crs != project_cfg.get("crs"):
+            project_cfg["_default_crs"] = project_cfg.get("crs")
+            project_cfg["_crs_overridden"] = True
+            project_cfg["_grid_crs_suffix"] = normalized_crs.lower().replace(":", "")
+        project_cfg["crs"] = normalized_crs
     aoi_cfg = load_yaml(aoi_config_path)
 
     default_resolution = int(project_cfg["grids"]["default_resolution_m"])
