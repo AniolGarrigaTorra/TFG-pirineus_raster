@@ -83,6 +83,21 @@ class DerivedExpressionTests(unittest.TestCase):
         self.assertEqual(operation, "terrain:slope")
         np.testing.assert_allclose(result, np.zeros((3, 3), dtype=np.float32))
 
+    def test_terrain_aspect_reports_downslope_bearing(self):
+        east_rising = np.tile(np.arange(3, dtype=np.float32), (3, 1))
+        result, operation, _ = evaluate_derived_operation(
+            {
+                "name": "aspect",
+                "operation": "terrain",
+                "method": "aspect",
+                "inputs": {"dem": {}},
+            },
+            {"dem": east_rising},
+            grid_resolution_m=30,
+        )
+        self.assertEqual(operation, "terrain:aspect")
+        np.testing.assert_allclose(result, np.full((3, 3), 270.0, dtype=np.float32))
+
     def test_validation_accepts_non_expression_operations(self):
         warnings = validate_derived_feature_definition(
             {

@@ -90,6 +90,22 @@ def _temporal_postprocess_outputs(source_cfg: dict[str, Any]) -> list[dict[str, 
     return items
 
 
+def _static_year_layers(source_cfg: dict[str, Any]) -> list[int]:
+    configured = source_cfg.get("years")
+    if isinstance(configured, list) and configured:
+        return [int(item) for item in configured]
+
+    years: set[int] = set()
+    for cfg in (source_cfg.get("variables", {}) or {}).values():
+        if not isinstance(cfg, dict):
+            continue
+        temporal = cfg.get("temporal", {}) or {}
+        if isinstance(temporal, dict) and temporal.get("reference_year") is not None:
+            years.add(int(temporal["reference_year"]))
+
+    return sorted(years)
+
+
 def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
     dataset = source_cfg.get("dataset", {}) or {}
     layer_structure = dataset.get("layer_structure")
@@ -111,6 +127,23 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
             "aggregation_forms": [],
             "supports_custom_aggregations": False,
             "supports_raw_slices": False,
+        }
+
+    if layer_structure == "yearly_static_collection":
+        years = _static_year_layers(source_cfg)
+        return {
+            "kind": "yearly_static_collection",
+            "label": "Yearly static layers",
+            "temporal_axis": temporal_axis or "year",
+            "aggregation_stage": "none",
+            "default_output_mode": "supplied_layers",
+            "output_modes": ["supplied_layers"],
+            "aggregation_forms": [],
+            "supports_custom_aggregations": False,
+            "supports_raw_slices": False,
+            "temporal_layers": {
+                "years": years,
+            },
         }
 
     if layer_structure == "monthly_climatology":

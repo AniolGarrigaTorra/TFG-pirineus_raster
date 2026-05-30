@@ -258,6 +258,7 @@ def _validate_aggregation(
         "static_single",
         "static_multi",
         "static_index_set",
+        "yearly_static_collection",
         "vector_categorical",
         "pdca_nested_zip_geotiff_collection",
         "temporal_aggregation",
@@ -320,6 +321,7 @@ def _compile_aggregations(
 def _selected_temporal_layers(layers_cfg: dict[str, Any]) -> dict[str, Any]:
     months = [str(item).lower() for item in _as_list(layers_cfg.get("months"))]
     seasons = [str(item).lower() for item in _as_list(layers_cfg.get("seasons"))]
+    years = [int(item) for item in _as_list(layers_cfg.get("years"))]
 
     invalid_months = sorted(set(months) - set(MONTH_NAMES))
     if invalid_months:
@@ -344,7 +346,42 @@ def _selected_temporal_layers(layers_cfg: dict[str, Any]) -> dict[str, Any]:
         selected["months"] = months
     if seasons:
         selected["seasons"] = seasons
+    if years:
+        selected["years"] = years
     return selected
+
+
+def _variable_reference_year(variable_cfg: dict[str, Any]) -> int | None:
+    temporal = variable_cfg.get("temporal", {}) or {}
+    if not isinstance(temporal, dict) or temporal.get("reference_year") is None:
+        return None
+    return int(temporal["reference_year"])
+
+
+def _enable_static_year_variables(
+    cfg: dict[str, Any],
+    selected_years: list[int],
+) -> None:
+    if not selected_years:
+        return
+
+    selected = set(selected_years)
+    variables = cfg.get("variables", {}) or {}
+    matched = False
+
+    for variable_cfg in variables.values():
+        if not isinstance(variable_cfg, dict):
+            continue
+        year = _variable_reference_year(variable_cfg)
+        if year is None:
+            continue
+        variable_cfg["enabled"] = year in selected and bool(variable_cfg.get("enabled", True))
+        matched = matched or bool(variable_cfg["enabled"])
+
+    if not matched:
+        raise ConfigValidationError(
+            f"No enabled variables match selected temporal years: {sorted(selected)}"
+        )
 
 
 def _compile_temporal_selection(
@@ -426,7 +463,13 @@ def _compile_temporal_selection(
         layers = temporal_select.get("layers", {}) or {}
         if not isinstance(layers, dict):
             raise ConfigValidationError("select.temporal.layers must be a dictionary.")
-        temporal_cfg["layers"] = _selected_temporal_layers(layers)
+        temporal_layers = _selected_temporal_layers(layers)
+        temporal_cfg["layers"] = temporal_layers
+        if capability.get("kind") == "yearly_static_collection":
+            _enable_static_year_variables(
+                cfg,
+                [int(item) for item in temporal_layers.get("years", [])],
+            )
         return
 
     if output_mode == "postprocess_aggregate":

@@ -109,6 +109,49 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
             "handling."
         ),
     },
+    "openstreetmap": {
+        "id": "openstreetmap",
+        "title": "OpenStreetMap / Geofabrik",
+        "official_url": "https://download.geofabrik.de/",
+        "summary": (
+            "Community-maintained vector data for roads, tracks, buildings, "
+            "settlements and anthropic land-use features."
+        ),
+        "long_description": (
+            "Pirineus Raster uses Geofabrik OpenStreetMap extracts as regional "
+            "PBF inputs, filters OSM tags into thematic layers, clips them to "
+            "the AOI and rasterizes them as presence or distance features on "
+            "the project grid."
+        ),
+    },
+    "ghsl": {
+        "id": "ghsl",
+        "title": "Global Human Settlement Layer (GHSL)",
+        "official_url": "https://ghsl.jrc.ec.europa.eu/",
+        "summary": (
+            "European Commission JRC global human settlement grids including "
+            "population, built-up and settlement layers."
+        ),
+        "long_description": (
+            "The GHSL source is configured through the generic raster connector. "
+            "It is intended for population-density features such as GHS-POP, "
+            "aligned to the same AOI and resolution as the rest of the dataset."
+        ),
+    },
+    "esa_cci": {
+        "id": "esa_cci",
+        "title": "ESA Climate Change Initiative",
+        "official_url": "https://climate.esa.int/",
+        "summary": (
+            "Climate Data Record products from ESA CCI, including the Biomass "
+            "above-ground biomass maps."
+        ),
+        "long_description": (
+            "The ESA CCI Biomass source uses the generic static raster connector "
+            "to ingest 100 m above-ground biomass tiles and align them to the "
+            "project grid."
+        ),
+    },
 }
 
 

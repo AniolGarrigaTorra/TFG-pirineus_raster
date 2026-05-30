@@ -1,0 +1,80 @@
+source:
+  id: esa_cci_biomass_agb_100m
+  provider: esa_cci
+  product: biomass_agb_100m
+  product_group: biomass
+  version: "v6.0"
+  title: "ESA CCI Biomass Above-Ground Biomass"
+  description: "ESA Climate Change Initiative above-ground biomass maps at 100 m."
+  summary: "Above-ground biomass density in Mg/ha for 2007, 2010 and annual maps from 2015 to 2022."
+  long_description: >-
+    ESA CCI Biomass provides global above-ground biomass maps at 100 m
+    resolution for multiple epochs. The workbench exposes each year through the
+    Temporal tab so the user can select the desired epochs before download,
+    clipping and build.
+  page_url: "https://climate.esa.int/en/projects/biomass/"
+  documentation_url: "https://climate.esa.int/en/projects/biomass/"
+  source_crs: EPSG:4326
+  source_period: "2007, 2010, 2015-2022"
+  citation: "Santoro, M.; Cartus, O. (2025): ESA Biomass Climate Change Initiative (Biomass_cci): Global datasets of forest above-ground biomass for the years 2007, 2010, 2015, 2016, 2017, 2018, 2019, 2020, 2021 and 2022, v6.0. NERC EDS Centre for Environmental Data Analysis."
+
+dataset:
+  layer_structure: yearly_static_collection
+  file_format: geotiff
+  native_resolution_m: 100
+  data_type: continuous
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+years: [2007, 2010, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022]
+
+download:
+  enabled: true
+  mode: manual
+  overwrite_existing: false
+
+processing:
+  source_resolution: 100m
+  source_resolutions: [100m]
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: average
+
+variable_groups:
+  agb:
+    template:
+      name: "agb_{year}"
+      enabled: true
+      description: "Above-ground biomass density, {year}"
+      unit: Mg/ha
+      scale_factor: 1.0
+      valid_range: [0, 1000]
+      data_type: continuous
+      value_semantics: intensive
+      native_resolution_m: 100
+      source_filename: "esa_cci_biomass_agb_{year}_{source_resolution}_pyrenees.tif"
+      temporal:
+        type: static
+        reference_year: "{year}"
+    foreach:
+      - {year: 2007}
+      - {year: 2010}
+      - {year: 2015}
+      - {year: 2016}
+      - {year: 2017}
+      - {year: 2018}
+      - {year: 2019}
+      - {year: 2020}
+      - {year: 2021}
+      - {year: 2022}
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false

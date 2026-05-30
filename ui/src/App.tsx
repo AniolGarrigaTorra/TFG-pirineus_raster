@@ -45,6 +45,15 @@ function sourceDisplayName(source: SourceCatalog) {
   return source.title ?? humanizeId(source.product ?? source.id);
 }
 
+function sourceShortName(source: SourceCatalog) {
+  return source.id
+    .replace(/^worldclim_/, "WC ")
+    .replace(/^copernicus_/, "CLMS ")
+    .replace(/^igme_brgm_/, "IGME-BRGM ")
+    .replace(/^pdca_/, "PDCA ")
+    .replace(/_/g, " ");
+}
+
 function sourceOfficialUrl(source: SourceCatalog) {
   if (source.official_url) return source.official_url;
   if (source.page_url) return source.page_url;
@@ -60,6 +69,15 @@ function MetaChip({ label, value }: { label: string; value?: string | number }) 
     <span>
       <strong>{label}</strong>
       {value}
+    </span>
+  );
+}
+
+function InfoTip({ text }: { text: string }) {
+  return (
+    <span className="info-tip" tabIndex={0} aria-label={text}>
+      i
+      <span role="tooltip">{text}</span>
     </span>
   );
 }
@@ -90,7 +108,8 @@ function sourceTemporalSelection(source: SourceCatalog): TemporalSelection {
       annual: layerOptions?.annual ?? true,
       annual_index: layerOptions?.annual_index ?? true,
       months: [...(layerOptions?.months ?? [])],
-      seasons: [...(layerOptions?.seasons ?? [])]
+      seasons: [...(layerOptions?.seasons ?? [])],
+      years: [...(layerOptions?.years ?? [])]
     },
     aggregationUse: sourceAggregationNames(source),
     customAggregations: []
@@ -101,6 +120,18 @@ function toggleValue(values: string[], value: string) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
     : [...values, value];
+}
+
+function toggleStage(values: string[], stage: string) {
+  if (stage === "all") {
+    return values.includes("all") ? [] : ["all"];
+  }
+  return toggleValue(values.filter((item) => item !== "all"), stage);
+}
+
+function defaultStages(supportedStages: string[] = ["download", "clip", "build", "all"]) {
+  if (supportedStages.includes("all")) return ["all"];
+  return [supportedStages[0] ?? "build"];
 }
 
 function buildTemporalConfig(source: SourceCatalog | undefined, selection: SourceSelection) {
@@ -155,7 +186,8 @@ function buildTemporalConfig(source: SourceCatalog | undefined, selection: Sourc
         annual: temporal.layers.annual,
         annual_index: temporal.layers.annual_index,
         months: temporal.layers.months,
-        seasons: temporal.layers.seasons
+        seasons: temporal.layers.seasons,
+        years: temporal.layers.years
       }
     };
   }
@@ -206,13 +238,14 @@ function App() {
   const [targetCrs, setTargetCrs] = useState("EPSG:3035");
   const [aoiPath, setAoiPath] = useState("configs/aoi/experimental_pallars_sobira.yaml");
   const [resolution, setResolution] = useState(100);
-  const [stages, setStages] = useState<string[]>(["build"]);
+  const [stages, setStages] = useState<string[]>(["all"]);
   const [datasetDir, setDatasetDir] = useState("data_processed/datasets/pallars_workbench_100m");
   const [selections, setSelections] = useState<Record<string, SourceSelection>>({});
   const [derivedFeatures, setDerivedFeatures] = useState<DerivedFeatureConfig[]>([]);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [serverYaml, setServerYaml] = useState("");
   const [apiError, setApiError] = useState<string | null>(null);
+  const [hasStarted, setHasStarted] = useState(false);
 
   useEffect(() => {
     fetchCatalog()
@@ -222,6 +255,7 @@ function App() {
         setProjectConfig(data.project.config_path);
         setTargetCrs(data.project.crs ?? "EPSG:3035");
         setResolution(data.project.default_resolution_m ?? data.project.available_resolutions_m[0] ?? 100);
+        setStages(defaultStages(data.supported_stages));
         if (data.aois[0]) {
           setAoiPath(data.aois[0].path);
         }
@@ -405,8 +439,26 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  if (!hasStarted) {
+    return (
+      <main className="home-screen">
+        <section className="home-hero">
+          <div className="home-kicker">Environmental raster workbench</div>
+          <h1>Welcome to Pirineus Raster</h1>
+          <p>
+            Build clean, reproducible raster datasets for Pyrenean research from
+            climate, terrain, land-cover and geology sources.
+          </p>
+          <button className="home-cta" onClick={() => setHasStarted(true)}>
+            Start building my personalized dataset
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <div className="app-shell">
+    <div className="app-shell workbench-shell">
       <header className="topbar">
         <div>
           <h1>Pirineus Raster Workbench</h1>
@@ -424,6 +476,7 @@ function App() {
             className={activeTab === tab ? "active" : ""}
             onClick={() => setActiveTab(tab)}
           >
+            <span aria-hidden="true">{tabs.indexOf(tab) + 1}</span>
             {tab}
           </button>
         ))}
@@ -548,7 +601,7 @@ interface ProjectPanelProps {
 function ProjectPanel(props: ProjectPanelProps) {
   const aois = props.catalog?.aois ?? [];
   const resolutions = props.catalog?.project.available_resolutions_m ?? [100];
-  const supportedStages = props.catalog?.supported_stages ?? ["build"];
+  const supportedStages = props.catalog?.supported_stages ?? ["download", "clip", "build", "all"];
 
   return (
     <main className="workspace two-col">
@@ -602,7 +655,7 @@ function ProjectPanel(props: ProjectPanelProps) {
               <input
                 type="checkbox"
                 checked={props.stages.includes(stage)}
-                onChange={() => props.setStages(toggleValue(props.stages, stage))}
+                onChange={() => props.setStages(toggleStage(props.stages, stage))}
               />
               <span>{stage}</span>
             </label>
@@ -657,7 +710,7 @@ function SourcePanel({
     <main className="workspace">
       <section className="source-groups">
         {groupedSources.map((group) => (
-          <details key={group.provider} className="source-group" open>
+          <details key={group.provider} className="source-group">
             <summary>
               <span>
                 <strong>{group.title}</strong>
@@ -768,7 +821,7 @@ function SourcePanel({
                             checked={selection.stages.length === 0}
                             onChange={(event) =>
                               patchSelection(source.id, {
-                                stages: event.target.checked ? [] : ["build"]
+                                stages: event.target.checked ? [] : defaultStages(catalog.supported_stages)
                               })
                             }
                           />
@@ -783,7 +836,7 @@ function SourcePanel({
                                   checked={selection.stages.includes(stage)}
                                   onChange={() =>
                                     patchSelection(source.id, {
-                                      stages: toggleValue(selection.stages, stage)
+                                      stages: toggleStage(selection.stages, stage)
                                     })
                                   }
                                 />
@@ -861,7 +914,7 @@ function SourceChooser({
       Source
       <select value={activeSourceId} onChange={(event) => setActiveSourceId(event.target.value)}>
         {sources.map((source) => (
-          <option key={source.id} value={source.id}>{sourceDisplayName(source)} ({source.id})</option>
+          <option key={source.id} value={source.id}>{sourceShortName(source)}</option>
         ))}
       </select>
     </label>
@@ -1005,14 +1058,6 @@ function VariablesPanel({
               );
             })}
           </div>
-          {(catalog.advanced_interpolation_methods ?? []).length > 0 && (
-            <div className="advanced-methods">
-              <strong>Advanced interpolation backends</strong>
-              {(catalog.advanced_interpolation_methods ?? []).map((method) => (
-                <span key={String(method.name)}>{String(method.label ?? method.name)} · {String(method.status)}</span>
-              ))}
-            </div>
-          )}
         </div>
       </section>
     </main>
@@ -1234,6 +1279,29 @@ function TemporalPanel({
                 <span>Annual index layers</span>
               </label>
             </div>
+            {(capability?.temporal_layers?.years ?? []).length > 0 && (
+              <>
+                <h3>Years</h3>
+                <div className="choice-list compact token-grid">
+                  {(capability?.temporal_layers?.years ?? []).map((year) => (
+                    <label key={year} className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={temporal.layers.years.includes(year)}
+                        onChange={() =>
+                          patchTemporalLayers({
+                            years: temporal.layers.years.includes(year)
+                              ? temporal.layers.years.filter((item) => item !== year)
+                              : [...temporal.layers.years, year].sort((left, right) => left - right)
+                          })
+                        }
+                      />
+                      <span>{year}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
             <h3>Months</h3>
             <div className="choice-list compact token-grid">
               {(capability?.temporal_layers?.months ?? []).map((month) => (
@@ -1488,7 +1556,7 @@ function buildPlannedLayers(
                 period
               };
               const labelBits = [
-                sourceDisplayName(source),
+                sourceShortName(source),
                 variable.name,
                 aggregation,
                 gcm,
@@ -1523,6 +1591,40 @@ function sanitizeDerivedName(value: string) {
     || "derived_feature";
 }
 
+function isDemLayer(layer?: PlannedLayer) {
+  if (!layer) return false;
+  const tokens = `${layer.variable} ${layer.label}`.toLowerCase();
+  return /\b(dem|elev|elevation|altitude|height|glo-30|glo30)\b/.test(tokens);
+}
+
+const recipeHelp: Record<string, string> = {
+  thermal_range: "Difference between maximum and minimum temperature. Useful as a simple temperature variability layer.",
+  water_balance: "Precipitation minus potential evapotranspiration. Positive values indicate wetter conditions.",
+  aridity_index: "Ratio between precipitation and PET. It summarizes moisture limitation.",
+  seasonal_contrast: "Difference or ratio between two selected layers, often two seasons or periods.",
+  snow_persistence_ratio: "Snow observation days divided by valid observation days.",
+  binary_threshold_mask: "Creates a 0/1 mask from a numeric threshold.",
+  class_mask: "Creates a 0/1 mask for one categorical class value."
+};
+
+const terrainHelp: Record<string, string> = {
+  slope: "Slope in degrees from a DEM. Requires an elevation/DEM layer.",
+  aspect: "Downslope orientation in degrees from north. Requires an elevation/DEM layer.",
+  ruggedness: "Local elevation variability around each cell. Requires a DEM.",
+  tpi: "Topographic Position Index: cell elevation minus local mean elevation.",
+  roughness: "Local max minus local min elevation inside the selected radius."
+};
+
+const focalHelp: Record<string, string> = {
+  mean: "Local moving-window average around each cell.",
+  std: "Local moving-window standard deviation around each cell.",
+  min: "Local minimum inside the selected radius.",
+  max: "Local maximum inside the selected radius.",
+  sum: "Local sum inside the selected radius.",
+  majority: "Most frequent class inside the selected radius. Best for categorical rasters.",
+  diversity: "Number of unique classes inside the selected radius."
+};
+
 function DerivedPanel({
   selectedSources,
   catalog,
@@ -1546,7 +1648,8 @@ function DerivedPanel({
   const [unit, setUnit] = useState("");
   const [valueSemantics, setValueSemantics] = useState("intensive");
   const [description, setDescription] = useState("");
-  const [method, setMethod] = useState("slope");
+  const [terrainMethod, setTerrainMethod] = useState("slope");
+  const [focalMethod, setFocalMethod] = useState("mean");
   const [radius, setRadius] = useState(1);
   const [threshold, setThreshold] = useState(0);
   const [classValue, setClassValue] = useState(1);
@@ -1558,6 +1661,7 @@ function DerivedPanel({
   const firstLayer = plannedLayers[0];
   const primaryLayer = layerById.get(primaryLayerId) ?? firstLayer;
   const secondaryLayer = layerById.get(secondaryLayerId) ?? plannedLayers[1] ?? firstLayer;
+  const primaryIsDem = isDemLayer(primaryLayer);
 
   function findLayer(variable: string, sameAs?: PlannedLayer) {
     return plannedLayers.find((layer) =>
@@ -1654,7 +1758,8 @@ function DerivedPanel({
 
   function addSpatialOperation(operation: "terrain" | "focal" | "distance") {
     if (!primaryLayer) return;
-    const spatialMethod = operation === "terrain" ? method : operation === "focal" ? method : "distance_to_mask";
+    if (operation === "terrain" && !primaryIsDem) return;
+    const spatialMethod = operation === "terrain" ? terrainMethod : operation === "focal" ? focalMethod : "distance_to_mask";
     addFeature({
       name: sanitizeDerivedName(outputName || `${primaryLayer.variable}_${spatialMethod}`),
       operation,
@@ -1674,8 +1779,8 @@ function DerivedPanel({
   }
 
   return (
-    <main className="workspace two-col wide-left">
-      <section className="panel">
+    <main className="workspace derived-workspace">
+      <section className="panel derived-header-panel">
         <div className="panel-head">
           <h2>Derived Features</h2>
           <span className="field-hint">{plannedLayers.length} planned input layers</span>
@@ -1686,119 +1791,203 @@ function DerivedPanel({
         {selectedSources.length > 0 && plannedLayers.length === 0 && (
           <div className="notice info">Select variables before adding derived features.</div>
         )}
+      </section>
 
-        <div className="derived-builder">
-          <h3>Guided recipes</h3>
-          <div className="form-grid">
+      <section className="panel derived-builder">
+        <div className="builder-head">
+          <span className="builder-step">01</span>
+          <div>
+            <h3>Guided recipes</h3>
+            <p className="builder-copy">
+              Predefined cell-by-cell formulas for common raster derivatives. Choose the main layer,
+              and add a secondary layer when the recipe combines two variables.
+            </p>
+          </div>
+          <InfoTip text="Predefined pixel-wise formulas. Thermal range needs max/min temperature, water balance needs precipitation/PET, and masks need a threshold or class value." />
+        </div>
+        <div className="form-grid">
+          <label className="span-2">
+            <span className="label-line">Recipe <InfoTip text={recipeHelp[recipe] ?? "Derived recipe."} /></span>
+            <select value={recipe} onChange={(event) => setRecipe(event.target.value)}>
+              <option value="thermal_range">Thermal range</option>
+              <option value="water_balance">Water balance</option>
+              <option value="aridity_index">Aridity index</option>
+              <option value="seasonal_contrast">Seasonal contrast</option>
+              <option value="snow_persistence_ratio">Snow persistence ratio</option>
+              <option value="binary_threshold_mask">Binary threshold mask</option>
+              <option value="class_mask">Class mask</option>
+            </select>
+            <small className="field-hint">{recipeHelp[recipe]}</small>
+          </label>
+          <label>
+            Main input
+            <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
+              {plannedLayers.map((layer) => (
+                <option key={layer.id} value={layer.id}>{layer.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Secondary input
+            <select value={secondaryLayer?.id ?? ""} onChange={(event) => setSecondaryLayerId(event.target.value)}>
+              {plannedLayers.map((layer) => (
+                <option key={layer.id} value={layer.id}>{layer.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Output name
+            <input value={outputName} onChange={(event) => setOutputName(event.target.value)} placeholder="auto if blank" />
+          </label>
+          <label>
+            Threshold
+            <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+          </label>
+          <label>
+            Class value
+            <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
+          </label>
+        </div>
+        <button className="primary" onClick={addGuidedRecipe} disabled={!primaryLayer}>Add guided feature</button>
+      </section>
+
+      <section className="panel derived-builder">
+        <div className="builder-head">
+          <span className="builder-step">02</span>
+          <div>
+            <h3>Advanced expression</h3>
+            <p className="builder-copy">
+              Write a custom raster expression using the selected inputs as aliases. Use this for
+              formulas that are not covered by the guided recipes.
+            </p>
+          </div>
+          <InfoTip text="Custom map algebra. Use x for the main input and y for the secondary input. Safe functions include where, sqrt, log, minimum and maximum." />
+        </div>
+        <div className="form-grid">
+          <label className="span-2">
+            Expression
+            <input value={expression} onChange={(event) => setExpression(event.target.value)} />
+            <small className="field-hint">Example: where(x &gt; 0, x / maximum(y, 1), nan). Requires at least one selected input layer.</small>
+          </label>
+          <label>
+            Unit
+            <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
+          </label>
+          <label>
+            Value semantics
+            <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
+              {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <label className="span-2">
+            Description
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+          </label>
+        </div>
+        <button className="primary" onClick={addExpression} disabled={!primaryLayer}>Add expression feature</button>
+      </section>
+
+      <section className="panel derived-builder">
+        <div className="builder-head">
+          <span className="builder-step">03</span>
+          <div>
+            <h3>Spatial operations</h3>
+            <p className="builder-copy">
+              Spatial derivatives use terrain shape, moving windows or distance context. Terrain
+              methods need a DEM/elevation layer; focal and distance methods can use other selected rasters.
+            </p>
+          </div>
+          <InfoTip text="Terrain methods require a DEM/elevation layer. Focal methods summarize nearby cells. Distance methods need a binary mask or a categorical class value." />
+        </div>
+        <div className="spatial-method-grid">
+          <div className="spatial-method-card">
+            <div className="method-card-head">
+              <strong>DEM terrain</strong>
+              <InfoTip text="Slope, aspect and terrain indices require a selected elevation/DEM layer." />
+            </div>
+            <p className="method-copy">
+              Use this only when the main input is an elevation raster. Slope and aspect are direct
+              terrain derivatives; ruggedness, TPI and roughness use the radius window below.
+            </p>
             <label>
-              Recipe
-              <select value={recipe} onChange={(event) => setRecipe(event.target.value)}>
-                <option value="thermal_range">Thermal range</option>
-                <option value="water_balance">Water balance</option>
-                <option value="aridity_index">Aridity index</option>
-                <option value="seasonal_contrast">Seasonal contrast</option>
-                <option value="snow_persistence_ratio">Snow persistence ratio</option>
-                <option value="binary_threshold_mask">Binary threshold mask</option>
-                <option value="class_mask">Class mask</option>
+              Terrain method
+              <select value={terrainMethod} onChange={(event) => setTerrainMethod(event.target.value)}>
+                <option value="slope">Slope</option>
+                <option value="aspect">Aspect</option>
+                <option value="ruggedness">Ruggedness</option>
+                <option value="tpi">TPI</option>
+                <option value="roughness">Roughness</option>
               </select>
             </label>
+            <small className="field-hint">{terrainHelp[terrainMethod]}</small>
+            {!primaryIsDem && (
+              <div className="notice info compact-notice">
+                Select an elevation or DEM layer as main input before adding terrain-derived features.
+              </div>
+            )}
+            <button onClick={() => addSpatialOperation("terrain")} disabled={!primaryLayer || !primaryIsDem}>
+              Add terrain
+            </button>
+          </div>
+
+          <div className="spatial-method-card">
+            <div className="method-card-head">
+              <strong>Focal window</strong>
+              <InfoTip text="Focal operations summarize values in a moving window around each cell." />
+            </div>
+            <p className="method-copy">
+              Use this for local context around each pixel, such as neighborhood mean, variation,
+              dominant class or class diversity.
+            </p>
             <label>
-              Main input
-              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
-                {plannedLayers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>{layer.label}</option>
-                ))}
+              Focal method
+              <select value={focalMethod} onChange={(event) => setFocalMethod(event.target.value)}>
+                <option value="mean">Focal mean</option>
+                <option value="std">Focal std</option>
+                <option value="min">Focal min</option>
+                <option value="max">Focal max</option>
+                <option value="sum">Focal sum</option>
+                <option value="majority">Focal majority</option>
+                <option value="diversity">Focal diversity</option>
               </select>
             </label>
-            <label>
-              Secondary input
-              <select value={secondaryLayer?.id ?? ""} onChange={(event) => setSecondaryLayerId(event.target.value)}>
-                {plannedLayers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>{layer.label}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Output name
-              <input value={outputName} onChange={(event) => setOutputName(event.target.value)} placeholder="auto if blank" />
-            </label>
-            <label>
-              Threshold
-              <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-            </label>
+            <small className="field-hint">{focalHelp[focalMethod]}</small>
+            <button onClick={() => addSpatialOperation("focal")} disabled={!primaryLayer}>Add focal</button>
+          </div>
+
+          <div className="spatial-method-card">
+            <div className="method-card-head">
+              <strong>Distance</strong>
+              <InfoTip text="Distance-to computes metres from each cell to the nearest positive mask/class cell." />
+            </div>
+            <p className="method-copy">
+              Use this after selecting a binary mask, or choose a class value from a categorical raster.
+              The output is distance in metres to the nearest matching cell.
+            </p>
             <label>
               Class value
               <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
             </label>
-          </div>
-          <button className="primary" onClick={addGuidedRecipe} disabled={!primaryLayer}>Add guided feature</button>
-        </div>
-
-        <div className="derived-builder">
-          <h3>Advanced expression</h3>
-          <div className="form-grid">
-            <label className="span-2">
-              Expression
-              <input value={expression} onChange={(event) => setExpression(event.target.value)} />
-              <small className="field-hint">Use aliases x and y, plus safe functions such as where, sqrt, log, minimum and maximum.</small>
-            </label>
-            <label>
-              Unit
-              <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
-            </label>
-            <label>
-              Value semantics
-              <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
-                {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
-                  <option key={item} value={item}>{item}</option>
-                ))}
-              </select>
-            </label>
-            <label className="span-2">
-              Description
-              <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
-            </label>
-          </div>
-          <button className="primary" onClick={addExpression} disabled={!primaryLayer}>Add expression feature</button>
-        </div>
-      </section>
-
-      <section className="panel">
-        <h2>Spatial operations</h2>
-        <div className="form-grid single">
-          <label>
-            Spatial method
-            <select value={method} onChange={(event) => setMethod(event.target.value)}>
-              <option value="slope">Slope</option>
-              <option value="aspect">Aspect</option>
-              <option value="ruggedness">Ruggedness</option>
-              <option value="tpi">TPI</option>
-              <option value="roughness">Roughness</option>
-              <option value="mean">Focal mean</option>
-              <option value="std">Focal std</option>
-              <option value="min">Focal min</option>
-              <option value="max">Focal max</option>
-              <option value="sum">Focal sum</option>
-              <option value="majority">Focal majority</option>
-              <option value="diversity">Focal diversity</option>
-            </select>
-          </label>
-          <label>
-            Radius in cells
-            <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
-          </label>
-          <div className="button-row">
-            <button onClick={() => addSpatialOperation("terrain")} disabled={!primaryLayer}>Add terrain</button>
-            <button onClick={() => addSpatialOperation("focal")} disabled={!primaryLayer}>Add focal</button>
+            <small className="field-hint">Use a binary mask or select a class value from a categorical raster.</small>
             <button onClick={() => addSpatialOperation("distance")} disabled={!primaryLayer}>Add distance-to</button>
           </div>
         </div>
 
-        <div className="advanced-methods">
-          <strong>Geostatistical interpolation</strong>
-          <span>IDW, kriging and splines are intentionally kept outside derived features. They create rasters from points/covariates and belong in a future interpolation module.</span>
+        <div className="form-grid single radius-grid">
+          <label>
+            <span className="label-line">Radius in cells <InfoTip text="Used by focal methods and terrain ruggedness/TPI/roughness. Radius 1 means a 3 by 3 cell window." /></span>
+            <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
+          </label>
         </div>
+      </section>
 
+      <section className="panel derived-summary-panel">
+        <div className="panel-head">
+          <h2>Selected derived layers</h2>
+          <span className="field-hint">{derivedFeatures.length} configured</span>
+        </div>
         <div className="aggregation-list">
           {derivedFeatures.map((feature, index) => (
             <div className="aggregation-chip" key={`${feature.name}-${index}`}>
@@ -1809,6 +1998,9 @@ function DerivedPanel({
               <button className="ghost danger" onClick={() => setDerivedFeatures(derivedFeatures.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
             </div>
           ))}
+          {derivedFeatures.length === 0 && (
+            <div className="empty-state">No derived layers selected yet.</div>
+          )}
         </div>
       </section>
     </main>

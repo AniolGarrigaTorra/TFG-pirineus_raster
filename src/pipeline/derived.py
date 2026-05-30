@@ -376,7 +376,6 @@ def _terrain_aspect(
 ) -> np.ndarray:
     dz_dy, dz_dx = np.gradient(array.astype(np.float32), pixel_size, pixel_size)
     aspect = np.degrees(np.arctan2(-dz_dx, dz_dy))
-    aspect = np.where(aspect < 0, 90.0 - aspect, 450.0 - aspect)
     aspect = np.mod(aspect, 360.0)
     aspect[~np.isfinite(aspect)] = np.nan
     return aspect.astype(np.float32)

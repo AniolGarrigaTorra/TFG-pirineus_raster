@@ -4,6 +4,18 @@ from copy import deepcopy
 from itertools import product
 from typing import Any
 
+RUNTIME_TEMPLATE_KEYS = {
+    "source_resolution",
+    "target_resolution_m",
+}
+
+
+class _PartialFormatDict(dict):
+    def __missing__(self, key: str) -> str:
+        if key in RUNTIME_TEMPLATE_KEYS:
+            return "{" + key + "}"
+        raise KeyError(key)
+
 
 def _format_value(value: Any, context: dict[str, Any]) -> Any:
     """
@@ -20,7 +32,7 @@ def _format_value(value: Any, context: dict[str, Any]) -> Any:
                 return deepcopy(context[key])
 
         try:
-            return value.format(**context)
+            return value.format_map(_PartialFormatDict(context))
         except KeyError as exc:
             missing = exc.args[0]
             raise KeyError(

@@ -1,0 +1,139 @@
+source:
+  id: openstreetmap_geofabrik_pyrenees
+  provider: openstreetmap
+  product: geofabrik_pyrenees
+  product_group: human
+  version: latest
+  title: "OpenStreetMap Geofabrik Pyrenees"
+  description: "OpenStreetMap extracts from Geofabrik filtered into anthropic vector layers."
+  summary: "Roads, forest tracks, settlements, buildings and anthropic land-use features from regional OSM PBF extracts."
+  long_description: >-
+    This source downloads regional Geofabrik OpenStreetMap extracts, filters OSM
+    tags into thematic anthropic layers, clips them to the AOI and rasterizes
+    them as distance or presence layers on the project grid.
+  page_url: "https://download.geofabrik.de/"
+  source_crs: EPSG:4326
+  source_period: "latest"
+  citation: "OpenStreetMap contributors. OpenStreetMap data distributed by Geofabrik GmbH."
+
+dataset:
+  layer_structure: osm_vector
+  file_format: osm_pbf
+  geometry_source: vector
+  data_type: mixed
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: manual_url
+  overwrite_existing: false
+  timeout_seconds: 1800
+  max_retries: 4
+  retry_sleep_seconds: 45
+  regions:
+    - name: cataluna
+      filename: cataluna-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/spain/cataluna-latest.osm.pbf"
+    - name: aragon
+      filename: aragon-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/spain/aragon-latest.osm.pbf"
+    - name: navarra
+      filename: navarra-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/spain/navarra-latest.osm.pbf"
+    - name: andorra
+      filename: andorra-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/andorra-latest.osm.pbf"
+    - name: midi_pyrenees
+      filename: midi-pyrenees-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/france/midi-pyrenees-latest.osm.pbf"
+    - name: languedoc_roussillon
+      filename: languedoc-roussillon-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/france/languedoc-roussillon-latest.osm.pbf"
+    - name: aquitaine
+      filename: aquitaine-latest.osm.pbf
+      url: "https://download.geofabrik.de/europe/france/aquitaine-latest.osm.pbf"
+
+processing:
+  source_resolution: osm
+  target_resolution_m: 100
+  grid_from_project: true
+
+datasets:
+  transport:
+    enabled: true
+    layers:
+      secondary_roads_distance:
+        enabled: true
+        description: "Distance to secondary and tertiary roads from OpenStreetMap."
+        geometry_type: line
+        osm_layers: [lines]
+        tags:
+          highway: [secondary, secondary_link, tertiary, tertiary_link]
+        output: distance
+        unit: m
+        data_type: continuous
+        value_semantics: intensive
+      forest_tracks_distance:
+        enabled: true
+        description: "Distance to OSM tracks, intended as a proxy for forest tracks and unpaved access."
+        geometry_type: line
+        osm_layers: [lines]
+        tags:
+          highway: [track]
+        output: distance
+        unit: m
+        data_type: continuous
+        value_semantics: intensive
+
+  settlements:
+    enabled: true
+    layers:
+      settlements_distance:
+        enabled: true
+        description: "Distance to OSM settlement points and polygons."
+        geometry_type: mixed
+        osm_layers: [points, multipolygons]
+        tags:
+          place: [city, town, village, hamlet, isolated_dwelling]
+        output: distance
+        unit: m
+        data_type: continuous
+        value_semantics: intensive
+
+  built_environment:
+    enabled: true
+    layers:
+      buildings_presence:
+        enabled: true
+        description: "Binary presence of OSM building footprints."
+        geometry_type: polygon
+        osm_layers: [multipolygons]
+        tags:
+          building: true
+        output: presence
+        unit: binary
+        valid_range: [0, 1]
+        data_type: categorical
+        value_semantics: categorical
+      anthropic_landuse_presence:
+        enabled: true
+        description: "Binary presence of OSM residential, commercial, industrial or quarry land-use polygons."
+        geometry_type: polygon
+        osm_layers: [multipolygons]
+        tags:
+          landuse: [residential, commercial, industrial, retail, quarry, construction]
+        output: presence
+        unit: binary
+        valid_range: [0, 1]
+        data_type: categorical
+        value_semantics: categorical
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false

@@ -49,7 +49,7 @@ const catalog: WorkbenchCatalog = {
   ],
   supported_metrics: ["mean", "sum"],
   supported_resampling: ["nearest", "average"],
-  supported_stages: ["build"]
+  supported_stages: ["download", "clip", "build", "all"]
 };
 
 afterEach(() => {
@@ -63,7 +63,10 @@ describe("App", () => {
       text: async () => JSON.stringify(catalog)
     } as Response));
 
-    render(<App />);
+    const { container } = render(<App />);
+
+    expect(screen.getByText("Welcome to Pirineus Raster")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
 
     expect(screen.getByText("Pirineus Raster Workbench")).toBeTruthy();
 
@@ -71,8 +74,16 @@ describe("App", () => {
       expect(screen.getByText("API ready")).toBeTruthy();
     });
 
+    expect((screen.getByLabelText("all") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("build") as HTMLInputElement).checked).toBe(false);
+
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
+    const sourceGroup = container.querySelector(".source-group");
+    expect(sourceGroup?.hasAttribute("open")).toBe(false);
+    fireEvent.click(screen.getByText("Worldclim"));
+
     expect(screen.getByText("worldclim_cmip6_future")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: /worldclim_cmip6_future/i }) as HTMLInputElement).checked).toBe(false);
   });
 });

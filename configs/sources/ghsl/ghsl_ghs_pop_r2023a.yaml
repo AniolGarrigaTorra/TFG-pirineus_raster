@@ -1,0 +1,89 @@
+source:
+  id: ghsl_ghs_pop_r2023a
+  provider: ghsl
+  product: ghs_pop_r2023a
+  product_group: human
+  version: R2023A
+  title: "GHSL GHS-POP R2023A"
+  description: "Global Human Settlement Layer resident population grid."
+  summary: "Population counts from the European Commission JRC GHSL GHS-POP R2023A product."
+  long_description: >-
+    GHS-POP provides spatially explicit residential population grids for
+    1975-2030 at 5-year intervals. The source exposes official resolution/grid
+    variants so the user can choose the native input in the workbench before
+    clipping and aligning the selected years to the project grid.
+  page_url: "https://ghsl.jrc.ec.europa.eu/ghs_pop2023.php"
+  documentation_url: "https://ghsl.jrc.ec.europa.eu/"
+  source_crs: mixed
+  source_period: "1975-2030"
+  citation: "Schiavina, M., Freire, S., Carioli, A., MacManus, K. GHS-POP R2023A - GHS population grid multitemporal (1975-2030). European Commission, Joint Research Centre."
+
+dataset:
+  layer_structure: yearly_static_collection
+  file_format: zip_geotiff
+  data_type: count
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+years: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
+
+download:
+  enabled: true
+  mode: manual_url
+  overwrite_existing: false
+
+processing:
+  # Official GHS-POP grid/resolution tokens. The user can override this in the UI.
+  source_resolution: "54009_100"
+  source_resolutions: ["54009_100", "54009_1000", "4326_3ss", "4326_30ss"]
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: conservative_sum
+
+variable_groups:
+  population_count:
+    template:
+      name: "population_count_{year}"
+      enabled: true
+      description: "Resident population count, {year}"
+      unit: people per cell
+      scale_factor: 1.0
+      valid_range: [0, 100000000]
+      data_type: count
+      value_semantics: count
+      source_filename: "GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_pyrenees.tif"
+      urls:
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R4_C18.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R4_C19.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R5_C18.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R5_C19.zip"
+      zip_member_pattern: ".*GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0.*\\.tif$"
+      allow_multiple_zip_members: true
+      postprocess: mosaic_zip_geotiff
+      temporal:
+        type: static
+        reference_year: "{year}"
+    foreach:
+      - {year: 1975}
+      - {year: 1980}
+      - {year: 1985}
+      - {year: 1990}
+      - {year: 1995}
+      - {year: 2000}
+      - {year: 2005}
+      - {year: 2010}
+      - {year: 2015}
+      - {year: 2020}
+      - {year: 2025}
+      - {year: 2030}
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false

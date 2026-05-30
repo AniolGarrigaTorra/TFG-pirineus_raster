@@ -56,6 +56,7 @@ export interface TemporalCapability {
     annual_index?: boolean;
     months?: string[];
     seasons?: string[];
+    years?: number[];
   };
   postprocess_outputs?: Dict[];
   dimensioned_by?: string[];
@@ -142,6 +143,7 @@ export interface TemporalSelection {
     annual_index: boolean;
     months: string[];
     seasons: string[];
+    years: number[];
   };
   aggregationUse: string[];
   customAggregations: CustomAggregation[];
