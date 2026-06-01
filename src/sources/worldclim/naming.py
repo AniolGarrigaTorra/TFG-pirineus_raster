@@ -1,7 +1,19 @@
 from pathlib import Path
 
 
-SUPPORTED_WORLDCLIM_RESOLUTIONS = {"10m", "5m", "2.5m", "30s"}
+WORLDCLIM_RESOLUTION_TOKENS = {
+    "10arcmin": "10m",
+    "5arcmin": "5m",
+    "2.5arcmin": "2.5m",
+    "30arcs": "30s",
+    # Backward compatibility with older configs/runs.
+    "10m": "10m",
+    "5m": "5m",
+    "2.5m": "2.5m",
+    "30s": "30s",
+}
+
+SUPPORTED_WORLDCLIM_RESOLUTIONS = set(WORLDCLIM_RESOLUTION_TOKENS)
 
 MONTHLY_VARIABLES = {
     "tmin",
@@ -28,6 +40,13 @@ def get_layer_structure(source_cfg: dict) -> str:
 
 def get_source_resolution(source_cfg: dict) -> str:
     return source_cfg["processing"]["source_resolution"]
+
+
+def get_worldclim_download_resolution(source_cfg: dict) -> str:
+    source_resolution = str(get_source_resolution(source_cfg))
+    validate_worldclim_resolution(source_resolution)
+    return WORLDCLIM_RESOLUTION_TOKENS[source_resolution]
+
 
 def get_zip_specs(source_cfg: dict) -> list[dict]:
     """
@@ -184,8 +203,7 @@ def build_worldclim_zip_name(source_cfg: dict, zip_spec: dict) -> str:
       wc2.1_10m_elev.zip
       wc2.1_cruts4.09_10m_tmin_1990-1999.zip
     """
-    source_resolution = get_source_resolution(source_cfg)
-    validate_worldclim_resolution(source_resolution)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
 
     dataset_cfg = source_cfg.get("dataset", {})
     pattern = dataset_cfg.get(
@@ -204,7 +222,7 @@ def build_worldclim_cmip6_filename(
     source_cfg: dict,
     file_spec: dict,
 ) -> str:
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     pattern = source_cfg["dataset"].get(
         "tif_file_pattern",
         "wc2.1_{resolution}_{variable}_{gcm}_{ssp}_{period}.tif",
@@ -231,7 +249,7 @@ def build_worldclim_cmip6_download_url(
     source_cfg: dict,
     file_spec: dict,
 ) -> str:
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     base_url = source_cfg["source"]["base_url"].rstrip("/")
     filename = build_worldclim_cmip6_filename(source_cfg, file_spec)
 
@@ -273,7 +291,7 @@ def build_worldclim_monthly_member_basename(
     Example:
       wc2.1_30s_tmin_01.tif
     """
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     pattern = source_cfg["dataset"].get(
         "tif_file_pattern",
         "wc2.1_{resolution}_{variable}_{month:02d}.tif",
@@ -308,7 +326,7 @@ def build_worldclim_static_index_member_basename(
     Example:
       wc2.1_30s_bio_1.tif
     """
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     pattern = source_cfg["dataset"].get(
         "tif_file_pattern",
         "wc2.1_{resolution}_bio_{index}.tif",
@@ -328,7 +346,7 @@ def build_worldclim_static_single_member_basename(
     Example:
       wc2.1_30s_elev.tif
     """
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     pattern = source_cfg["dataset"].get(
         "tif_file_pattern",
         "wc2.1_{resolution}_{variable}.tif",
@@ -349,7 +367,7 @@ def build_worldclim_monthly_time_series_member_basename(
     Example expected pattern:
       wc2.1_cruts4.09_10m_tmin_1991-01.tif
     """
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
     pattern = source_cfg["dataset"].get(
         "tif_file_pattern",
         "wc2.1_cruts4.09_{resolution}_{variable}_{year}-{month:02d}.tif",

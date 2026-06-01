@@ -1,10 +1,15 @@
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-import shutil
 import time
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_download,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.worldclim.naming import (
     build_worldclim_download_url,
     build_worldclim_zip_path,
@@ -15,6 +20,7 @@ from src.sources.worldclim.naming import (
     build_worldclim_cmip6_raw_path,
 )
 USER_AGENT = "pirineus-raster-pipeline/0.1"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def download_file(
@@ -32,7 +38,8 @@ def download_file(
     during connection setup or HTTPS handshake.
     """
     if output_path.exists() and not overwrite:
-        print(f"[download] Exists, skipping: {output_path}")
+        progress_log(f"[download] Exists, skipping: {output_path}")
+        progress_advance_stage_task(name=output_path.name)
         return
 
     ensure_dir(output_path.parent)
@@ -40,16 +47,16 @@ def download_file(
     temporary_path = output_path.with_suffix(output_path.suffix + ".part")
 
     if temporary_path.exists() and not overwrite:
-        print(f"[download] Partial file exists, removing: {temporary_path}")
+        progress_log(f"[download] Partial file exists, removing: {temporary_path}")
         temporary_path.unlink()
 
-    print(f"[download] URL: {url}")
-    print(f"[download] Output: {output_path}")
+    progress_log(f"[download] URL: {url}")
+    progress_log(f"[download] Output: {output_path}")
 
     last_error = None
 
     for attempt in range(1, max_retries + 1):
-        print(f"[download] Attempt {attempt}/{max_retries}")
+        progress_log(f"[download] Attempt {attempt}/{max_retries}")
 
         request = Request(
             url,
@@ -59,10 +66,32 @@ def download_file(
         try:
             with urlopen(request, timeout=timeout) as response:
                 with temporary_path.open("wb") as f:
-                    shutil.copyfileobj(response, f)
+                    total_header = response.headers.get("Content-Length")
+                    total = int(total_header) if total_header else None
+                    downloaded = 0
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress_download(
+                            output_path=output_path,
+                            downloaded=downloaded,
+                            total=total,
+                            attempt=attempt,
+                        )
 
             temporary_path.rename(output_path)
-            print(f"[download] Finished: {output_path}")
+            progress_download(
+                output_path=output_path,
+                downloaded=output_path.stat().st_size,
+                total=output_path.stat().st_size,
+                attempt=attempt,
+                done=True,
+            )
+            progress_log(f"[download] Finished: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             return
 
         except (HTTPError, URLError, TimeoutError) as e:
@@ -71,10 +100,10 @@ def download_file(
             if temporary_path.exists():
                 temporary_path.unlink()
 
-            print(f"[download] Failed attempt {attempt}/{max_retries}: {e}")
+            progress_log(f"[download] Failed attempt {attempt}/{max_retries}: {e}", level="warning")
 
             if attempt < max_retries:
-                print(
+                progress_log(
                     f"[download] Sleeping {retry_sleep_seconds} seconds before retry..."
                 )
                 time.sleep(retry_sleep_seconds)
@@ -103,6 +132,7 @@ def download_worldclim_direct_files(
     ensure_dir(raw_dir)
 
     file_specs = get_file_specs(source_cfg)
+    progress_set_stage_task_total(len(file_specs), label="downloads")
     download_cfg = source_cfg.get("download", {})
 
     mode = download_cfg.get("mode", "manual")
@@ -111,9 +141,9 @@ def download_worldclim_direct_files(
 
     paths: list[Path] = []
 
-    print("[worldclim] Direct file specs:")
+    progress_log("[worldclim] Direct file specs:")
     for spec in file_specs:
-        print(
+        progress_log(
             f"  - {spec['variable']} "
             f"{spec['gcm']} {spec['ssp']} {spec['period']}"
         )
@@ -131,7 +161,8 @@ def download_worldclim_direct_files(
         )
 
         if output_path.exists() and not overwrite:
-            print(f"[worldclim] Raw file already exists: {output_path}")
+            progress_log(f"[worldclim] Raw file already exists: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             paths.append(output_path)
             continue
 
@@ -178,7 +209,8 @@ def ensure_worldclim_zip(
     )
 
     if zip_path.exists() and not overwrite:
-        print(f"[worldclim] Raw ZIP already exists: {zip_path}")
+        progress_log(f"[worldclim] Raw ZIP already exists: {zip_path}")
+        progress_advance_stage_task(name=zip_path.name)
         return zip_path
 
     if not enabled or mode == "manual":
@@ -196,7 +228,8 @@ def ensure_worldclim_zip(
                 "  Re-run the pipeline."
             )
 
-        print(f"[worldclim] Manual mode. Found existing ZIP: {zip_path}")
+        progress_log(f"[worldclim] Manual mode. Found existing ZIP: {zip_path}")
+        progress_advance_stage_task(name=zip_path.name)
         return zip_path
 
     if mode != "auto":
@@ -233,14 +266,15 @@ def download_worldclim_raw_files(
     ensure_dir(raw_dir)
 
     zip_specs = get_zip_specs(source_cfg)
+    progress_set_stage_task_total(len(zip_specs), label="downloads")
     zip_paths = []
 
-    print("[worldclim] ZIP specs:")
+    progress_log("[worldclim] ZIP specs:")
     for spec in zip_specs:
         label = spec["zip_variable_code"]
         if spec.get("period"):
             label = f"{label}_{spec['period']}"
-        print(f"  - {label}")
+        progress_log(f"  - {label}")
 
     for zip_spec in zip_specs:
         zip_path = ensure_worldclim_zip(

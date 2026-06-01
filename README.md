@@ -48,6 +48,10 @@ For local development:
 pip install -e .
 ```
 
+The tracked `environment.yml` is intended to be portable. If a fully locked
+machine-specific environment is needed, keep it as a separate lock/export file
+rather than committing a local `prefix`.
+
 Copernicus WEkEO downloads require HDA credentials, normally through `~/.hdarc`
 or `HDA_USER` and `HDA_PASSWORD`.
 
@@ -119,6 +123,10 @@ pirineus-raster render-run \
   configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
 ```
 
+`validate-config` checks the effective source selections used by the runner. It
+also reports pre-run warnings such as missing target grids, so a recipe can be
+structurally valid while still needing `make-grid` before `build`.
+
 Check local WEkEO/HDA credentials before launching Copernicus downloads:
 
 ```bash
@@ -128,9 +136,11 @@ pirineus-raster check-credentials --setup
 
 ## React Workbench
 
-The React workbench is a visual editor for run configurations. It does not run
-raster jobs. It reads source catalogs from the Python API, builds a YAML run
-recipe, validates it, and leaves execution to the CLI or Slurm.
+The React workbench is a visual editor for run configurations. It reads source
+catalogs from the Python API, builds and validates YAML run recipes, can create
+new AOI config files, and can create the target grid for the selected AOI,
+CRS and resolution. Full raster dataset execution is still done through the
+CLI, the detached local helper, or Slurm.
 
 Start the config API:
 
@@ -188,6 +198,9 @@ Temporal selections are explicit because sources do not all behave the same:
   yearly summaries, or `raw_slices` for one output per selected year-month.
 - PDCA uses `output_mode: supplied_layers` because annual, monthly and
   seasonal layers are supplied by the source rather than computed here.
+- yearly static collections such as GHSL GHS-POP and ESA CCI Biomass expose
+  base variables in the variable picker and let the Temporal tab select years
+  or define year-range aggregations.
 - HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
   are generated during the Copernicus download/postprocess stage.
 
@@ -197,13 +210,14 @@ the UI can override them for a run. Standard raster reprojection methods include
 methods. `conservative_sum` is reserved for truly extensive variables whose cell
 values are totals/counts and should be redistributed by target/source pixel area.
 Precipitation in `mm` is treated as `intensive_depth`, not as an extensive cell
-total. Kriging-style methods are listed in the workbench as advanced interpolation
-families, but they are not direct raster warp methods and require a future
-geostatistical backend.
+total. Kriging-style and point-interpolation methods are not exposed as runnable
+options until a geostatistical backend exists.
 
 Source configs define provider-specific details:
 
 - source identity, citation and product metadata.
+- source domains under `domains.clip_aoi_config` and
+  `domains.output_aoi_config`.
 - raw file structure and download mode.
 - source CRS and native resolution.
 - enabled variables or indices.
@@ -223,6 +237,11 @@ submitted from a different directory.
   WEkEO HDA.
 - `pdca`: Pyrenean Digital Climate Atlas topoclimate rasters.
 - `igme_brgm`: transboundary Pyrenees geology vectors rasterized to the grid.
+- `openstreetmap`: Geofabrik PBF extracts filtered into anthropic vector
+  layers and rasterized as presence or distance features.
+- `ghsl`: GHSL GHS-POP population count grids with selectable native
+  resolution and temporal years.
+- `esa_cci`: ESA CCI Biomass above-ground biomass and uncertainty rasters.
 
 List available providers:
 
@@ -253,9 +272,11 @@ manifest raster against the declared reference grid and writes
 The project CRS is EPSG:3035 by default. Output resolution is configurable, but
 it should not be interpreted as increased source precision.
 
-For example, WorldClim `10m` means 10 arc-minutes, not 10 metres. The pipeline
-can align such layers to a 100 m grid for modelling convenience, but metadata
-must preserve the original source resolution semantics.
+WorldClim source resolutions are written as `30arcs`, `2.5arcmin`, `5arcmin`
+and `10arcmin` in user-facing configs and metadata. Provider download URLs
+still use the original WorldClim tokens such as `30s`, `2.5m`, `5m` and `10m`.
+The pipeline can align such layers to a 100 m grid for modelling convenience,
+but metadata must preserve the original source resolution semantics.
 
 Continuous variables generally use `bilinear` or `average` resampling.
 Categorical variables should use `nearest` or another category-preserving

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchCatalog, renderRunConfig, validateRunConfig } from "./api";
+import { createAoiConfig, createProjectGrid, fetchCatalog, renderRunConfig, validateRunConfig } from "./api";
 import type {
   AoiCatalog,
   CustomAggregation,
@@ -15,6 +15,35 @@ import { renderYaml } from "./yaml";
 import "./App.css";
 
 const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"];
+const defaultBackgroundUrl = "/backgrounds/pirineus-background.png";
+const backgroundManifestUrl = "/backgrounds/manifest.json";
+const backgroundRotationMs = 5 * 60 * 1000;
+const temporalDimensionKeys = new Set(["year", "years", "month", "months", "season", "seasons"]);
+
+function normalizeBackgroundUrls(value: unknown) {
+  if (!Array.isArray(value)) return [defaultBackgroundUrl];
+
+  const urls = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+
+  return urls.length > 0 ? [...new Set(urls)] : [defaultBackgroundUrl];
+}
+
+function pickRandomBackground(urls: string[], currentUrl?: string) {
+  if (urls.length === 0) return defaultBackgroundUrl;
+  if (urls.length === 1) return urls[0];
+
+  let nextUrl = currentUrl;
+  for (let attempt = 0; attempt < 8 && nextUrl === currentUrl; attempt += 1) {
+    nextUrl = urls[Math.floor(Math.random() * urls.length)];
+  }
+  return nextUrl ?? urls[0];
+}
+
+function cssBackgroundImage(url: string) {
+  return `url("${url.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")`;
+}
 
 function sourceVariables(source: SourceCatalog) {
   return [...(source.variables ?? []), ...(source.layers ?? [])];
@@ -96,22 +125,31 @@ function defaultRange(value?: [number, number], fallback: [number, number] = [1,
   return Array.isArray(value) && value.length === 2 ? [Number(value[0]), Number(value[1])] : fallback;
 }
 
+function sourceDimensionEntries(source: SourceCatalog) {
+  return Object.entries(source.dimensions ?? {}).filter(
+    ([key]) => !temporalDimensionKeys.has(key.toLowerCase())
+  );
+}
+
+function allValuesSelected<T extends string | number>(selected: T[], values: T[]) {
+  return values.length > 0 && selected.length === values.length && values.every((value) => selected.includes(value));
+}
+
 function sourceTemporalSelection(source: SourceCatalog): TemporalSelection {
   const temporal = source.temporal;
-  const layerOptions = temporal?.temporal_layers;
 
   return {
     outputMode: temporal?.default_output_mode ?? "static",
     months: defaultRange(temporal?.default_months),
     years: temporal?.default_years ? defaultRange(temporal.default_years) : undefined,
     layers: {
-      annual: layerOptions?.annual ?? true,
-      annual_index: layerOptions?.annual_index ?? true,
-      months: [...(layerOptions?.months ?? [])],
-      seasons: [...(layerOptions?.seasons ?? [])],
-      years: [...(layerOptions?.years ?? [])]
+      annual: false,
+      annual_index: false,
+      months: [],
+      seasons: [],
+      years: []
     },
-    aggregationUse: sourceAggregationNames(source),
+    aggregationUse: [],
     customAggregations: []
   };
 }
@@ -148,9 +186,9 @@ function buildTemporalConfig(source: SourceCatalog | undefined, selection: Sourc
       const base: Record<string, unknown> = {
         name: item.name,
         form: item.form,
-        months: item.months,
         variables: item.variables
       };
+      if (item.months) base.months = item.months;
       if (item.years) base.years = item.years;
       if (item.form === "year_then_across_years") {
         base.within_year_metric = item.within_year_metric ?? "sum";
@@ -207,8 +245,8 @@ function createSelection(source: SourceCatalog): SourceSelection {
     .map((item) => item.name);
 
   const dimensions: Record<string, string[]> = {};
-  for (const [key, values] of Object.entries(source.dimensions ?? {})) {
-    dimensions[key] = [...values];
+  for (const [key] of sourceDimensionEntries(source)) {
+    dimensions[key] = [];
   }
 
   return {
@@ -240,12 +278,15 @@ function App() {
   const [resolution, setResolution] = useState(100);
   const [stages, setStages] = useState<string[]>(["all"]);
   const [datasetDir, setDatasetDir] = useState("data_processed/datasets/pallars_workbench_100m");
+  const [createdAois, setCreatedAois] = useState<AoiCatalog[]>([]);
   const [selections, setSelections] = useState<Record<string, SourceSelection>>({});
   const [derivedFeatures, setDerivedFeatures] = useState<DerivedFeatureConfig[]>([]);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [serverYaml, setServerYaml] = useState("");
   const [apiError, setApiError] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const [backgroundUrls, setBackgroundUrls] = useState<string[]>([defaultBackgroundUrl]);
+  const [backgroundUrl, setBackgroundUrl] = useState(defaultBackgroundUrl);
 
   useEffect(() => {
     fetchCatalog()
@@ -275,6 +316,53 @@ function App() {
       });
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch(backgroundManifestUrl, { cache: "no-cache" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((manifest: unknown) => {
+        if (cancelled) return;
+        const images = normalizeBackgroundUrls(
+          manifest && typeof manifest === "object" && "images" in manifest
+            ? (manifest as { images?: unknown }).images
+            : undefined
+        );
+        setBackgroundUrls(images);
+        setBackgroundUrl(pickRandomBackground(images));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setBackgroundUrls([defaultBackgroundUrl]);
+        setBackgroundUrl(defaultBackgroundUrl);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--pirineus-background-image",
+      cssBackgroundImage(backgroundUrl)
+    );
+
+    return () => {
+      document.documentElement.style.removeProperty("--pirineus-background-image");
+    };
+  }, [backgroundUrl]);
+
+  useEffect(() => {
+    if (backgroundUrls.length <= 1) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      setBackgroundUrl((current) => pickRandomBackground(backgroundUrls, current));
+    }, backgroundRotationMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [backgroundUrls]);
+
   const selectedSources = useMemo(
     () => Object.values(selections).filter((selection) => selection.selected),
     [selections]
@@ -284,6 +372,14 @@ function App() {
     () => catalog?.sources.filter((source) => selections[source.id]?.selected) ?? [],
     [catalog?.sources, selections]
   );
+
+  const availableAois = useMemo(() => {
+    const byPath = new Map<string, AoiCatalog>();
+    for (const aoi of [...(catalog?.aois ?? []), ...createdAois]) {
+      byPath.set(aoi.path, aoi);
+    }
+    return [...byPath.values()];
+  }, [catalog?.aois, createdAois]);
 
   const activeSource = useMemo(
     () => selectedCatalogSources.find((source) => source.id === activeSourceId),
@@ -307,7 +403,9 @@ function App() {
         (source?.layers ?? []).some((layer) => layer.name === name)
       );
       const dimensions = Object.fromEntries(
-        Object.entries(selection.dimensions).filter(([, values]) => values.length > 0)
+        Object.entries(selection.dimensions).filter(
+          ([key]) => !temporalDimensionKeys.has(key.toLowerCase())
+        )
       );
 
       const temporal = buildTemporalConfig(source, selection);
@@ -493,6 +591,7 @@ function App() {
       {activeTab === "Project" && catalog && (
         <ProjectPanel
           catalog={catalog}
+          aois={availableAois}
           runName={runName}
           setRunName={setRunName}
           description={description}
@@ -509,6 +608,10 @@ function App() {
           setStages={setStages}
           datasetDir={datasetDir}
           setDatasetDir={setDatasetDir}
+          onAoiCreated={(aoi) => {
+            setCreatedAois((current) => [...current.filter((item) => item.path !== aoi.path), aoi]);
+            setAoiPath(aoi.path);
+          }}
         />
       )}
 
@@ -580,6 +683,7 @@ function App() {
 
 interface ProjectPanelProps {
   catalog: WorkbenchCatalog | null;
+  aois: AoiCatalog[];
   runName: string;
   setRunName: (value: string) => void;
   description: string;
@@ -596,12 +700,69 @@ interface ProjectPanelProps {
   setStages: (value: string[]) => void;
   datasetDir: string;
   setDatasetDir: (value: string) => void;
+  onAoiCreated: (aoi: AoiCatalog) => void;
 }
 
 function ProjectPanel(props: ProjectPanelProps) {
-  const aois = props.catalog?.aois ?? [];
+  const aois = props.aois;
   const resolutions = props.catalog?.project.available_resolutions_m ?? [100];
   const supportedStages = props.catalog?.supported_stages ?? ["download", "clip", "build", "all"];
+  const [aoiForm, setAoiForm] = useState({
+    name: "custom_aoi",
+    description: "Workbench-created AOI.",
+    crs: props.targetCrs,
+    xmin: "",
+    xmax: "",
+    ymin: "",
+    ymax: ""
+  });
+  const [aoiStatus, setAoiStatus] = useState<string | null>(null);
+  const [gridStatus, setGridStatus] = useState<string | null>(null);
+  const canCreateAoi =
+    aoiForm.name.trim().length > 0 &&
+    aoiForm.crs.trim().length > 0 &&
+    [aoiForm.xmin, aoiForm.xmax, aoiForm.ymin, aoiForm.ymax].every((value) =>
+      value.trim().length > 0 && Number.isFinite(Number(value))
+    );
+
+  async function submitAoi() {
+    if (!canCreateAoi) return;
+    setAoiStatus(null);
+    try {
+      const result = await createAoiConfig({
+        name: aoiForm.name,
+        description: aoiForm.description,
+        crs: aoiForm.crs,
+        bounds: {
+          xmin: Number(aoiForm.xmin),
+          xmax: Number(aoiForm.xmax),
+          ymin: Number(aoiForm.ymin),
+          ymax: Number(aoiForm.ymax)
+        }
+      });
+      props.onAoiCreated(result.aoi);
+      props.setTargetCrs(result.aoi.crs ?? props.targetCrs);
+      setAoiStatus(`Created ${result.aoi.path}`);
+    } catch (error) {
+      setAoiStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function submitGrid() {
+    setGridStatus(null);
+    try {
+      const result = await createProjectGrid({
+        project_config: props.projectConfig,
+        aoi_config: props.aoiPath,
+        crs: props.targetCrs,
+        resolution_m: props.resolution,
+        overwrite: false
+      });
+      setGridStatus(`Grid ready at ${result.grid_path}`);
+    } catch (error) {
+      setGridStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   return (
     <main className="workspace two-col">
@@ -637,14 +798,69 @@ function ProjectPanel(props: ProjectPanelProps) {
             </select>
           </label>
           <label>
-            Resolution
+            Resolution preset
             <select value={props.resolution} onChange={(event) => props.setResolution(Number(event.target.value))}>
+              {!resolutions.includes(props.resolution) && (
+                <option value={props.resolution}>{props.resolution} m</option>
+              )}
               {resolutions.map((item) => (
                 <option key={item} value={item}>{item} m</option>
               ))}
             </select>
           </label>
+          <label>
+            Custom target resolution
+            <input
+              type="number"
+              min={1}
+              value={props.resolution}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next) && next > 0) props.setResolution(next);
+              }}
+            />
+          </label>
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>Create AOI</h2>
+        <div className="form-grid">
+          <label>
+            AOI name
+            <input value={aoiForm.name} onChange={(event) => setAoiForm({ ...aoiForm, name: event.target.value })} />
+          </label>
+          <label>
+            AOI CRS
+            <input value={aoiForm.crs} onChange={(event) => setAoiForm({ ...aoiForm, crs: event.target.value })} />
+          </label>
+          <label className="span-2">
+            Description
+            <input value={aoiForm.description} onChange={(event) => setAoiForm({ ...aoiForm, description: event.target.value })} />
+          </label>
+          <label>
+            xmin
+            <input type="number" value={aoiForm.xmin} onChange={(event) => setAoiForm({ ...aoiForm, xmin: event.target.value })} />
+          </label>
+          <label>
+            xmax
+            <input type="number" value={aoiForm.xmax} onChange={(event) => setAoiForm({ ...aoiForm, xmax: event.target.value })} />
+          </label>
+          <label>
+            ymin
+            <input type="number" value={aoiForm.ymin} onChange={(event) => setAoiForm({ ...aoiForm, ymin: event.target.value })} />
+          </label>
+          <label>
+            ymax
+            <input type="number" value={aoiForm.ymax} onChange={(event) => setAoiForm({ ...aoiForm, ymax: event.target.value })} />
+          </label>
+        </div>
+        <div className="button-row aoi-actions">
+          <button className="primary" disabled={!canCreateAoi} onClick={submitAoi}>Create AOI config</button>
+          <button className="ghost" onClick={submitGrid}>Create target grid</button>
+        </div>
+        {aoiStatus && <div className="notice info">{aoiStatus}</div>}
+        {gridStatus && <div className="notice info">{gridStatus}</div>}
       </section>
 
       <section className="panel">
@@ -940,6 +1156,7 @@ function VariablesPanel({
 }) {
   const variables = sourceVariables(source);
   const selectedVariableItems = variables.filter((variable) => selection.variables.includes(variable.name));
+  const dimensionEntries = sourceDimensionEntries(source);
 
   return (
     <main className="workspace two-col wide-left">
@@ -993,18 +1210,40 @@ function VariablesPanel({
 
       <section className="panel">
         <h2>Dimensions</h2>
-        {Object.entries(source.dimensions ?? {}).length === 0 && (
+        {dimensionEntries.length === 0 && (
           <div className="notice info">This source has no selectable dimensions.</div>
         )}
-        {Object.entries(source.dimensions ?? {}).map(([key, values]) => (
+        {dimensionEntries.map(([key, values]) => {
+          const selectedValues = selection.dimensions[key] ?? [];
+          const allSelected = allValuesSelected(selectedValues, values);
+          return (
           <div className="dimension-block" key={key}>
             <h3>{key}</h3>
             <div className="choice-list compact">
+              <label className="check-row rich">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() =>
+                    patchSelectionMut(source.id, (current) => ({
+                      ...current,
+                      dimensions: {
+                        ...current.dimensions,
+                        [key]: allSelected ? [] : [...values]
+                      }
+                    }))
+                  }
+                />
+                <span>
+                  <strong>All</strong>
+                  <small>{values.length} available values</small>
+                </span>
+              </label>
               {values.map((value) => (
                 <label key={value} className="check-row">
                   <input
                     type="checkbox"
-                    checked={(selection.dimensions[key] ?? []).includes(value)}
+                    checked={selectedValues.includes(value)}
                     onChange={() =>
                       patchSelectionMut(source.id, (current) => ({
                         ...current,
@@ -1020,7 +1259,8 @@ function VariablesPanel({
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         <div className="dimension-block">
           <h2>Resampling</h2>
@@ -1084,12 +1324,17 @@ function TemporalPanel({
   const capability = source.temporal;
   const temporal = selection.temporal;
   const isTimeSeries = capability?.kind === "year_month_series";
-  const defaultForm = isTimeSeries ? "year_then_across_years" : "month_range_metric";
+  const isYearlyCollection = capability?.kind === "yearly_static_collection";
+  const defaultForm = isYearlyCollection
+    ? "year_range_metric"
+    : isTimeSeries
+      ? "year_then_across_years"
+      : "month_range_metric";
   const [custom, setCustom] = useState<CustomAggregation>({
-    name: "custom_mean",
+    name: isYearlyCollection ? "custom_year_mean" : "custom_mean",
     form: defaultForm,
     metric: "mean",
-    months: [1, 12],
+    months: isYearlyCollection ? undefined : [1, 12],
     years: temporal.years,
     within_year_metric: "sum",
     across_year_metric: "mean",
@@ -1098,10 +1343,10 @@ function TemporalPanel({
 
   useEffect(() => {
     setCustom({
-      name: isTimeSeries ? "custom_period" : "custom_mean",
-      form: isTimeSeries ? "year_then_across_years" : "month_range_metric",
+      name: isYearlyCollection ? "custom_year_mean" : isTimeSeries ? "custom_period" : "custom_mean",
+      form: isYearlyCollection ? "year_range_metric" : isTimeSeries ? "year_then_across_years" : "month_range_metric",
       metric: "mean",
-      months: temporal.months,
+      months: isYearlyCollection ? undefined : temporal.months,
       years: temporal.years,
       within_year_metric: "sum",
       across_year_metric: "mean",
@@ -1261,28 +1506,58 @@ function TemporalPanel({
 
         {temporal.outputMode === "supplied_layers" && supportsSupplied && (
           <div className="temporal-layer-editor">
+            <div className="notice info compact-notice">
+              Select only the supplied temporal layers you want to build. Year choices live here,
+              not in the Variables dimensions panel.
+            </div>
             <div className="choice-list compact">
-              <label className="check-row">
+              {capability?.temporal_layers?.annual && (
+              <label className="check-row rich">
                 <input
                   type="checkbox"
                   checked={temporal.layers.annual}
                   onChange={() => patchTemporalLayers({ annual: !temporal.layers.annual })}
                 />
-                <span>Annual layers</span>
+                <span>
+                  <strong>Annual summary layers</strong>
+                  <small>One raster per variable summarizing the whole year.</small>
+                </span>
               </label>
-              <label className="check-row">
+              )}
+              {capability?.temporal_layers?.annual_index && (
+              <label className="check-row rich">
                 <input
                   type="checkbox"
                   checked={temporal.layers.annual_index}
                   onChange={() => patchTemporalLayers({ annual_index: !temporal.layers.annual_index })}
                 />
-                <span>Annual index layers</span>
+                <span>
+                  <strong>Annual index layers</strong>
+                  <small>Year-level index rasters supplied directly by the source.</small>
+                </span>
               </label>
+              )}
             </div>
             {(capability?.temporal_layers?.years ?? []).length > 0 && (
               <>
                 <h3>Years</h3>
                 <div className="choice-list compact token-grid">
+                  <label className="check-row rich">
+                    <input
+                      type="checkbox"
+                      checked={allValuesSelected(temporal.layers.years, capability?.temporal_layers?.years ?? [])}
+                      onChange={() => {
+                        const years = capability?.temporal_layers?.years ?? [];
+                        patchTemporalLayers({
+                          years: allValuesSelected(temporal.layers.years, years) ? [] : [...years]
+                        });
+                      }}
+                    />
+                    <span>
+                      <strong>All years</strong>
+                      <small>{(capability?.temporal_layers?.years ?? []).length} available years</small>
+                    </span>
+                  </label>
                   {(capability?.temporal_layers?.years ?? []).map((year) => (
                     <label key={year} className="check-row">
                       <input
@@ -1302,32 +1577,72 @@ function TemporalPanel({
                 </div>
               </>
             )}
-            <h3>Months</h3>
-            <div className="choice-list compact token-grid">
-              {(capability?.temporal_layers?.months ?? []).map((month) => (
-                <label key={month} className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={temporal.layers.months.includes(month)}
-                    onChange={() => patchTemporalLayers({ months: toggleValue(temporal.layers.months, month) })}
-                  />
-                  <span>{month}</span>
-                </label>
-              ))}
-            </div>
-            <h3>Seasons</h3>
-            <div className="choice-list compact token-grid">
-              {(capability?.temporal_layers?.seasons ?? []).map((season) => (
-                <label key={season} className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={temporal.layers.seasons.includes(season)}
-                    onChange={() => patchTemporalLayers({ seasons: toggleValue(temporal.layers.seasons, season) })}
-                  />
-                  <span>{season}</span>
-                </label>
-              ))}
-            </div>
+            {(capability?.temporal_layers?.months ?? []).length > 0 && (
+              <>
+                <h3>Months</h3>
+                <div className="choice-list compact token-grid">
+                  <label className="check-row rich">
+                    <input
+                      type="checkbox"
+                      checked={allValuesSelected(temporal.layers.months, capability?.temporal_layers?.months ?? [])}
+                      onChange={() => {
+                        const months = capability?.temporal_layers?.months ?? [];
+                        patchTemporalLayers({
+                          months: allValuesSelected(temporal.layers.months, months) ? [] : [...months]
+                        });
+                      }}
+                    />
+                    <span>
+                      <strong>All months</strong>
+                      <small>{(capability?.temporal_layers?.months ?? []).length} available months</small>
+                    </span>
+                  </label>
+                  {(capability?.temporal_layers?.months ?? []).map((month) => (
+                    <label key={month} className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={temporal.layers.months.includes(month)}
+                        onChange={() => patchTemporalLayers({ months: toggleValue(temporal.layers.months, month) })}
+                      />
+                      <span>{month}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+            {(capability?.temporal_layers?.seasons ?? []).length > 0 && (
+              <>
+                <h3>Seasons</h3>
+                <div className="choice-list compact token-grid">
+                  <label className="check-row rich">
+                    <input
+                      type="checkbox"
+                      checked={allValuesSelected(temporal.layers.seasons, capability?.temporal_layers?.seasons ?? [])}
+                      onChange={() => {
+                        const seasons = capability?.temporal_layers?.seasons ?? [];
+                        patchTemporalLayers({
+                          seasons: allValuesSelected(temporal.layers.seasons, seasons) ? [] : [...seasons]
+                        });
+                      }}
+                    />
+                    <span>
+                      <strong>All seasons</strong>
+                      <small>{(capability?.temporal_layers?.seasons ?? []).length} available seasons</small>
+                    </span>
+                  </label>
+                  {(capability?.temporal_layers?.seasons ?? []).map((season) => (
+                    <label key={season} className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={temporal.layers.seasons.includes(season)}
+                        onChange={() => patchTemporalLayers({ seasons: toggleValue(temporal.layers.seasons, season) })}
+                      />
+                      <span>{season}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1369,7 +1684,7 @@ function TemporalPanel({
                   </select>
                 </label>
               )}
-              {isTimeSeries && (
+              {(isTimeSeries || isYearlyCollection) && (
                 <>
                   <label>
                     Start year
@@ -1415,14 +1730,40 @@ function TemporalPanel({
                   </label>
                 </>
               )}
-              <label>
-                Start month
-                <input type="number" min={1} max={12} value={custom.months[0]} onChange={(event) => setCustom({ ...custom, months: [Number(event.target.value), custom.months[1]] })} />
-              </label>
-              <label>
-                End month
-                <input type="number" min={1} max={12} value={custom.months[1]} onChange={(event) => setCustom({ ...custom, months: [custom.months[0], Number(event.target.value)] })} />
-              </label>
+              {!isYearlyCollection && (
+                <>
+                  <label>
+                    Start month
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={custom.months?.[0] ?? 1}
+                      onChange={(event) =>
+                        setCustom({
+                          ...custom,
+                          months: [Number(event.target.value), custom.months?.[1] ?? 12]
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    End month
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={custom.months?.[1] ?? 12}
+                      onChange={(event) =>
+                        setCustom({
+                          ...custom,
+                          months: [custom.months?.[0] ?? 1, Number(event.target.value)]
+                        })
+                      }
+                    />
+                  </label>
+                </>
+              )}
             </div>
             <h3>Variables</h3>
             <div className="choice-list compact custom-vars">
@@ -1474,7 +1815,7 @@ function TemporalPanel({
                         ? `${item.within_year_metric ?? "sum"} then ${item.across_year_metric ?? "mean"}`
                         : item.metric}
                       {item.years ? ` · years ${item.years.join("-")}` : ""}
-                      · months {item.months.join("-")} · {item.variables.join(", ")}
+                      {item.months ? ` · months ${item.months.join("-")}` : ""} · {item.variables.join(", ")}
                     </small>
                   </span>
                 <button
@@ -1525,6 +1866,12 @@ function buildPlannedLayers(
   selectedSources: SourceSelection[]
 ): PlannedLayer[] {
   const layers: PlannedLayer[] = [];
+  const dimensionValues = (selection: SourceSelection, key: string) => {
+    if (Object.prototype.hasOwnProperty.call(selection.dimensions, key)) {
+      return selection.dimensions[key] ?? [];
+    }
+    return [undefined];
+  };
 
   for (const selection of selectedSources) {
     const source = catalog.sources.find((item) => item.id === selection.id);
@@ -1538,11 +1885,39 @@ function buildPlannedLayers(
     const temporalAggregations = selection.temporal.outputMode === "aggregate" && aggregations.length > 0
       ? aggregations
       : [undefined];
-    const gcms = selection.dimensions.gcms?.length ? selection.dimensions.gcms : [undefined];
-    const ssps = selection.dimensions.ssps?.length ? selection.dimensions.ssps : [undefined];
-    const periods = selection.dimensions.periods?.length ? selection.dimensions.periods : [undefined];
+    const gcms = dimensionValues(selection, "gcms");
+    const ssps = dimensionValues(selection, "ssps");
+    const periods = dimensionValues(selection, "periods");
 
     for (const variable of variables) {
+      const variablePattern = typeof variable.temporal?.variable_pattern === "string"
+        ? variable.temporal.variable_pattern
+        : undefined;
+      const yearlySuppliedYears = source.temporal?.kind === "yearly_static_collection" &&
+        selection.temporal.outputMode === "supplied_layers"
+        ? selection.temporal.layers.years
+        : [];
+
+      if (variablePattern && yearlySuppliedYears.length > 0) {
+        for (const year of yearlySuppliedYears) {
+          const expandedVariable = variablePattern.replace("{year}", String(year));
+          const query: DerivedInputQuery = {
+            source_id: source.id,
+            variable: expandedVariable
+          };
+          layers.push({
+            id: JSON.stringify(query),
+            label: [sourceShortName(source), variable.name, year].join(" · "),
+            sourceTitle: sourceDisplayName(source),
+            query,
+            variable: expandedVariable,
+            unit: variable.unit,
+            valueSemantics: variable.value_semantics ?? variable.data_type
+          });
+        }
+        continue;
+      }
+
       for (const aggregation of temporalAggregations) {
         for (const gcm of gcms) {
           for (const ssp of ssps) {
@@ -1643,8 +2018,15 @@ function DerivedPanel({
   const [recipe, setRecipe] = useState("thermal_range");
   const [primaryLayerId, setPrimaryLayerId] = useState("");
   const [secondaryLayerId, setSecondaryLayerId] = useState("");
-  const [outputName, setOutputName] = useState("");
+  const [recipeInputs, setRecipeInputs] = useState<Record<string, string>>({});
+  const [recipeOutputName, setRecipeOutputName] = useState("");
   const [expression, setExpression] = useState("x - y");
+  const [expressionLayerIds, setExpressionLayerIds] = useState<Record<string, string>>({});
+  const [expressionOutputName, setExpressionOutputName] = useState("");
+  const [terrainOutputName, setTerrainOutputName] = useState("");
+  const [focalOutputName, setFocalOutputName] = useState("");
+  const [distanceOutputName, setDistanceOutputName] = useState("");
+  const [distanceLayerId, setDistanceLayerId] = useState("");
   const [unit, setUnit] = useState("");
   const [valueSemantics, setValueSemantics] = useState("intensive");
   const [description, setDescription] = useState("");
@@ -1661,6 +2043,7 @@ function DerivedPanel({
   const firstLayer = plannedLayers[0];
   const primaryLayer = layerById.get(primaryLayerId) ?? firstLayer;
   const secondaryLayer = layerById.get(secondaryLayerId) ?? plannedLayers[1] ?? firstLayer;
+  const distanceLayer = layerById.get(distanceLayerId) ?? primaryLayer;
   const primaryIsDem = isDemLayer(primaryLayer);
 
   function findLayer(variable: string, sameAs?: PlannedLayer) {
@@ -1679,8 +2062,29 @@ function DerivedPanel({
 
   function addFeature(feature: DerivedFeatureConfig) {
     setDerivedFeatures([...derivedFeatures, feature]);
-    setOutputName("");
     setDescription("");
+  }
+
+  function layerFromRecipeInput(alias: string, fallback?: PlannedLayer) {
+    return layerById.get(recipeInputs[alias] ?? "") ?? fallback;
+  }
+
+  function recipeInputSelect(alias: string, label: string, fallback?: PlannedLayer) {
+    return (
+      <label>
+        {label}
+        <select
+          value={recipeInputs[alias] ?? ""}
+          onChange={(event) => setRecipeInputs({ ...recipeInputs, [alias]: event.target.value })}
+        >
+          {fallback && <option value="">Auto: {fallback.label}</option>}
+          {!fallback && <option value="">Select layer</option>}
+          {plannedLayers.map((layer) => (
+            <option key={layer.id} value={layer.id}>{layer.label}</option>
+          ))}
+        </select>
+      </label>
+    );
   }
 
   function addGuidedRecipe() {
@@ -1694,78 +2098,102 @@ function DerivedPanel({
     if (recipe === "thermal_range") {
       const tmax = findLayer("tmax", primaryLayer) ?? findLayer("tmax");
       const tmin = findLayer("tmin", tmax ?? primaryLayer) ?? findLayer("tmin");
-      if (!tmax || !tmin) return;
-      inputs = { tmax: tmax.query, tmin: tmin.query };
+      const selectedTmax = layerFromRecipeInput("tmax", tmax);
+      const selectedTmin = layerFromRecipeInput("tmin", tmin);
+      if (!selectedTmax || !selectedTmin) return;
+      inputs = { tmax: selectedTmax.query, tmin: selectedTmin.query };
       defaultUnit = unit || "degC";
     } else if (recipe === "water_balance" || recipe === "aridity_index") {
       const prec = findLayer("prec", primaryLayer) ?? findLayer("prec");
       const pet = findLayer("pet", prec ?? primaryLayer) ?? findLayer("pet");
-      if (!prec || !pet) return;
-      inputs = { prec: prec.query, pet: pet.query };
+      const selectedPrec = layerFromRecipeInput("prec", prec);
+      const selectedPet = layerFromRecipeInput("pet", pet);
+      if (!selectedPrec || !selectedPet) return;
+      inputs = { prec: selectedPrec.query, pet: selectedPet.query };
       defaultUnit = recipe === "aridity_index" ? "ratio" : (unit || "mm");
       parameters = recipe === "aridity_index" ? { convention: "prec_over_pet" } : {};
     } else if (recipe === "snow_persistence_ratio") {
       const snow = findLayer("snow_days", primaryLayer) ?? primaryLayer;
       const valid = findLayer("valid_days", snow) ?? secondaryLayer;
-      if (!snow || !valid) return;
-      inputs = { snow_days: snow.query, valid_days: valid.query };
+      const selectedSnow = layerFromRecipeInput("snow_days", snow);
+      const selectedValid = layerFromRecipeInput("valid_days", valid);
+      if (!selectedSnow || !selectedValid) return;
+      inputs = { snow_days: selectedSnow.query, valid_days: selectedValid.query };
       defaultUnit = "ratio";
     } else if (recipe === "seasonal_contrast") {
-      if (!secondaryLayer) return;
-      inputs = { a: primaryLayer.query, b: secondaryLayer.query };
+      const a = layerFromRecipeInput("a", primaryLayer);
+      const b = layerFromRecipeInput("b", secondaryLayer);
+      if (!a || !b) return;
+      inputs = { a: a.query, b: b.query };
       parameters = { metric: "difference" };
-      defaultUnit = unit || primaryLayer.unit || "source_units";
+      defaultUnit = unit || a.unit || "source_units";
     } else if (recipe === "binary_threshold_mask") {
-      inputs = { x: primaryLayer.query };
+      const x = layerFromRecipeInput("x", primaryLayer);
+      if (!x) return;
+      inputs = { x: x.query };
       parameters = { operator: ">=", threshold };
       defaultUnit = "binary";
-      defaultExpressionName = `${primaryLayer.variable}_threshold_mask`;
+      defaultExpressionName = `${x.variable}_threshold_mask`;
     } else if (recipe === "class_mask") {
-      inputs = { x: primaryLayer.query };
+      const x = layerFromRecipeInput("x", primaryLayer);
+      if (!x) return;
+      inputs = { x: x.query };
       parameters = { class_value: classValue };
       defaultUnit = "binary";
-      defaultExpressionName = `${primaryLayer.variable}_class_${classValue}_mask`;
+      defaultExpressionName = `${x.variable}_class_${classValue}_mask`;
     }
 
     addFeature({
-      name: sanitizeDerivedName(outputName || defaultExpressionName),
+      name: sanitizeDerivedName(recipeOutputName || defaultExpressionName),
       operation: "recipe",
       recipe,
-      description: description || humanizeId(outputName || defaultExpressionName),
+      description: description || humanizeId(recipeOutputName || defaultExpressionName),
       unit: defaultUnit,
       value_semantics: recipe.includes("mask") ? "categorical" : valueSemantics,
       output_dtype: recipe.includes("mask") ? "uint8" : "float32",
       parameters,
       inputs
     });
+    setRecipeOutputName("");
   }
 
   function addExpression() {
-    if (!primaryLayer) return;
-    const inputs: Record<string, DerivedInputQuery> = { x: primaryLayer.query };
-    if (secondaryLayer) inputs.y = secondaryLayer.query;
+    const xLayer = layerById.get(expressionLayerIds.x ?? "") ?? primaryLayer;
+    const yLayer = layerById.get(expressionLayerIds.y ?? "") ?? secondaryLayer;
+    const zLayer = layerById.get(expressionLayerIds.z ?? "");
+    if (!xLayer) return;
+    const inputs: Record<string, DerivedInputQuery> = { x: xLayer.query };
+    if (yLayer) inputs.y = yLayer.query;
+    if (zLayer) inputs.z = zLayer.query;
     addFeature({
-      name: sanitizeDerivedName(outputName || "custom_expression"),
+      name: sanitizeDerivedName(expressionOutputName || "custom_expression"),
       operation: "expression",
       expression,
       description: description || "Custom derived raster expression.",
-      unit: unit || primaryLayer.unit || "unitless",
+      unit: unit || xLayer.unit || "unitless",
       value_semantics: valueSemantics,
       output_dtype: "float32",
       inputs
     });
+    setExpressionOutputName("");
   }
 
   function addSpatialOperation(operation: "terrain" | "focal" | "distance") {
-    if (!primaryLayer) return;
+    const inputLayer = operation === "distance" ? distanceLayer : primaryLayer;
+    if (!inputLayer) return;
     if (operation === "terrain" && !primaryIsDem) return;
     const spatialMethod = operation === "terrain" ? terrainMethod : operation === "focal" ? focalMethod : "distance_to_mask";
+    const nameFromState = operation === "terrain"
+      ? terrainOutputName
+      : operation === "focal"
+        ? focalOutputName
+        : distanceOutputName;
     addFeature({
-      name: sanitizeDerivedName(outputName || `${primaryLayer.variable}_${spatialMethod}`),
+      name: sanitizeDerivedName(nameFromState || `${inputLayer.variable}_${spatialMethod}`),
       operation,
       method: spatialMethod,
-      description: description || `${humanizeId(spatialMethod)} derived from ${primaryLayer.label}.`,
-      unit: operation === "distance" ? "m" : unit || primaryLayer.unit || "unitless",
+      description: description || `${humanizeId(spatialMethod)} derived from ${inputLayer.label}.`,
+      unit: operation === "distance" ? "m" : unit || inputLayer.unit || "unitless",
       value_semantics: operation === "distance" ? "intensive" : valueSemantics,
       output_dtype: "float32",
       parameters: {
@@ -1773,9 +2201,12 @@ function DerivedPanel({
         class_value: operation === "distance" ? classValue : undefined
       },
       inputs: {
-        [operation === "terrain" ? "dem" : operation === "distance" ? "mask" : "x"]: primaryLayer.query
+        [operation === "terrain" ? "dem" : operation === "distance" ? "mask" : "x"]: inputLayer.query
       }
     });
+    if (operation === "terrain") setTerrainOutputName("");
+    if (operation === "focal") setFocalOutputName("");
+    if (operation === "distance") setDistanceOutputName("");
   }
 
   return (
@@ -1819,34 +2250,51 @@ function DerivedPanel({
             </select>
             <small className="field-hint">{recipeHelp[recipe]}</small>
           </label>
-          <label>
-            Main input
-            <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
-              {plannedLayers.map((layer) => (
-                <option key={layer.id} value={layer.id}>{layer.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Secondary input
-            <select value={secondaryLayer?.id ?? ""} onChange={(event) => setSecondaryLayerId(event.target.value)}>
-              {plannedLayers.map((layer) => (
-                <option key={layer.id} value={layer.id}>{layer.label}</option>
-              ))}
-            </select>
-          </label>
+          {recipe === "thermal_range" && (
+            <>
+              {recipeInputSelect("tmax", "Maximum temperature input", findLayer("tmax", primaryLayer) ?? findLayer("tmax"))}
+              {recipeInputSelect("tmin", "Minimum temperature input", findLayer("tmin", primaryLayer) ?? findLayer("tmin"))}
+            </>
+          )}
+          {(recipe === "water_balance" || recipe === "aridity_index") && (
+            <>
+              {recipeInputSelect("prec", "Precipitation input", findLayer("prec", primaryLayer) ?? findLayer("prec"))}
+              {recipeInputSelect("pet", "PET input", findLayer("pet", primaryLayer) ?? findLayer("pet"))}
+            </>
+          )}
+          {recipe === "seasonal_contrast" && (
+            <>
+              {recipeInputSelect("a", "First input", primaryLayer)}
+              {recipeInputSelect("b", "Second input", secondaryLayer)}
+            </>
+          )}
+          {recipe === "snow_persistence_ratio" && (
+            <>
+              {recipeInputSelect("snow_days", "Snow-days input", findLayer("snow_days", primaryLayer) ?? primaryLayer)}
+              {recipeInputSelect("valid_days", "Valid-days input", findLayer("valid_days", primaryLayer) ?? secondaryLayer)}
+            </>
+          )}
+          {(recipe === "binary_threshold_mask" || recipe === "class_mask") && (
+            <>
+              {recipeInputSelect("x", "Mask input", primaryLayer)}
+            </>
+          )}
           <label>
             Output name
-            <input value={outputName} onChange={(event) => setOutputName(event.target.value)} placeholder="auto if blank" />
+            <input value={recipeOutputName} onChange={(event) => setRecipeOutputName(event.target.value)} placeholder="auto if blank" />
           </label>
-          <label>
-            Threshold
-            <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-          </label>
-          <label>
-            Class value
-            <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
-          </label>
+          {recipe === "binary_threshold_mask" && (
+            <label>
+              Threshold
+              <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+            </label>
+          )}
+          {recipe === "class_mask" && (
+            <label>
+              Class value
+              <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
+            </label>
+          )}
         </div>
         <button className="primary" onClick={addGuidedRecipe} disabled={!primaryLayer}>Add guided feature</button>
       </section>
@@ -1867,7 +2315,27 @@ function DerivedPanel({
           <label className="span-2">
             Expression
             <input value={expression} onChange={(event) => setExpression(event.target.value)} />
-            <small className="field-hint">Example: where(x &gt; 0, x / maximum(y, 1), nan). Requires at least one selected input layer.</small>
+            <small className="field-hint">Example: where(x &gt; 0, x / maximum(y, 1), nan). Use x, y and z as the selected aliases below.</small>
+          </label>
+          {(["x", "y", "z"] as const).map((alias) => (
+            <label key={alias}>
+              {alias} input
+              <select
+                value={expressionLayerIds[alias] ?? ""}
+                onChange={(event) =>
+                  setExpressionLayerIds({ ...expressionLayerIds, [alias]: event.target.value })
+                }
+              >
+                <option value="">{alias === "x" ? `Auto: ${primaryLayer?.label ?? "select layer"}` : "Unused"}</option>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <label>
+            Output name
+            <input value={expressionOutputName} onChange={(event) => setExpressionOutputName(event.target.value)} placeholder="custom_expression" />
           </label>
           <label>
             Unit
@@ -1912,6 +2380,14 @@ function DerivedPanel({
               terrain derivatives; ruggedness, TPI and roughness use the radius window below.
             </p>
             <label>
+              DEM input
+              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
               Terrain method
               <select value={terrainMethod} onChange={(event) => setTerrainMethod(event.target.value)}>
                 <option value="slope">Slope</option>
@@ -1921,6 +2397,16 @@ function DerivedPanel({
                 <option value="roughness">Roughness</option>
               </select>
             </label>
+            <label>
+              Output name
+              <input value={terrainOutputName} onChange={(event) => setTerrainOutputName(event.target.value)} placeholder="auto if blank" />
+            </label>
+            {["ruggedness", "tpi", "roughness"].includes(terrainMethod) && (
+              <label>
+                <span className="label-line">Radius in cells <InfoTip text="Radius 1 means a 3 by 3 cell window." /></span>
+                <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
+              </label>
+            )}
             <small className="field-hint">{terrainHelp[terrainMethod]}</small>
             {!primaryIsDem && (
               <div className="notice info compact-notice">
@@ -1953,6 +2439,22 @@ function DerivedPanel({
                 <option value="diversity">Focal diversity</option>
               </select>
             </label>
+            <label>
+              Input layer
+              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="label-line">Radius in cells <InfoTip text="Radius 1 means a 3 by 3 cell window." /></span>
+              <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
+            </label>
+            <label>
+              Output name
+              <input value={focalOutputName} onChange={(event) => setFocalOutputName(event.target.value)} placeholder="auto if blank" />
+            </label>
             <small className="field-hint">{focalHelp[focalMethod]}</small>
             <button onClick={() => addSpatialOperation("focal")} disabled={!primaryLayer}>Add focal</button>
           </div>
@@ -1967,19 +2469,24 @@ function DerivedPanel({
               The output is distance in metres to the nearest matching cell.
             </p>
             <label>
+              Distance-to input
+              <select value={distanceLayer?.id ?? ""} onChange={(event) => setDistanceLayerId(event.target.value)}>
+                {plannedLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
               Class value
               <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
             </label>
+            <label>
+              Output name
+              <input value={distanceOutputName} onChange={(event) => setDistanceOutputName(event.target.value)} placeholder="auto if blank" />
+            </label>
             <small className="field-hint">Use a binary mask or select a class value from a categorical raster.</small>
-            <button onClick={() => addSpatialOperation("distance")} disabled={!primaryLayer}>Add distance-to</button>
+            <button onClick={() => addSpatialOperation("distance")} disabled={!distanceLayer}>Add distance-to</button>
           </div>
-        </div>
-
-        <div className="form-grid single radius-grid">
-          <label>
-            <span className="label-line">Radius in cells <InfoTip text="Used by focal methods and terrain ruggedness/TPI/roughness. Radius 1 means a 3 by 3 cell window." /></span>
-            <input type="number" min={1} value={radius} onChange={(event) => setRadius(Number(event.target.value))} />
-          </label>
         </div>
       </section>
 

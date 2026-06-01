@@ -6,7 +6,11 @@ from pathlib import Path
 from src.io.config import load_yaml, resolve_path
 from src.io.paths import get_source_raw_dir
 from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg
-from src.pipeline.source_overrides import apply_run_overrides_to_source_cfg
+from src.pipeline.progress import progress_log
+from src.pipeline.source_overrides import (
+    apply_run_overrides_to_source_cfg,
+    normalize_source_domains,
+)
 from src.pipeline.variable_expansion import expand_source_config
 from src.sources.registry import get_source_connector
 from src.workbench.compiler import compile_source_config_for_run
@@ -22,17 +26,13 @@ def _print_header(
     source_config_path: str | Path,
 ) -> None:
     source = source_cfg["source"]
-
-    print("==============================")
-    print("Pirineus Raster Source Pipeline")
-    print(f"Provider: {source['provider']}")
-    print(f"Product:  {source['product']}")
-    print(f"Source:   {source.get('id', 'unknown')}")
-    print(f"Stage:    {stage}")
-    print("------------------------------")
-    print(f"Project config: {project_config_path}")
-    print(f"Source config:  {source_config_path}")
-    print("==============================")
+    progress_log(
+        "Source pipeline | "
+        f"provider={source['provider']} | product={source['product']} | "
+        f"source={source.get('id', 'unknown')} | stage={stage}"
+    )
+    progress_log(f"Project config: {project_config_path}")
+    progress_log(f"Source config: {source_config_path}")
 
 
 def _print_paths(
@@ -40,17 +40,13 @@ def _print_paths(
     paths: list[Path],
     max_items: int = 10,
 ) -> None:
-    print("==============================")
-    print(title)
-    print(f"Total files: {len(paths)}")
+    progress_log(f"{title}: {len(paths)} files")
 
     for path in paths[:max_items]:
-        print(f"  - {path}")
+        progress_log(f"  - {path}")
 
     if len(paths) > max_items:
-        print(f"  ... and {len(paths) - max_items} more")
-
-    print("==============================")
+        progress_log(f"  ... and {len(paths) - max_items} more")
 
 
 def _load_domain_configs(source_cfg: dict) -> tuple[dict, dict]:
@@ -116,7 +112,7 @@ def _cleanup_raw_after_clip(
     processing = source_cfg.get("processing", {}) or {}
     source_resolution = processing.get("source_resolution")
     if source_resolution is None:
-        print("[clip] Raw cleanup skipped: source_resolution is not defined.")
+        progress_log("[clip] Raw cleanup skipped: source_resolution is not defined.")
         return
 
     raw_dir = get_source_raw_dir(
@@ -127,10 +123,10 @@ def _cleanup_raw_after_clip(
     )
 
     if not raw_dir.exists():
-        print(f"[clip] Raw cleanup skipped: {raw_dir} does not exist.")
+        progress_log(f"[clip] Raw cleanup skipped: {raw_dir} does not exist.")
         return
 
-    print(f"[clip] Removing raw source directory after successful clip: {raw_dir}")
+    progress_log(f"[clip] Removing raw source directory after successful clip: {raw_dir}")
     shutil.rmtree(raw_dir)
 
 
@@ -172,6 +168,7 @@ def run_source_pipeline(
     project_cfg = apply_run_overrides_to_project_cfg(project_cfg, run_cfg)
     source_cfg = load_yaml(source_config_path)
     source_cfg["_config_path"] = str(source_config_path)
+    source_cfg = normalize_source_domains(source_cfg)
 
     source_cfg = apply_run_overrides_to_source_cfg(
         source_cfg=source_cfg,
@@ -237,6 +234,6 @@ def run_source_pipeline(
         else:
             raise ValueError(f"Unexpected normalized stage: {current_stage}")
 
-    print("Pirineus Raster source pipeline finished successfully.")
+    progress_log("Pirineus Raster source pipeline finished successfully.")
 
     return final_paths

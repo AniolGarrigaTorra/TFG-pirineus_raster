@@ -4,6 +4,35 @@ from copy import deepcopy
 from typing import Any
 
 
+def normalize_source_domains(source_cfg: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize clipping/output AOI declarations to the current source schema.
+
+    Current source configs use:
+
+      domains:
+        clip_aoi_config: ...
+        output_aoi_config: ...
+
+    Some older vector-source configs stored these keys under dataset. Keeping
+    this adapter makes the runner and workbench validate the same effective
+    structure while source YAMLs are migrated.
+    """
+    cfg = deepcopy(source_cfg)
+    dataset = cfg.setdefault("dataset", {})
+    domains = cfg.setdefault("domains", {})
+
+    for key in ["clip_aoi_config", "output_aoi_config"]:
+        if key not in domains and key in dataset:
+            domains[key] = dataset[key]
+        dataset.pop(key, None)
+
+    if not domains:
+        cfg.pop("domains", None)
+
+    return cfg
+
+
 def apply_run_overrides_to_source_cfg(
     source_cfg: dict[str, Any],
     run_cfg: dict[str, Any] | None = None,
@@ -21,6 +50,7 @@ def apply_run_overrides_to_source_cfg(
     This keeps source configs focused on source-specific details.
     """
     cfg = deepcopy(source_cfg)
+    cfg = normalize_source_domains(cfg)
 
     if run_cfg is None:
         return cfg

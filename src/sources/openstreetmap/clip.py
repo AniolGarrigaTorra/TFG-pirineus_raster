@@ -11,6 +11,7 @@ from pyproj import Transformer
 from shapely.geometry import box
 
 from src.io.paths import ensure_dir, get_source_clipped_dir, get_source_raw_dir
+from src.pipeline.progress import progress_log
 from src.sources.openstreetmap.naming import (
     build_osm_clipped_name,
     build_osm_raw_path,
@@ -106,7 +107,7 @@ def _clip_layer_from_regions(
             raise FileNotFoundError(f"Missing OSM PBF: {pbf_path}")
 
         for osm_layer in osm_layers:
-            print(f"[clip:osm] Reading {pbf_path.name} layer={osm_layer} for {layer_key}")
+            progress_log(f"[clip:osm] Reading {pbf_path.name} layer={osm_layer} for {layer_key}")
             gdf = _read_osm_layer(pbf_path, str(osm_layer), bbox_wgs84)
             if gdf.empty:
                 continue
@@ -183,10 +184,10 @@ def clip_osm_raw_files(
     overwrite = bool(source_cfg.get("download", {}).get("overwrite_existing", False))
     written_paths: list[Path] = []
 
-    print("[clip:osm] Provider:", source["provider"])
-    print("[clip:osm] Product:", source["product"])
-    print("[clip:osm] AOI:", clip_aoi_name)
-    print("[clip:osm] Raw dir:", raw_dir)
+    progress_log(f"[clip:osm] Provider: {source['provider']}")
+    progress_log(f"[clip:osm] Product: {source['product']}")
+    progress_log(f"[clip:osm] AOI: {clip_aoi_name}")
+    progress_log(f"[clip:osm] Raw dir: {raw_dir}")
 
     for layer_key, layer_cfg in get_enabled_layer_items(source_cfg):
         output_dir = get_source_clipped_dir(
@@ -200,7 +201,7 @@ def clip_osm_raw_files(
         output_path = output_dir / build_osm_clipped_name(layer_key, clip_aoi_name)
 
         if output_path.exists() and not overwrite:
-            print(f"[clip:osm] Exists, skipping: {output_path}")
+            progress_log(f"[clip:osm] Exists, skipping: {output_path}")
             written_paths.append(output_path)
             continue
 
@@ -214,10 +215,9 @@ def clip_osm_raw_files(
             bbox_wgs84=bbox_wgs84,
         )
 
-        print("==============================")
-        print(f"[clip:osm] Layer: {layer_key}")
-        print(f"[clip:osm] Features: {len(clipped)}")
-        print(f"[clip:osm] Output: {output_path}")
+        progress_log(f"[clip:osm] Layer: {layer_key}")
+        progress_log(f"[clip:osm] Features: {len(clipped)}")
+        progress_log(f"[clip:osm] Output: {output_path}")
 
         _write_gpkg(clipped, output_path)
         written_paths.append(output_path)

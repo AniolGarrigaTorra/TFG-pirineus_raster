@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.copernicus.download import download_file
 from src.sources.openstreetmap.naming import build_osm_raw_path, validate_osm_source_config
 
@@ -22,9 +27,10 @@ def download_osm_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
     if not regions:
         raise ValueError("OpenStreetMap source requires download.regions.")
 
-    print("[download:osm] Raw dir:", raw_dir)
-    print("[download:osm] Mode:", mode)
-    print("[download:osm] Regions:", len(regions))
+    progress_log(f"[download:osm] Raw dir: {raw_dir}")
+    progress_log(f"[download:osm] Mode: {mode}")
+    progress_log(f"[download:osm] Regions: {len(regions)}")
+    progress_set_stage_task_total(len(regions), label="downloads")
 
     raw_paths: list[Path] = []
 
@@ -33,9 +39,8 @@ def download_osm_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
         output_path = build_osm_raw_path(raw_dir, region_cfg)
         url = region_cfg.get("url")
 
-        print("==============================")
-        print(f"[download:osm] Region: {name}")
-        print(f"[download:osm] File: {output_path}")
+        progress_log(f"[download:osm] Region: {name}")
+        progress_log(f"[download:osm] File: {output_path}")
 
         if not enabled or mode == "manual":
             if not output_path.exists():
@@ -44,6 +49,7 @@ def download_osm_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
                     "Place the Geofabrik .osm.pbf file there manually, or use "
                     "download.mode=manual_url with region URLs."
                 )
+            progress_advance_stage_task(name=output_path.name)
             raw_paths.append(output_path)
             continue
 

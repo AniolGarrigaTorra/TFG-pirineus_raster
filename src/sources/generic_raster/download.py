@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.copernicus.download import (
     copy_local_file,
     download_file,
@@ -47,20 +52,25 @@ def download_generic_raster_raw_files(
     mode = str(download_cfg.get("mode", "manual")).lower()
     overwrite = bool(download_cfg.get("overwrite_existing", False))
 
-    print("[download] Generic raster raw dir:", raw_dir)
-    print("[download] Provider:", source_cfg["source"]["provider"])
-    print("[download] Mode:", mode)
-    print("[download] Enabled:", enabled)
+    progress_log(f"[download] Generic raster raw dir: {raw_dir}")
+    progress_log(f"[download] Provider: {source_cfg['source']['provider']}")
+    progress_log(f"[download] Mode: {mode}")
+    progress_log(f"[download] Enabled: {enabled}")
+
+    specs = get_download_file_specs(source_cfg)
+    progress_set_stage_task_total(
+        sum(len(spec.get("urls") or []) or 1 for spec in specs),
+        label="downloads",
+    )
 
     raw_paths: list[Path] = []
 
-    for spec in get_download_file_specs(source_cfg):
+    for spec in specs:
         variable = spec["variable"]
         output_path = raw_dir / spec["filename"]
 
-        print("==============================")
-        print(f"[download] Variable/download spec: {variable}")
-        print(f"[download] File: {output_path}")
+        progress_log(f"[download] Variable/download spec: {variable}")
+        progress_log(f"[download] File: {output_path}")
 
         if not enabled or mode == "manual":
             if not output_path.exists():
@@ -68,8 +78,9 @@ def download_generic_raster_raw_files(
                     f"Expected raw file does not exist: {output_path}\n"
                     "Place the file there manually, switch to mode=local_file, "
                     "or configure download.files.<name>.url/urls with mode=manual_url."
-                )
-            print(f"[download] Manual file found: {output_path}")
+            )
+            progress_log(f"[download] Manual file found: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             raw_paths.append(output_path)
             continue
 
@@ -91,6 +102,7 @@ def download_generic_raster_raw_files(
                         spec=spec,
                     )
                 )
+                progress_advance_stage_task(name=output_path.name)
                 continue
             if url:
                 download_file(

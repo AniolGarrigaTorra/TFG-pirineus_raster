@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=pallars_copernicus_clms
+#SBATCH --job-name=pyrenees_copernicus_worldclim
 #SBATCH --account=csl
 #SBATCH --partition=csl
-#SBATCH --output=/home/usuaris/csl/aniol.garriga.torra/logs/jobs/pallars_copernicus_clms_%j.out
-#SBATCH --error=/home/usuaris/csl/aniol.garriga.torra/logs/jobs/pallars_copernicus_clms_%j.err
+#SBATCH --output=/home/usuaris/csl/aniol.garriga.torra/logs/jobs/pyrenees_copernicus_worldclim_%j.out
+#SBATCH --error=/home/usuaris/csl/aniol.garriga.torra/logs/jobs/pyrenees_copernicus_worldclim_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -93,7 +93,7 @@ echo "======================================"
 
 find data_raw/copernicus -maxdepth 5 -type f | sort || true
 find data_processed/features/copernicus -maxdepth 8 -type f | sort || true
-find data_processed/datasets/pallars_copernicus_clms_100m -maxdepth 5 -type f | sort || true
+find data_processed/datasets/pyrenees_full_copernicus_worldclim_100m -maxdepth 5 -type f | sort || true
 
 echo "======================================"
 echo "Job completed successfully at: $(date)"

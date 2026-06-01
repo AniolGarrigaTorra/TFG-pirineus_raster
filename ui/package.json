@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "backgrounds": "node scripts/generate-background-manifest.mjs",
+    "predev": "npm run backgrounds",
     "dev": "vite --host 127.0.0.1 --port 5173",
+    "prebuild": "npm run backgrounds",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "pretest": "npm run backgrounds",
     "test": "vitest run"
   },
   "dependencies": {

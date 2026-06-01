@@ -3,34 +3,36 @@ source:
   provider: esa_cci
   product: biomass_agb_100m
   product_group: biomass
-  version: "v6.0"
+  version: "v7.0"
   title: "ESA CCI Biomass Above-Ground Biomass"
   description: "ESA Climate Change Initiative above-ground biomass maps at 100 m."
-  summary: "Above-ground biomass density in Mg/ha for 2007, 2010 and annual maps from 2015 to 2022."
+  summary: "Above-ground biomass density and uncertainty in Mg/ha for 2005-2012 and annual maps from 2015 to 2024."
   long_description: >-
-    ESA CCI Biomass provides global above-ground biomass maps at 100 m
-    resolution for multiple epochs. The workbench exposes each year through the
-    Temporal tab so the user can select the desired epochs before download,
-    clipping and build.
+    ESA CCI Biomass provides global above-ground biomass maps and per-pixel
+    standard deviation layers at 100 m resolution for multiple epochs. The
+    workbench exposes each year through the Temporal tab so the user can select
+    the desired epochs before download, clipping and build.
   page_url: "https://climate.esa.int/en/projects/biomass/"
   documentation_url: "https://climate.esa.int/en/projects/biomass/"
   source_crs: EPSG:4326
-  source_period: "2007, 2010, 2015-2022"
-  citation: "Santoro, M.; Cartus, O. (2025): ESA Biomass Climate Change Initiative (Biomass_cci): Global datasets of forest above-ground biomass for the years 2007, 2010, 2015, 2016, 2017, 2018, 2019, 2020, 2021 and 2022, v6.0. NERC EDS Centre for Environmental Data Analysis."
+  source_period: "2005-2012, 2015-2024"
+  citation: "ESA Biomass Climate Change Initiative (Biomass_cci): Global datasets of forest above-ground biomass, v7.0. NERC EDS Centre for Environmental Data Analysis."
 
 dataset:
   layer_structure: yearly_static_collection
   file_format: geotiff
   native_resolution_m: 100
   data_type: continuous
+
+domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
   output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
-years: [2007, 2010, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022]
+years: [2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
 download:
   enabled: true
-  mode: manual
+  mode: manual_url
   overwrite_existing: false
 
 processing:
@@ -54,13 +56,23 @@ variable_groups:
       data_type: continuous
       value_semantics: intensive
       native_resolution_m: 100
-      source_filename: "esa_cci_biomass_agb_{year}_{source_resolution}_pyrenees.tif"
+      source_filename: "esa_cci_biomass_agb_{year}_{source_resolution}_n50w010_n50e000_pyrenees.tif"
+      urls:
+        - "https://data.cci.ceda.ac.uk/thredds/fileServer/esacci/biomass/data/agb/maps/v7.0/geotiff/{year}/N50W010_ESACCI-BIOMASS-L4-AGB-MERGED-100m-{year}-fv7.0.tif"
+        - "https://data.cci.ceda.ac.uk/thredds/fileServer/esacci/biomass/data/agb/maps/v7.0/geotiff/{year}/N50E000_ESACCI-BIOMASS-L4-AGB-MERGED-100m-{year}-fv7.0.tif"
+      postprocess: mosaic_geotiff
       temporal:
         type: static
         reference_year: "{year}"
     foreach:
+      - {year: 2005}
+      - {year: 2006}
       - {year: 2007}
+      - {year: 2008}
+      - {year: 2009}
       - {year: 2010}
+      - {year: 2011}
+      - {year: 2012}
       - {year: 2015}
       - {year: 2016}
       - {year: 2017}
@@ -69,6 +81,47 @@ variable_groups:
       - {year: 2020}
       - {year: 2021}
       - {year: 2022}
+      - {year: 2023}
+      - {year: 2024}
+
+  agb_sd:
+    template:
+      name: "agb_sd_{year}"
+      enabled: true
+      description: "Above-ground biomass standard deviation, {year}"
+      unit: Mg/ha
+      scale_factor: 1.0
+      valid_range: [0, 1000]
+      data_type: continuous
+      value_semantics: intensive
+      native_resolution_m: 100
+      source_filename: "esa_cci_biomass_agb_sd_{year}_{source_resolution}_n50w010_n50e000_pyrenees.tif"
+      urls:
+        - "https://data.cci.ceda.ac.uk/thredds/fileServer/esacci/biomass/data/agb/maps/v7.0/geotiff/{year}/N50W010_ESACCI-BIOMASS-L4-AGB_SD-MERGED-100m-{year}-fv7.0.tif"
+        - "https://data.cci.ceda.ac.uk/thredds/fileServer/esacci/biomass/data/agb/maps/v7.0/geotiff/{year}/N50E000_ESACCI-BIOMASS-L4-AGB_SD-MERGED-100m-{year}-fv7.0.tif"
+      postprocess: mosaic_geotiff
+      temporal:
+        type: static
+        reference_year: "{year}"
+    foreach:
+      - {year: 2005}
+      - {year: 2006}
+      - {year: 2007}
+      - {year: 2008}
+      - {year: 2009}
+      - {year: 2010}
+      - {year: 2011}
+      - {year: 2012}
+      - {year: 2015}
+      - {year: 2016}
+      - {year: 2017}
+      - {year: 2018}
+      - {year: 2019}
+      - {year: 2020}
+      - {year: 2021}
+      - {year: 2022}
+      - {year: 2023}
+      - {year: 2024}
 
 output:
   write_geotiff: true

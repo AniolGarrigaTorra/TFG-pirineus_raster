@@ -27,7 +27,7 @@
   color: #fffaf3;
   background:
     linear-gradient(rgba(18, 14, 11, 0.25), rgba(18, 14, 11, 0.58)),
-    url("/pirineus-background.png") center / cover,
+    var(--pirineus-background-image, url("/backgrounds/pirineus-background.png")) center / cover,
     #2c2118;
 }
 
@@ -84,7 +84,7 @@
   z-index: -2;
   background:
     linear-gradient(rgba(248, 244, 237, 0.66), rgba(248, 244, 237, 0.76)),
-    url("/pirineus-background.png") center / cover fixed,
+    var(--pirineus-background-image, url("/backgrounds/pirineus-background.png")) center / cover fixed,
     #ede6dc;
 }
 
@@ -337,6 +337,14 @@ button:disabled {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.aoi-actions {
+  margin-top: 14px;
+  padding-top: 12px;
+  justify-content: flex-start;
+  align-items: center;
+  border-top: 1px solid var(--line);
 }
 
 .source-groups {

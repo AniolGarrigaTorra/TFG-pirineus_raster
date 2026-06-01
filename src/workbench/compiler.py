@@ -7,7 +7,13 @@ from typing import Any
 import yaml
 
 from src.io.config import load_yaml, resolve_path
-from src.pipeline.config import validate_run_config
+from src.io.paths import get_grid_path
+from src.pipeline.config import normalize_stages, validate_run_config
+from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg
+from src.pipeline.source_overrides import (
+    apply_run_overrides_to_source_cfg,
+    normalize_source_domains,
+)
 from src.pipeline.variable_expansion import expand_source_config
 from src.workbench.catalog import SUPPORTED_METRICS, SUPPORTED_RESAMPLING
 from src.workbench.temporal import (
@@ -64,6 +70,50 @@ def _enable_selected(
         collection[name]["enabled"] = True
 
 
+def _is_yearly_static_collection(cfg: dict[str, Any]) -> bool:
+    return cfg.get("dataset", {}).get("layer_structure") == "yearly_static_collection"
+
+
+def _yearly_group_names(cfg: dict[str, Any]) -> set[str]:
+    groups = set((cfg.get("variable_groups", {}) or {}).keys())
+    for variable_cfg in (cfg.get("variables", {}) or {}).values():
+        if isinstance(variable_cfg, dict) and variable_cfg.get("generated_from_group"):
+            groups.add(str(variable_cfg["generated_from_group"]))
+    return groups
+
+
+def _expanded_variables_for_yearly_groups(
+    cfg: dict[str, Any],
+    selected: list[str],
+) -> list[str]:
+    variables = cfg.get("variables", {}) or {}
+    group_names = _yearly_group_names(cfg)
+    resolved: list[str] = []
+    unknown: list[str] = []
+
+    for name in selected:
+        if name in variables:
+            resolved.append(name)
+            continue
+        if name in group_names:
+            resolved.extend(
+                variable_name
+                for variable_name, variable_cfg in variables.items()
+                if isinstance(variable_cfg, dict)
+                and str(variable_cfg.get("generated_from_group")) == name
+            )
+            continue
+        unknown.append(name)
+
+    if unknown:
+        available = sorted(set(variables) | group_names)
+        raise ConfigValidationError(
+            f"Unknown variables: {sorted(unknown)}. Available: {available}"
+        )
+
+    return sorted(set(resolved))
+
+
 def _compile_variable_selection(
     cfg: dict[str, Any],
     select_cfg: dict[str, Any],
@@ -76,7 +126,14 @@ def _compile_variable_selection(
 
     if selected_variables:
         if variables:
-            _enable_selected(variables, selected_variables, "variables")
+            if _is_yearly_static_collection(cfg):
+                _enable_selected(
+                    variables,
+                    _expanded_variables_for_yearly_groups(cfg, selected_variables),
+                    "variables",
+                )
+            else:
+                _enable_selected(variables, selected_variables, "variables")
         elif indices:
             _enable_selected(indices, selected_variables, "indices")
         else:
@@ -133,14 +190,16 @@ def _compile_dimensions(
 
     for key, selected_values in dimensions_cfg.items():
         selected = [str(item) for item in _as_list(selected_values)]
-        if not selected:
-            continue
 
         available = cfg.get(key)
         if available is None:
             raise ConfigValidationError(
                 f"Source does not expose dimension {key!r}."
             )
+
+        if not selected:
+            cfg[key] = []
+            continue
 
         available_values = [str(item) for item in available]
         unknown = sorted(set(selected) - set(available_values))
@@ -154,7 +213,10 @@ def _compile_dimensions(
 
 
 def _aggregation_variable_names(cfg: dict[str, Any]) -> set[str]:
-    return set(cfg.get("variables", {}) or {}) | set(cfg.get("indices", {}) or {})
+    names = set(cfg.get("variables", {}) or {}) | set(cfg.get("indices", {}) or {})
+    if _is_yearly_static_collection(cfg):
+        names |= _yearly_group_names(cfg)
+    return names
 
 
 def _validate_range_pair(
@@ -254,12 +316,27 @@ def _validate_aggregation(
             maximum=12,
         )
 
+    elif layer_structure == "yearly_static_collection":
+        if form not in [None, "year_range_metric"]:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} uses form {form!r}, "
+                "but yearly static collections only support year_range_metric."
+            )
+        if "years" not in aggregation:
+            raise ConfigValidationError(
+                f"Aggregation {aggregation['name']!r} must define years."
+            )
+        _validate_range_pair(
+            aggregation["years"],
+            name=f"Aggregation {aggregation['name']!r} years",
+        )
+
     elif layer_structure in {
         "static_single",
         "static_multi",
         "static_index_set",
-        "yearly_static_collection",
         "vector_categorical",
+        "osm_vector",
         "pdca_nested_zip_geotiff_collection",
         "temporal_aggregation",
     }:
@@ -342,11 +419,11 @@ def _selected_temporal_layers(layers_cfg: dict[str, Any]) -> dict[str, Any]:
         selected["annual"] = bool(layers_cfg["annual"])
     if "annual_index" in layers_cfg:
         selected["annual_index"] = bool(layers_cfg["annual_index"])
-    if months:
+    if "months" in layers_cfg:
         selected["months"] = months
-    if seasons:
+    if "seasons" in layers_cfg:
         selected["seasons"] = seasons
-    if years:
+    if "years" in layers_cfg:
         selected["years"] = years
     return selected
 
@@ -360,9 +437,9 @@ def _variable_reference_year(variable_cfg: dict[str, Any]) -> int | None:
 
 def _enable_static_year_variables(
     cfg: dict[str, Any],
-    selected_years: list[int],
+    selected_years: list[int] | None,
 ) -> None:
-    if not selected_years:
+    if selected_years is None:
         return
 
     selected = set(selected_years)
@@ -378,9 +455,61 @@ def _enable_static_year_variables(
         variable_cfg["enabled"] = year in selected and bool(variable_cfg.get("enabled", True))
         matched = matched or bool(variable_cfg["enabled"])
 
+    if not selected:
+        return
+
     if not matched:
         raise ConfigValidationError(
             f"No enabled variables match selected temporal years: {sorted(selected)}"
+        )
+
+
+def _enable_yearly_aggregation_variables(cfg: dict[str, Any]) -> None:
+    aggregations = cfg.get("temporal_aggregations", []) or []
+    if not aggregations:
+        return
+
+    variables = cfg.get("variables", {}) or {}
+    selected_names: set[str] = set()
+    selected_years: set[int] = set()
+    enabled_groups = {
+        str(variable_cfg.get("generated_from_group"))
+        for variable_cfg in variables.values()
+        if isinstance(variable_cfg, dict)
+        and bool(variable_cfg.get("enabled", False))
+        and variable_cfg.get("generated_from_group")
+    }
+    default_groups = sorted(enabled_groups or _yearly_group_names(cfg))
+
+    for aggregation in aggregations:
+        aggregation_variables = [
+            str(item)
+            for item in _as_list(
+                aggregation.get("variables") or default_groups
+            )
+        ]
+        years = _validate_range_pair(
+            aggregation["years"],
+            name=f"Aggregation {aggregation['name']!r} years",
+        )
+        selected_years.update(range(years[0], years[1] + 1))
+        selected_names.update(_expanded_variables_for_yearly_groups(cfg, aggregation_variables))
+
+    if not selected_names:
+        raise ConfigValidationError("Yearly aggregation has no selected variables.")
+
+    matched = False
+    for variable, variable_cfg in variables.items():
+        if not isinstance(variable_cfg, dict):
+            continue
+        year = _variable_reference_year(variable_cfg)
+        enabled = variable in selected_names and year in selected_years
+        variable_cfg["enabled"] = enabled
+        matched = matched or enabled
+
+    if not matched:
+        raise ConfigValidationError(
+            "No yearly variables match the selected aggregation variables and years."
         )
 
 
@@ -424,6 +553,8 @@ def _compile_temporal_selection(
             raise ConfigValidationError(
                 "Temporal output_mode='aggregate' requires at least one aggregation."
             )
+        if capability.get("kind") == "yearly_static_collection":
+            _enable_yearly_aggregation_variables(cfg)
         return
 
     if output_mode == "raw_slices":
@@ -468,7 +599,9 @@ def _compile_temporal_selection(
         if capability.get("kind") == "yearly_static_collection":
             _enable_static_year_variables(
                 cfg,
-                [int(item) for item in temporal_layers.get("years", [])],
+                [int(item) for item in temporal_layers["years"]]
+                if "years" in temporal_layers
+                else None,
             )
         return
 
@@ -506,7 +639,13 @@ def _compile_resampling_overrides(
                 raise ConfigValidationError(
                     f"Unsupported resampling method for {variable}: {method}"
                 )
-            target[variable] = method
+            variable_names = (
+                _expanded_variables_for_yearly_groups(cfg, [str(variable)])
+                if _is_yearly_static_collection(cfg)
+                else [str(variable)]
+            )
+            for variable_name in variable_names:
+                target[variable_name] = method
 
 
 def _compile_processing_overrides(
@@ -525,6 +664,33 @@ def _compile_processing_overrides(
 
     if processing_overrides.get("target_resolution_m") is not None:
         processing["target_resolution_m"] = int(processing_overrides["target_resolution_m"])
+
+
+def _apply_source_resolution_metadata(cfg: dict[str, Any]) -> None:
+    processing = cfg.get("processing", {}) or {}
+    source_resolution = processing.get("source_resolution")
+    if source_resolution is None:
+        return
+
+    source_resolution = str(source_resolution)
+    source = cfg.setdefault("source", {})
+    dataset = cfg.setdefault("dataset", {})
+
+    crs_by_resolution = processing.get("source_crs_by_resolution", {}) or {}
+    if source_resolution in crs_by_resolution:
+        source["source_crs"] = str(crs_by_resolution[source_resolution])
+
+    native_by_resolution = processing.get("native_resolution_m_by_resolution", {}) or {}
+    if source_resolution in native_by_resolution:
+        dataset["native_resolution_m"] = int(native_by_resolution[source_resolution])
+
+    native_resolution_by_resolution = (
+        processing.get("native_resolution_by_resolution", {}) or {}
+    )
+    if source_resolution in native_resolution_by_resolution:
+        dataset["native_resolution"] = str(
+            native_resolution_by_resolution[source_resolution]
+        )
 
 
 def _compile_download_overrides(
@@ -576,6 +742,7 @@ def compile_source_config_for_run(
 
     _compile_resampling_overrides(cfg, source_entry)
     _compile_processing_overrides(cfg, source_entry)
+    _apply_source_resolution_metadata(cfg)
     _compile_download_overrides(cfg, source_entry)
 
     return cfg
@@ -751,6 +918,106 @@ def compile_run_config(
     return expand_derived_feature_groups(run_cfg)
 
 
+def _source_stages(
+    compiled_run: dict[str, Any],
+    source_entry: dict[str, Any],
+) -> list[str]:
+    default_stages = normalize_stages(compiled_run["run"].get("stages", ["build"]))
+    return normalize_stages(source_entry.get("stages", default_stages))
+
+
+def _stages_need(stages: list[str], stage: str) -> bool:
+    return stage in stages
+
+
+def _validate_derived_runtime_contract(
+    compiled_run: dict[str, Any],
+    errors: list[str],
+) -> None:
+    derived = compiled_run.get("derived_features", []) or []
+    if not derived:
+        return
+
+    outputs = compiled_run.get("outputs", {}) or {}
+    run = compiled_run.get("run", {}) or {}
+
+    if outputs.get("copy_rasters", True) is False:
+        errors.append("derived_features require outputs.copy_rasters=true.")
+    if outputs.get("write_manifest", True) is False:
+        errors.append("derived_features require outputs.write_manifest=true.")
+    if not run.get("aoi_config"):
+        errors.append("derived_features require run.aoi_config.")
+    if run.get("resolution_m") is None:
+        errors.append("derived_features require run.resolution_m.")
+
+
+def _load_effective_project_cfg(
+    compiled_run: dict[str, Any],
+    run_config_path: str | Path | None,
+) -> dict[str, Any]:
+    base_path = Path(run_config_path) if run_config_path is not None else None
+    project_path = resolve_path(
+        compiled_run["run"].get("project_config", "configs/project.yaml"),
+        base_path=base_path,
+        must_exist=True,
+    )
+    project_cfg = load_yaml(project_path)
+    project_cfg["_config_path"] = str(project_path)
+    return apply_run_overrides_to_project_cfg(project_cfg, compiled_run)
+
+
+def _resolve_domain_config(
+    source_cfg: dict[str, Any],
+    key: str,
+) -> Path:
+    domains = source_cfg.get("domains", {}) or {}
+    if key not in domains:
+        raise ConfigValidationError(f"Missing domains.{key}.")
+    return resolve_path(
+        domains[key],
+        base_path=source_cfg.get("_config_path"),
+        must_exist=True,
+    )
+
+
+def _validate_source_runtime_contract(
+    *,
+    source_id: str,
+    source_cfg: dict[str, Any],
+    stages: list[str],
+    project_cfg: dict[str, Any] | None,
+    warnings: list[str],
+    seen_grid_paths: set[str],
+) -> None:
+    if _stages_need(stages, "clip") or _stages_need(stages, "build"):
+        _resolve_domain_config(source_cfg, "clip_aoi_config")
+
+    if not _stages_need(stages, "build"):
+        return
+
+    output_aoi_path = _resolve_domain_config(source_cfg, "output_aoi_config")
+    if project_cfg is None:
+        return
+
+    output_aoi_cfg = load_yaml(output_aoi_path)
+    target_resolution_m = int(source_cfg["processing"]["target_resolution_m"])
+    grid_path = get_grid_path(
+        project_cfg=project_cfg,
+        aoi_cfg=output_aoi_cfg,
+        resolution_m=target_resolution_m,
+    )
+
+    key = str(grid_path)
+    if grid_path.exists() or key in seen_grid_paths:
+        return
+
+    seen_grid_paths.add(key)
+    warnings.append(
+        f"{source_id}: build stage requires target grid that does not exist yet: "
+        f"{grid_path}. Create it with pirineus-raster make-grid before running build."
+    )
+
+
 def validate_researcher_run_config(
     run_cfg: dict[str, Any],
     run_config_path: str | Path | None = None,
@@ -777,8 +1044,21 @@ def validate_researcher_run_config(
         }
 
     base_path = Path(run_config_path) if run_config_path is not None else None
+    seen_grid_paths: set[str] = set()
+
+    try:
+        project_cfg = _load_effective_project_cfg(
+            compiled_run=compiled_run,
+            run_config_path=run_config_path,
+        )
+    except Exception as exc:
+        project_cfg = None
+        errors.append(f"project_config: {exc}")
+
+    _validate_derived_runtime_contract(compiled_run, errors)
 
     for source_entry in compiled_run.get("sources", []):
+        source_id = source_entry.get("id") or source_entry.get("config")
         try:
             source_config_path = resolve_path(
                 source_entry["config"],
@@ -786,11 +1066,29 @@ def validate_researcher_run_config(
                 must_exist=True,
             )
             source_cfg = load_yaml(source_config_path)
+            source_cfg["_config_path"] = str(source_config_path)
+            source_cfg = normalize_source_domains(source_cfg)
+            source_cfg = apply_run_overrides_to_source_cfg(
+                source_cfg=source_cfg,
+                run_cfg=compiled_run,
+            )
             source_cfg = expand_source_config(source_cfg)
             compiled_source = compile_source_config_for_run(source_cfg, source_entry)
+            compiled_source = expand_source_config(compiled_source)
             source_summary = _source_summary(source_entry, compiled_source)
             source_summary["config"] = str(source_config_path)
             source_summaries.append(source_summary)
+
+            source_stages = _source_stages(compiled_run, source_entry)
+            _validate_source_runtime_contract(
+                source_id=str(source_summary["id"]),
+                source_cfg=compiled_source,
+                stages=source_stages,
+                project_cfg=project_cfg,
+                warnings=warnings,
+                seen_grid_paths=seen_grid_paths,
+            )
+
             if (
                 source_summary.get("temporal_output_mode") == "raw_slices"
                 and source_summary.get("estimated_layers", 0) > 500
@@ -801,7 +1099,6 @@ def validate_researcher_run_config(
                     "This is valid but can be slow and storage-heavy."
                 )
         except Exception as exc:
-            source_id = source_entry.get("id") or source_entry.get("config")
             errors.append(f"{source_id}: {exc}")
 
     estimated_source_layers = sum(
@@ -928,9 +1225,26 @@ def _source_summary(
     elif aggregations:
         layer_count = 0
         enabled_names = set(variables) | set(indices)
+        if layer_structure == "yearly_static_collection":
+            enabled_names = {
+                str(source_cfg["variables"][variable].get("generated_from_group", variable))
+                for variable in variables
+                if variable in source_cfg.get("variables", {})
+            }
         for aggregation in aggregations:
             aggregation_variables = aggregation.get("variables") or sorted(enabled_names)
-            applicable = set(aggregation_variables) & enabled_names
+            if layer_structure == "yearly_static_collection":
+                aggregation_names = {
+                    str(
+                        source_cfg.get("variables", {})
+                        .get(str(variable), {})
+                        .get("generated_from_group", variable)
+                    )
+                    for variable in aggregation_variables
+                }
+            else:
+                aggregation_names = set(aggregation_variables)
+            applicable = aggregation_names & enabled_names
             n = max(0, len(applicable))
             for key in output_dimension_keys:
                 values = dimensions.get(key, [])

@@ -8,6 +8,8 @@ import shutil
 import time
 from typing import Any
 
+from src.pipeline.progress import progress_log
+
 
 def _import_hda():
     try:
@@ -82,17 +84,17 @@ def create_hda_client(download_cfg: dict[str, Any]):
                 "must be set if using explicit credentials."
             )
 
-        print("[wekeo_hda] Creating client with explicit YAML credentials.")
-        print("[wekeo_hda] WARNING: this is not recommended for committed configs.")
+        progress_log("[wekeo_hda] Creating client with explicit YAML credentials.")
+        progress_log("[wekeo_hda] WARNING: this is not recommended for committed configs.", level="warning")
         conf = Configuration(user=username, password=password)
         return Client(config=conf, max_workers=max_workers)
 
     if config_path:
-        print(f"[wekeo_hda] Creating client with config file: {config_path}")
+        progress_log(f"[wekeo_hda] Creating client with config file: {config_path}")
         conf = Configuration(path=config_path)
         return Client(config=conf, max_workers=max_workers)
 
-    print("[wekeo_hda] Creating client from ~/.hdarc or HDA_USER/HDA_PASSWORD.")
+    progress_log("[wekeo_hda] Creating client from ~/.hdarc or HDA_USER/HDA_PASSWORD.")
     return Client(max_workers=max_workers)
 
 
@@ -126,33 +128,33 @@ def find_downloaded_files(
 
 
 def print_directory_tree(directory: Path, max_entries: int = 100) -> None:
-    print(f"[wekeo_hda] Directory inspection: {directory}")
+    progress_log(f"[wekeo_hda] Directory inspection: {directory}")
 
     if not directory.exists():
-        print("[wekeo_hda] Directory does not exist.")
+        progress_log("[wekeo_hda] Directory does not exist.")
         return
 
     entries = sorted(directory.rglob("*"))
-    print(f"[wekeo_hda] Total entries under directory: {len(entries)}")
+    progress_log(f"[wekeo_hda] Total entries under directory: {len(entries)}")
 
     for path in entries[:max_entries]:
         kind = "DIR " if path.is_dir() else "FILE"
         size = path.stat().st_size if path.is_file() else 0
-        print(f"  [{kind}] {path} ({size} bytes)")
+        progress_log(f"  [{kind}] {path} ({size} bytes)")
 
     if len(entries) > max_entries:
-        print(f"  ... truncated, {len(entries) - max_entries} more entries")
+        progress_log(f"  ... truncated, {len(entries) - max_entries} more entries")
 
 
 def download_matches(matches: Any, tmp_dir: Path, overwrite: bool) -> None:
     tmp_dir = _normalise_tmp_dir(tmp_dir)
     _ensure_dir(tmp_dir)
 
-    print(f"[wekeo_hda] Download dir absolute: {tmp_dir}")
+    progress_log(f"[wekeo_hda] Download dir absolute: {tmp_dir}")
 
     try:
         signature = inspect.signature(matches.download)
-        print(f"[wekeo_hda] matches.download signature: {signature}")
+        progress_log(f"[wekeo_hda] matches.download signature: {signature}")
     except Exception:
         signature = None
 
@@ -222,9 +224,9 @@ def write_hda_manifests(
         with result_ids_path.open("w", encoding="utf-8") as f:
             for item in matches.results:
                 f.write(str(item.get("id", item)) + "\n")
-        print(f"[wekeo_hda] Result IDs written: {result_ids_path}")
+        progress_log(f"[wekeo_hda] Result IDs written: {result_ids_path}")
     except Exception as exc:
-        print(f"[wekeo_hda] Could not write result IDs: {exc}")
+        progress_log(f"[wekeo_hda] Could not write result IDs: {exc}", level="warning")
 
 
 def download_with_wekeo_hda(
@@ -261,13 +263,11 @@ def download_with_wekeo_hda(
 
     _ensure_dir(tmp_dir)
 
-    print("==============================")
-    print(f"[wekeo_hda] Variable: {variable}")
-    print(f"[wekeo_hda] Output path: {output_path}")
-    print(f"[wekeo_hda] Temporary root: {tmp_root}")
-    print(f"[wekeo_hda] Temporary dir: {tmp_dir}")
-    print(f"[wekeo_hda] Dataset ID: {query.get('dataset_id')}")
-    print("==============================")
+    progress_log(f"[wekeo_hda] Variable: {variable}")
+    progress_log(f"[wekeo_hda] Output path: {output_path}")
+    progress_log(f"[wekeo_hda] Temporary root: {tmp_root}")
+    progress_log(f"[wekeo_hda] Temporary dir: {tmp_dir}")
+    progress_log(f"[wekeo_hda] Dataset ID: {query.get('dataset_id')}")
 
     before_files = set(find_downloaded_files(tmp_dir))
 
@@ -276,14 +276,13 @@ def download_with_wekeo_hda(
     max_results = spec.get("max_results", hda_cfg.get("max_results"))
     if max_results is not None:
         max_results = int(max_results)
-        print(f"[wekeo_hda] Searching with max_results={max_results}")
+        progress_log(f"[wekeo_hda] Searching with max_results={max_results}")
         matches = client.search(query, max_results)
     else:
-        print("[wekeo_hda] Searching without max_results limit")
+        progress_log("[wekeo_hda] Searching without max_results limit")
         matches = client.search(query)
 
-    print("[wekeo_hda] Search results:")
-    print(matches)
+    progress_log(f"[wekeo_hda] Search results: {matches}")
 
     result_count = get_search_result_count(matches)
     if result_count == 0:
@@ -309,7 +308,7 @@ def download_with_wekeo_hda(
         matches=matches,
     )
 
-    print("[wekeo_hda] Downloading...")
+    progress_log("[wekeo_hda] Downloading through HDA client...")
     download_matches(
         matches=matches,
         tmp_dir=tmp_dir,
@@ -324,7 +323,7 @@ def download_with_wekeo_hda(
     downloaded_files = find_downloaded_files(tmp_dir, pattern=file_pattern)
 
     if not downloaded_files and file_pattern:
-        print(
+        progress_log(
             f"[wekeo_hda] No files matched file_pattern={file_pattern!r}. "
             "Retrying without pattern to inspect actual downloaded files."
         )
@@ -333,13 +332,13 @@ def download_with_wekeo_hda(
     after_files = set(find_downloaded_files(tmp_dir))
     new_files = sorted(after_files - before_files)
 
-    print(f"[wekeo_hda] Downloaded files found: {len(downloaded_files)}")
+    progress_log(f"[wekeo_hda] Downloaded files found: {len(downloaded_files)}")
     for path in downloaded_files[:50]:
-        print(f"  - {path}")
+        progress_log(f"  - {path}")
 
-    print(f"[wekeo_hda] New files since start: {len(new_files)}")
+    progress_log(f"[wekeo_hda] New files since start: {len(new_files)}")
     for path in new_files[:50]:
-        print(f"  + {path}")
+        progress_log(f"  + {path}")
 
     if not downloaded_files:
         print_directory_tree(tmp_root)

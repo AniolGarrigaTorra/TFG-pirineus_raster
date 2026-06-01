@@ -116,6 +116,7 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
         "static_multi",
         "static_index_set",
         "vector_categorical",
+        "osm_vector",
     }:
         return {
             "kind": "static",
@@ -131,16 +132,19 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
 
     if layer_structure == "yearly_static_collection":
         years = _static_year_layers(source_cfg)
+        year_bounds = [min(years), max(years)] if years else None
         return {
             "kind": "yearly_static_collection",
             "label": "Yearly static layers",
             "temporal_axis": temporal_axis or "year",
-            "aggregation_stage": "none",
+            "aggregation_stage": "build",
             "default_output_mode": "supplied_layers",
-            "output_modes": ["supplied_layers"],
-            "aggregation_forms": [],
-            "supports_custom_aggregations": False,
+            "output_modes": ["supplied_layers", "aggregate"],
+            "aggregation_forms": ["year_range_metric"],
+            "supports_custom_aggregations": True,
             "supports_raw_slices": False,
+            "available_years": year_bounds,
+            "default_years": year_bounds,
             "temporal_layers": {
                 "years": years,
             },

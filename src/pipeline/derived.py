@@ -12,6 +12,7 @@ from src.pipeline.layers import (
     LayerSpec,
     build_layer_catalog_from_manifest,
 )
+from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     load_grid_context,
     read_raster_array_as_nan,
@@ -114,13 +115,6 @@ DERIVED_OPERATION_GROUPS = {
     "distance_ops": [
         "distance_to_mask",
         "distance_to_class",
-    ],
-    "interpolation_ops": [
-        "idw",
-        "ordinary_kriging",
-        "universal_kriging",
-        "regression_kriging",
-        "thin_plate_spline",
     ],
 }
 
@@ -979,9 +973,8 @@ def build_derived_features(
         if not inputs_cfg:
             raise ValueError(f"Derived feature '{name}' has no inputs.")
 
-        print("==============================")
-        print(f"[derived] Feature: {name}")
-        print(f"[derived] Operation: {operation_name}")
+        progress_log(f"[derived] Feature: {name}")
+        progress_log(f"[derived] Operation: {operation_name}")
 
         input_layers: dict[str, LayerSpec] = {}
         input_arrays: dict[str, np.ndarray] = {}
@@ -998,7 +991,7 @@ def build_derived_features(
             array, _ = read_raster_array_as_nan(layer.path)
             input_arrays[input_name] = array
 
-            print(f"[derived] Input {input_name}: {layer.name}")
+            progress_log(f"[derived] Input {input_name}: {layer.name}")
 
         result, operation, effective_expression = evaluate_derived_operation(
             derived_cfg=derived_cfg,
@@ -1011,7 +1004,7 @@ def build_derived_features(
             effective_expression=effective_expression,
         )
         for warning in warnings:
-            print(f"[derived][warning] {warning}")
+            progress_log(f"[derived] {warning}", level="warning")
 
         output_name = f"derived_{name}.tif"
         output_path = rasters_dir / output_name
@@ -1080,7 +1073,7 @@ def build_derived_features(
         )
 
         written_paths.append(written_path)
-        print(f"[derived] Written: {written_path}")
+        progress_log(f"[derived] Written: {written_path}")
 
     _write_manifest(dataset_dir, manifest)
 

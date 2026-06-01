@@ -29,45 +29,6 @@ EXECUTABLE_RESAMPLING_METHODS = {
     **CONSERVATIVE_RESAMPLING_METHODS,
 }
 
-ADVANCED_INTERPOLATION_METHODS = [
-    {
-        "name": "ordinary_kriging",
-        "label": "Ordinary kriging",
-        "status": "not_implemented",
-        "notes": "Requires a geostatistical interpolation backend and variogram model.",
-    },
-    {
-        "name": "universal_kriging",
-        "label": "Universal kriging",
-        "status": "not_implemented",
-        "notes": "Requires drift terms/covariates and a geostatistical backend.",
-    },
-    {
-        "name": "regression_kriging",
-        "label": "Regression kriging",
-        "status": "not_implemented",
-        "notes": "Requires predictor rasters and residual kriging.",
-    },
-    {
-        "name": "co_kriging",
-        "label": "Co-kriging",
-        "status": "not_implemented",
-        "notes": "Requires secondary correlated variables.",
-    },
-    {
-        "name": "idw",
-        "label": "Inverse distance weighting",
-        "status": "not_implemented",
-        "notes": "Point interpolation method, not a direct raster warp method.",
-    },
-    {
-        "name": "thin_plate_spline",
-        "label": "Thin plate spline",
-        "status": "not_implemented",
-        "notes": "Point/surface interpolation method, not a direct raster warp method.",
-    },
-]
-
 VALUE_SEMANTICS = [
     "categorical",
     "ordinal",

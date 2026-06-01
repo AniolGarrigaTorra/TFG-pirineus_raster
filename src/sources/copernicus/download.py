@@ -8,6 +8,12 @@ import shutil
 import time
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_download,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.copernicus.hda import download_with_wekeo_hda
 from src.sources.copernicus.naming import (
     validate_copernicus_source_config,
@@ -19,6 +25,7 @@ from src.sources.copernicus.temporal_postprocess import (
 )
 
 USER_AGENT = "pirineus-raster-pipeline/0.1"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _filename_from_url(url: str) -> str:
@@ -42,7 +49,8 @@ def download_file(
     output_path = Path(output_path)
 
     if output_path.exists() and not overwrite:
-        print(f"[download] Exists, skipping: {output_path}")
+        progress_log(f"[download] Exists, skipping: {output_path}")
+        progress_advance_stage_task(name=output_path.name)
         return
 
     ensure_dir(output_path.parent)
@@ -50,16 +58,16 @@ def download_file(
     temporary_path = output_path.with_suffix(output_path.suffix + ".part")
 
     if temporary_path.exists():
-        print(f"[download] Removing partial file: {temporary_path}")
+        progress_log(f"[download] Removing partial file: {temporary_path}")
         temporary_path.unlink()
 
-    print(f"[download] URL: {url}")
-    print(f"[download] Output: {output_path}")
+    progress_log(f"[download] URL: {url}")
+    progress_log(f"[download] Output: {output_path}")
 
     last_error = None
 
     for attempt in range(1, max_retries + 1):
-        print(f"[download] Attempt {attempt}/{max_retries}")
+        progress_log(f"[download] Attempt {attempt}/{max_retries}")
 
         request = Request(
             url,
@@ -69,10 +77,32 @@ def download_file(
         try:
             with urlopen(request, timeout=timeout) as response:
                 with temporary_path.open("wb") as f:
-                    shutil.copyfileobj(response, f)
+                    total_header = response.headers.get("Content-Length")
+                    total = int(total_header) if total_header else None
+                    downloaded = 0
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress_download(
+                            output_path=output_path,
+                            downloaded=downloaded,
+                            total=total,
+                            attempt=attempt,
+                        )
 
             temporary_path.rename(output_path)
-            print(f"[download] Finished: {output_path}")
+            progress_download(
+                output_path=output_path,
+                downloaded=output_path.stat().st_size,
+                total=output_path.stat().st_size,
+                attempt=attempt,
+                done=True,
+            )
+            progress_log(f"[download] Finished: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             return
 
         except (HTTPError, URLError, TimeoutError) as exc:
@@ -81,10 +111,10 @@ def download_file(
             if temporary_path.exists():
                 temporary_path.unlink()
 
-            print(f"[download] Failed attempt {attempt}/{max_retries}: {exc}")
+            progress_log(f"[download] Failed attempt {attempt}/{max_retries}: {exc}", level="warning")
 
             if attempt < max_retries:
-                print(
+                progress_log(
                     f"[download] Sleeping {retry_sleep_seconds} seconds before retry..."
                 )
                 time.sleep(retry_sleep_seconds)
@@ -145,15 +175,17 @@ def copy_local_file(
         raise FileNotFoundError(f"Local source file not found: {local_path}")
 
     if output_path.exists() and not overwrite:
-        print(f"[download] Exists, skipping: {output_path}")
+        progress_log(f"[download] Exists, skipping: {output_path}")
+        progress_advance_stage_task(name=output_path.name)
         return output_path
 
     ensure_dir(output_path.parent)
 
-    print(f"[download] Copy local file: {local_path}")
-    print(f"[download] Output: {output_path}")
+    progress_log(f"[download] Copy local file: {local_path}")
+    progress_log(f"[download] Output: {output_path}")
 
     shutil.copy2(local_path, output_path)
+    progress_advance_stage_task(name=output_path.name)
     return output_path
 
 
@@ -271,10 +303,14 @@ def download_copernicus_raw_files(
     overwrite = bool(download_cfg.get("overwrite_existing", False))
 
     specs = get_download_file_specs(source_cfg)
+    progress_set_stage_task_total(
+        sum(len(spec.get("urls") or []) or 1 for spec in specs),
+        label="downloads",
+    )
 
-    print("[download] Copernicus raw dir:", raw_dir)
-    print("[download] Mode:", mode)
-    print("[download] Enabled:", enabled)
+    progress_log(f"[download] Copernicus raw dir: {raw_dir}")
+    progress_log(f"[download] Mode: {mode}")
+    progress_log(f"[download] Enabled: {enabled}")
 
     raw_paths: list[Path] = []
 
@@ -282,9 +318,8 @@ def download_copernicus_raw_files(
         variable = spec["variable"]
         output_path = raw_dir / spec["filename"]
 
-        print("==============================")
-        print(f"[download] Variable/download spec: {variable}")
-        print(f"[download] File: {output_path}")
+        progress_log(f"[download] Variable/download spec: {variable}")
+        progress_log(f"[download] File: {output_path}")
 
         if not enabled or mode == "manual":
             if not output_path.exists():
@@ -294,7 +329,8 @@ def download_copernicus_raw_files(
                     "automatic download mode in the YAML."
                 )
 
-            print(f"[download] Manual file found: {output_path}")
+            progress_log(f"[download] Manual file found: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             raw_paths.append(output_path)
             continue
 
@@ -307,6 +343,7 @@ def download_copernicus_raw_files(
                 source_cfg=source_cfg,
             )
             raw_paths.extend(written_paths)
+            progress_advance_stage_task(name=output_path.name)
             continue
 
         if mode == "local_file":
@@ -316,6 +353,7 @@ def download_copernicus_raw_files(
                 overwrite=overwrite,
             )
             raw_paths.extend(written_paths)
+            progress_advance_stage_task(name=output_path.name)
             continue
 
         if mode == "wekeo_hda":
@@ -333,6 +371,7 @@ def download_copernicus_raw_files(
                 spec=spec,
             )
             raw_paths.extend(written_paths)
+            progress_advance_stage_task(name=output_path.name)
             continue
 
         raise NotImplementedError(

@@ -19,6 +19,7 @@ from src.pipeline.resampling import (
     get_resampling_enum,
     is_conservative_resampling,
 )
+from src.pipeline.progress import progress_log
 
 
 # =============================================================================
@@ -93,11 +94,11 @@ def print_grid_context(
     grid: GridContext,
     prefix: str = "[grid]",
 ) -> None:
-    print(f"{prefix} AOI: {grid.aoi_name}")
-    print(f"{prefix} Path: {grid.path}")
-    print(f"{prefix} CRS: {grid.crs}")
-    print(f"{prefix} Shape: {grid.width} x {grid.height}")
-    print(f"{prefix} Resolution: {grid.resolution_m} m")
+    progress_log(f"{prefix} AOI: {grid.aoi_name}")
+    progress_log(f"{prefix} Path: {grid.path}")
+    progress_log(f"{prefix} CRS: {grid.crs}")
+    progress_log(f"{prefix} Shape: {grid.width} x {grid.height}")
+    progress_log(f"{prefix} Resolution: {grid.resolution_m} m")
 
 
 # =============================================================================
@@ -354,40 +355,89 @@ def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def _infer_resolution_unit(source_cfg: dict, native_resolution_m: Any = None) -> str | None:
     if native_resolution_m is not None:
-        return "metre"
+        return "m"
 
     provider = source_cfg.get("source", {}).get("provider")
     source_resolution = str(source_cfg.get("processing", {}).get("source_resolution", ""))
 
+    if source_resolution in {"osm", "vector", ""}:
+        return None
+
     if provider == "worldclim":
-        if source_resolution.endswith("s"):
-            return "arc_second"
-        if source_resolution.endswith("m"):
-            return "arc_minute"
+        if source_resolution.endswith("arcs") or source_resolution.endswith("s"):
+            return "arcs"
+        if source_resolution.endswith("arcmin") or source_resolution.endswith("m"):
+            return "arcmin"
+
+    if source_resolution.endswith("arcs"):
+        return "arcs"
+    if source_resolution.endswith("arcmin"):
+        return "arcmin"
 
     if source_resolution.endswith("m"):
-        return "metre"
+        return "m"
 
     return None
 
 
 def _infer_metadata_resolution_unit(metadata: dict[str, Any]) -> str | None:
     if metadata.get("native_resolution_m") is not None:
-        return "metre"
+        return "m"
 
     provider = metadata.get("provider")
     source_resolution = str(metadata.get("source_resolution", ""))
 
+    if source_resolution in {"osm", "vector", ""}:
+        return None
+
     if provider == "worldclim":
-        if source_resolution.endswith("s"):
-            return "arc_second"
-        if source_resolution.endswith("m"):
-            return "arc_minute"
+        if source_resolution.endswith("arcs") or source_resolution.endswith("s"):
+            return "arcs"
+        if source_resolution.endswith("arcmin") or source_resolution.endswith("m"):
+            return "arcmin"
+
+    if source_resolution.endswith("arcs"):
+        return "arcs"
+    if source_resolution.endswith("arcmin"):
+        return "arcmin"
 
     if source_resolution.endswith("m"):
-        return "metre"
+        return "m"
 
     return None
+
+
+def _source_crs(source_cfg: dict) -> Any:
+    source = source_cfg.get("source", {})
+    dataset = source_cfg.get("dataset", {})
+    processing = source_cfg.get("processing", {})
+    source_resolution = str(processing.get("source_resolution", ""))
+    by_resolution = processing.get("source_crs_by_resolution", {}) or {}
+    return (
+        by_resolution.get(source_resolution)
+        or source.get("source_crs")
+        or dataset.get("source_crs")
+    )
+
+
+def _native_resolution_m(source_cfg: dict) -> Any:
+    dataset = source_cfg.get("dataset", {})
+    processing = source_cfg.get("processing", {})
+    source_resolution = str(processing.get("source_resolution", ""))
+    by_resolution = processing.get("native_resolution_m_by_resolution", {}) or {}
+    if source_resolution in by_resolution:
+        return by_resolution[source_resolution]
+    return dataset.get("native_resolution_m")
+
+
+def _native_resolution(source_cfg: dict) -> Any:
+    dataset = source_cfg.get("dataset", {})
+    processing = source_cfg.get("processing", {})
+    source_resolution = processing.get("source_resolution")
+    by_resolution = processing.get("native_resolution_by_resolution", {}) or {}
+    if source_resolution is not None:
+        return by_resolution.get(str(source_resolution), dataset.get("native_resolution"))
+    return dataset.get("native_resolution")
 
 
 def _bounds_dict(grid: GridContext) -> dict[str, float]:
@@ -512,6 +562,8 @@ def _source_metadata(source_cfg: dict) -> dict[str, Any]:
     dataset = source_cfg.get("dataset", {})
     processing = source_cfg.get("processing", {})
     source_config_path = source_cfg.get("_config_path")
+    native_resolution_m = _native_resolution_m(source_cfg)
+    native_resolution = _native_resolution(source_cfg) or processing.get("source_resolution")
 
     return {
         "provider": source.get("provider"),
@@ -522,7 +574,7 @@ def _source_metadata(source_cfg: dict) -> dict[str, Any]:
         "source_config_sha256": _file_sha256(source_config_path),
         "source_version": source.get("version"),
         "version": source.get("version"),
-        "source_crs": source.get("source_crs") or dataset.get("source_crs"),
+        "source_crs": _source_crs(source_cfg),
         "source_period": source.get("source_period"),
         "source_scale": source.get("source_scale"),
         "citation": source.get("citation"),
@@ -532,14 +584,11 @@ def _source_metadata(source_cfg: dict) -> dict[str, Any]:
         "dataset_layer_structure": dataset.get("layer_structure"),
         "source_resolution": processing.get("source_resolution"),
         "source_resolution_unit": _infer_resolution_unit(source_cfg),
-        "native_resolution": (
-            dataset.get("native_resolution")
-            or processing.get("source_resolution")
-        ),
-        "native_resolution_m": dataset.get("native_resolution_m"),
+        "native_resolution": native_resolution,
+        "native_resolution_m": native_resolution_m,
         "native_resolution_unit": _infer_resolution_unit(
             source_cfg,
-            native_resolution_m=dataset.get("native_resolution_m"),
+            native_resolution_m=native_resolution_m,
         ),
         "target_resolution_m": processing.get("target_resolution_m"),
     }

@@ -91,20 +91,24 @@ def validate_grid_inputs(
     aoi_cfg: dict,
     resolution: int,
 ) -> None:
-    crs = project_cfg["crs"]
+    CRS.from_user_input(project_cfg["crs"])
+    CRS.from_user_input(aoi_cfg["crs"])
     available_resolutions = project_cfg["grids"]["available_resolutions_m"]
 
+    if int(resolution) <= 0:
+        raise ValueError(f"Resolution must be a positive integer in metres: {resolution}")
+
     if resolution not in available_resolutions:
-        raise ValueError(
+        print(
             f"Resolution {resolution} m is not listed in project config. "
-            f"Available: {available_resolutions}"
+            f"Available presets: {available_resolutions}. Continuing with custom resolution."
         )
 
     bounds = aoi_cfg["bounds"]
-    xmin = int(bounds["xmin"])
-    xmax = int(bounds["xmax"])
-    ymin = int(bounds["ymin"])
-    ymax = int(bounds["ymax"])
+    xmin = float(bounds["xmin"])
+    xmax = float(bounds["xmax"])
+    ymin = float(bounds["ymin"])
+    ymax = float(bounds["ymax"])
 
     width_m = xmax - xmin
     height_m = ymax - ymin
@@ -112,6 +116,20 @@ def validate_grid_inputs(
     if width_m <= 0 or height_m <= 0:
         raise ValueError(
             f"Invalid AOI bounds: xmin={xmin}, xmax={xmax}, ymin={ymin}, ymax={ymax}"
+        )
+
+
+def validate_project_grid_bounds(
+    bounds: dict[str, int],
+    resolution: int,
+) -> None:
+    width_m = int(bounds["xmax"]) - int(bounds["xmin"])
+    height_m = int(bounds["ymax"]) - int(bounds["ymin"])
+
+    if width_m <= 0 or height_m <= 0:
+        raise ValueError(
+            "AOI bounds collapse after CRS transform/snap: "
+            f"width={width_m}, height={height_m}."
         )
 
     if width_m % resolution != 0 or height_m % resolution != 0:
@@ -175,6 +193,8 @@ def create_grid(
         _aoi_bounds_in_target_crs(aoi_cfg, crs),
         resolution=resolution,
     )
+    validate_project_grid_bounds(bounds, resolution=resolution)
+
     xmin = int(bounds["xmin"])
     xmax = int(bounds["xmax"])
     ymin = int(bounds["ymin"])

@@ -27,6 +27,13 @@ def get_source_resolution(source_cfg: dict) -> str:
     return str(source_cfg["processing"]["source_resolution"])
 
 
+def get_source_resolution_token(source_cfg: dict) -> str:
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = get_source_resolution(source_cfg)
+    tokens = processing.get("source_resolution_tokens", {}) or {}
+    return str(tokens.get(source_resolution, source_resolution))
+
+
 def validate_generic_raster_source_config(source_cfg: dict, provider: str | None = None) -> None:
     source = source_cfg.get("source", {})
     processing = source_cfg.get("processing", {})
@@ -162,6 +169,7 @@ def _format_context(source_cfg: dict, variable_cfg: dict) -> dict:
     context.update(
         {
             "source_resolution": get_source_resolution(source_cfg),
+            "source_resolution_token": get_source_resolution_token(source_cfg),
             "target_resolution_m": source_cfg.get("processing", {}).get("target_resolution_m"),
         }
     )

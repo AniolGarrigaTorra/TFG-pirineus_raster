@@ -9,6 +9,7 @@ from pyproj import Transformer
 from rasterio.windows import from_bounds
 
 from src.io.paths import ensure_dir, get_source_clipped_dir, get_source_raw_dir
+from src.pipeline.progress import progress_log
 from src.sources.generic_raster.naming import (
     build_clipped_name,
     build_raw_path,
@@ -39,6 +40,19 @@ def _transform_bounds(
         return bounds
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
     return transformer.transform_bounds(*bounds, densify_pts=21)
+
+
+def _intersect_bounds(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    xmin = max(left[0], right[0])
+    ymin = max(left[1], right[1])
+    xmax = min(left[2], right[2])
+    ymax = min(left[3], right[3])
+    if xmax <= xmin or ymax <= ymin:
+        return None
+    return (xmin, ymin, xmax, ymax)
 
 
 def _find_tif_in_zip(
@@ -130,15 +144,41 @@ def _clip_one_raster(
 ) -> Path:
     output_path = Path(output_path)
     if output_path.exists() and not overwrite:
-        print(f"[clip] Exists, skipping: {output_path}")
+        progress_log(f"[clip] Exists, skipping: {output_path}")
         return output_path
 
     ensure_dir(output_path.parent)
 
     with rasterio.open(input_raster_path) as src:
-        window = from_bounds(*clip_bounds_source_crs, transform=src.transform)
+        raster_bounds = (
+            float(src.bounds.left),
+            float(src.bounds.bottom),
+            float(src.bounds.right),
+            float(src.bounds.top),
+        )
+        clipped_bounds = _intersect_bounds(clip_bounds_source_crs, raster_bounds)
+        if clipped_bounds is None:
+            raise ValueError(
+                "Clip AOI does not overlap the source raster.\n"
+                f"Raster: {input_raster_path}\n"
+                f"Raster CRS: {src.crs}\n"
+                f"Raster bounds: {raster_bounds}\n"
+                f"Requested bounds in raster CRS: {clip_bounds_source_crs}\n"
+                "Check the source tile list/URLs and the configured clip AOI."
+            )
+
+        window = from_bounds(*clipped_bounds, transform=src.transform)
         window = window.round_offsets().round_lengths()
         data = src.read(window=window)
+        if data.shape[1] <= 0 or data.shape[2] <= 0:
+            raise ValueError(
+                "Clip window has zero width or height after raster alignment.\n"
+                f"Raster: {input_raster_path}\n"
+                f"Raster bounds: {raster_bounds}\n"
+                f"Requested bounds in raster CRS: {clip_bounds_source_crs}\n"
+                f"Intersected bounds: {clipped_bounds}\n"
+                f"Window: {window}"
+            )
         transform = src.window_transform(window)
         profile = src.profile.copy()
         profile.update(
@@ -155,7 +195,7 @@ def _clip_one_raster(
                 clip_bounds_source_crs=str(clip_bounds_source_crs),
             )
 
-    print(f"[clip] Written: {output_path}")
+    progress_log(f"[clip] Written: {output_path}")
     return output_path
 
 
@@ -187,10 +227,10 @@ def clip_generic_raster_raw_files(
     compression = str(output_cfg.get("compression", "LZW"))
     overwrite = bool(download_cfg.get("overwrite_existing", False))
 
-    print("[clip] Provider:", provider_name)
-    print("[clip] Product:", product)
-    print("[clip] AOI:", clip_aoi_name)
-    print("[clip] Raw dir:", raw_dir)
+    progress_log(f"[clip] Provider: {provider_name}")
+    progress_log(f"[clip] Product: {product}")
+    progress_log(f"[clip] AOI: {clip_aoi_name}")
+    progress_log(f"[clip] Raw dir: {raw_dir}")
 
     written_paths: list[Path] = []
 
@@ -198,7 +238,7 @@ def clip_generic_raster_raw_files(
         raw_path = build_raw_path(raw_dir, source_cfg, variable)
         if not raw_path.exists():
             if not bool(variable_cfg.get("required", True)):
-                print(f"[clip] Optional raw raster missing, skipping: {raw_path}")
+                progress_log(f"[clip] Optional raw raster missing, skipping: {raw_path}")
                 continue
             raise FileNotFoundError(f"Missing raw raster for variable={variable}: {raw_path}")
 
@@ -225,12 +265,11 @@ def clip_generic_raster_raw_files(
         )
         output_path = clipped_dir / build_clipped_name(source_cfg, variable, clip_aoi_name)
 
-        print("==============================")
-        print(f"[clip] Variable: {variable}")
-        print(f"[clip] Description: {variable_cfg.get('description', '')}")
-        print(f"[clip] Raw path: {raw_path}")
-        print(f"[clip] Raster path: {input_raster_path}")
-        print(f"[clip] Output: {output_path}")
+        progress_log(f"[clip] Variable: {variable}")
+        progress_log(f"[clip] Description: {variable_cfg.get('description', '')}")
+        progress_log(f"[clip] Raw path: {raw_path}")
+        progress_log(f"[clip] Raster path: {input_raster_path}")
+        progress_log(f"[clip] Output: {output_path}")
 
         written_paths.append(
             _clip_one_raster(

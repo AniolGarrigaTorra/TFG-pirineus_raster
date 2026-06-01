@@ -16,6 +16,7 @@ from src.sources.worldclim.naming import (
     build_worldclim_static_single_member_basename,
     get_layer_structure,
     get_source_resolution,
+    get_worldclim_download_resolution,
     get_zip_specs,
     get_file_specs,
     build_worldclim_cmip6_raw_path,
@@ -37,7 +38,7 @@ def _list_monthly_time_series_members(
     really contains every year from 1950 to 1959. For example, the
     WorldClim CRU-TS 1950-1959 ZIP may start at 1951.
     """
-    source_resolution = get_source_resolution(source_cfg)
+    source_resolution = get_worldclim_download_resolution(source_cfg)
 
     pattern = re.compile(
         rf"wc2\.1_cruts4\.09_{re.escape(source_resolution)}_"

@@ -20,7 +20,7 @@ body {
   min-height: 100vh;
   background:
     linear-gradient(rgba(247, 242, 234, 0.66), rgba(247, 242, 234, 0.76)),
-    url("/pirineus-background.png") center / cover fixed,
+    var(--pirineus-background-image, url("/backgrounds/pirineus-background.png")) center / cover fixed,
     #ede6dc;
 }
 

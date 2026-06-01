@@ -100,7 +100,6 @@ resampling:
     water_availability: average
     gdd: average
     psr: average
-    unknown: bilinear
 
 variables:
   tmin:
@@ -166,13 +165,6 @@ variables:
     value_semantics: intensive
     scale_factor: 1.0
     valid_range: [0, 4000]
-
-  unknown:
-    enabled: true
-    description: "PDCA layer not mapped to a known variable key"
-    unit: null
-    value_semantics: intensive
-    scale_factor: 1.0
 
 output:
   write_geotiff: true

@@ -1,4 +1,4 @@
-import type { ValidationReport, WorkbenchCatalog } from "./types";
+import type { AoiBounds, AoiCatalog, ValidationReport, WorkbenchCatalog } from "./types";
 
 async function requestJson<T>(
   path: string,
@@ -41,6 +41,31 @@ export function validateRunConfig(runConfig: unknown): Promise<ValidationReport>
   return requestJson<ValidationReport>("/api/validate-run", {
     method: "POST",
     body: JSON.stringify({ run_config: runConfig })
+  });
+}
+
+export function createAoiConfig(payload: {
+  name: string;
+  description?: string;
+  crs: string;
+  bounds: AoiBounds;
+}): Promise<{ ok: boolean; aoi: AoiCatalog }> {
+  return requestJson("/api/aoi-config", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function createProjectGrid(payload: {
+  project_config: string;
+  aoi_config: string;
+  crs: string;
+  resolution_m: number;
+  overwrite?: boolean;
+}): Promise<{ ok: boolean; grid_path: string }> {
+  return requestJson("/api/grid", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 

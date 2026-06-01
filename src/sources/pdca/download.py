@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
-import shutil
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_download,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.pdca.naming import raw_zip_path
 
 USER_AGENT = "pirineus-raster-pipeline/0.1 (+PDCA Zenodo downloader)"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _urlopen_json(url: str, timeout: int) -> dict:
@@ -27,7 +33,7 @@ def fetch_zenodo_record(source_cfg: dict) -> dict:
         f"https://zenodo.org/api/records/{record_id}",
     )
     timeout = int(download_cfg.get("timeout_seconds", 600))
-    print(f"[pdca:download] Zenodo API: {api_url}")
+    progress_log(f"[pdca:download] Zenodo API: {api_url}")
     return _urlopen_json(api_url, timeout=timeout)
 
 
@@ -80,7 +86,8 @@ def _download_file(
     retry_sleep_seconds: int,
 ) -> None:
     if output_path.exists() and not overwrite:
-        print(f"[pdca:download] Exists, skipping: {output_path}")
+        progress_log(f"[pdca:download] Exists, skipping: {output_path}")
+        progress_advance_stage_task(name=output_path.name)
         return
 
     ensure_dir(output_path.parent)
@@ -91,22 +98,46 @@ def _download_file(
     last_error: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
-        print(f"[pdca:download] Attempt {attempt}/{max_retries}: {output_path.name}")
+        progress_log(f"[pdca:download] Attempt {attempt}/{max_retries}: {output_path.name}")
         request = Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urlopen(request, timeout=timeout) as response:
+                total_header = response.headers.get("Content-Length")
+                total = int(total_header) if total_header else None
+                downloaded = 0
                 with temporary_path.open("wb") as f:
-                    shutil.copyfileobj(response, f)
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress_download(
+                            output_path=output_path,
+                            downloaded=downloaded,
+                            total=total,
+                            attempt=attempt,
+                        )
             temporary_path.rename(output_path)
-            print(f"[pdca:download] Finished: {output_path}")
+            progress_download(
+                output_path=output_path,
+                downloaded=output_path.stat().st_size,
+                total=output_path.stat().st_size,
+                attempt=attempt,
+                done=True,
+            )
+            progress_log(f"[pdca:download] Finished: {output_path}")
+            progress_advance_stage_task(name=output_path.name)
             return
         except (HTTPError, URLError, TimeoutError) as exc:
             last_error = exc
             if temporary_path.exists():
                 temporary_path.unlink()
-            print(f"[pdca:download] Failed: {exc}")
+            progress_log(f"[pdca:download] Failed: {exc}", level="warning")
             if attempt < max_retries:
-                print(f"[pdca:download] Sleeping {retry_sleep_seconds}s before retry...")
+                progress_log(
+                    f"[pdca:download] Sleeping {retry_sleep_seconds}s before retry..."
+                )
                 time.sleep(retry_sleep_seconds)
 
     raise RuntimeError(
@@ -127,7 +158,12 @@ def download_pdca_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
     if not enabled:
         existing = sorted(raw_dir.glob("*.zip"))
         if existing:
-            print(f"[pdca:download] Automatic download disabled. Found {len(existing)} ZIPs.")
+            progress_log(
+                f"[pdca:download] Automatic download disabled. Found {len(existing)} ZIPs."
+            )
+            progress_set_stage_task_total(len(existing), label="downloads")
+            for path in existing:
+                progress_advance_stage_task(name=path.name)
             return existing
         raise FileNotFoundError(
             "Automatic PDCA download is disabled and no ZIP files exist in "
@@ -145,7 +181,8 @@ def download_pdca_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
             f"Available files:\n{available}"
         )
 
-    print(f"[pdca:download] Selected files: {len(selected)}")
+    progress_log(f"[pdca:download] Selected files: {len(selected)}")
+    progress_set_stage_task_total(len(selected), label="downloads")
     paths: list[Path] = []
 
     for file_obj in selected:
@@ -153,7 +190,7 @@ def download_pdca_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
         output_path = raw_zip_path(raw_dir, key)
         url = _download_url(file_obj)
         size = file_obj.get("size")
-        print(f"[pdca:download] File: {key} size={size}")
+        progress_log(f"[pdca:download] File: {key} size={size}")
         _download_file(
             url=url,
             output_path=output_path,

@@ -14,14 +14,16 @@ source:
     clipping and aligning the selected years to the project grid.
   page_url: "https://ghsl.jrc.ec.europa.eu/ghs_pop2023.php"
   documentation_url: "https://ghsl.jrc.ec.europa.eu/"
-  source_crs: mixed
+  source_crs: ESRI:54009
   source_period: "1975-2030"
   citation: "Schiavina, M., Freire, S., Carioli, A., MacManus, K. GHS-POP R2023A - GHS population grid multitemporal (1975-2030). European Commission, Joint Research Centre."
 
 dataset:
   layer_structure: yearly_static_collection
-  file_format: zip_geotiff
+  file_format: geotiff
   data_type: count
+
+domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
   output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
@@ -33,9 +35,27 @@ download:
   overwrite_existing: false
 
 processing:
-  # Official GHS-POP grid/resolution tokens. The user can override this in the UI.
-  source_resolution: "54009_100"
-  source_resolutions: ["54009_100", "54009_1000", "4326_3ss", "4326_30ss"]
+  # User-facing labels. Official GHSL grid tokens are mapped below for URLs.
+  source_resolution: 100m
+  source_resolutions: [100m, 1000m, 3arcs, 30arcs]
+  source_resolution_tokens:
+    100m: "54009_100"
+    1000m: "54009_1000"
+    3arcs: "4326_3ss"
+    30arcs: "4326_30ss"
+  source_crs_by_resolution:
+    100m: ESRI:54009
+    1000m: ESRI:54009
+    3arcs: EPSG:4326
+    30arcs: EPSG:4326
+  native_resolution_m_by_resolution:
+    100m: 100
+    1000m: 1000
+  native_resolution_by_resolution:
+    100m: 100m
+    1000m: 1000m
+    3arcs: 3arcs
+    30arcs: 30arcs
   target_resolution_m: 100
   grid_from_project: true
 
@@ -53,13 +73,13 @@ variable_groups:
       valid_range: [0, 100000000]
       data_type: count
       value_semantics: count
-      source_filename: "GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_pyrenees.tif"
+      source_filename: "GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_pyrenees.tif"
       urls:
-        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R4_C18.zip"
-        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R4_C19.zip"
-        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R5_C18.zip"
-        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0_R5_C19.zip"
-      zip_member_pattern: ".*GHS_POP_E{year}_GLOBE_R2023A_{source_resolution}_V1_0.*\\.tif$"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}_V1_0_R4_C18.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}_V1_0_R4_C19.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}_V1_0_R5_C18.zip"
+        - "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GLOBE_R2023A/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}/V1-0/tiles/GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}_V1_0_R5_C19.zip"
+      zip_member_pattern: ".*GHS_POP_E{year}_GLOBE_R2023A_{source_resolution_token}_V1_0.*\\.tif$"
       allow_multiple_zip_members: true
       postprocess: mosaic_zip_geotiff
       temporal:

@@ -182,4 +182,3 @@ dependencies:
     - tornado==6.5.4
     - unicodedata2==17.0.1
     - wheel==0.46.3
-prefix: /home/usuaris/csl/aniol.garriga.torra/.conda/envs/pirineus-raster

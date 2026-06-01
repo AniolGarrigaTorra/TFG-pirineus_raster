@@ -17,6 +17,13 @@ export interface AoiCatalog {
   bounds?: Dict<number>;
 }
 
+export interface AoiBounds {
+  xmin: number;
+  xmax: number;
+  ymin: number;
+  ymax: number;
+}
+
 export interface VariableCatalog {
   name: string;
   kind: "variable" | "index" | "vector_layer";
@@ -116,7 +123,6 @@ export interface WorkbenchCatalog {
   sources: SourceCatalog[];
   supported_metrics: string[];
   supported_resampling: string[];
-  advanced_interpolation_methods?: Dict[];
   derived_operation_groups?: Record<string, string[]>;
   value_semantics?: string[];
   supported_stages: string[];
@@ -126,7 +132,7 @@ export interface CustomAggregation {
   name: string;
   form: string;
   metric: string;
-  months: [number, number];
+  months?: [number, number];
   years?: [number, number];
   within_year_metric?: string;
   across_year_metric?: string;

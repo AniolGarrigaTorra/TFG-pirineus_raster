@@ -20,6 +20,7 @@ from src.pipeline.config import (
 )
 from src.pipeline.derived import build_derived_features
 from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg
+from src.pipeline.progress import ProgressReporter, progress_log, use_progress_reporter
 from src.pipeline.layers import (
     build_layer_catalog_from_manifest,
     layer_specs_to_dicts,
@@ -27,6 +28,7 @@ from src.pipeline.layers import (
 )
 from src.pipeline.runner import run_source_pipeline
 from src.workbench.compiler import compile_run_config
+from src.workbench.compiler import validate_researcher_run_config
 
 
 # =============================================================================
@@ -309,7 +311,18 @@ def run_dataset_pipeline(
     """
     run_config_path = resolve_path(run_config_path, must_exist=True)
 
-    run_cfg = compile_run_config(load_run_config(run_config_path))
+    raw_run_cfg = load_run_config(run_config_path)
+    preflight = validate_researcher_run_config(
+        run_cfg=raw_run_cfg,
+        run_config_path=run_config_path,
+    )
+    if not preflight["ok"]:
+        errors = "\n".join(f"  - {error}" for error in preflight["errors"])
+        raise ValueError(f"Run config preflight failed:\n{errors}")
+    for warning in preflight["warnings"]:
+        progress_log(warning, level="warning")
+
+    run_cfg = compile_run_config(raw_run_cfg)
     run_name = get_run_name(run_cfg)
     project_config_path = resolve_path(
         get_project_config_path(run_cfg),
@@ -373,155 +386,134 @@ def run_dataset_pipeline(
             dirs["config"] / "aoi_config.yaml",
         )
 
-    print("==============================")
-    print("Pirineus Raster Dataset Run")
-    print(f"Run name:       {run_name}")
-    print(f"Run config:     {run_config_path}")
-    print(f"Project config: {project_config_path}")
-    print(f"Dataset dir:    {dataset_dir}")
-    print(f"Copy rasters:   {copy_rasters}")
-    print("==============================")
-
     started_at = now_iso()
 
     source_entries = get_source_entries(run_cfg)
     default_stages = normalize_stages(run_cfg["run"].get("stages", ["build"]))
 
-    source_results: list[dict[str, Any]] = []
-    copied_rasters: list[dict[str, Any]] = []
-
-    for idx, source_entry in enumerate(source_entries, start=1):
+    planned_tasks: list[dict[str, str]] = []
+    for source_entry in source_entries:
         source_config_path = resolve_path(
             source_entry["config"],
             base_path=run_config_path,
             must_exist=True,
         )
-        source_id = source_entry.get("id", source_config_path.stem)
+        source_id = str(source_entry.get("id", source_config_path.stem))
         stages = normalize_stages(source_entry.get("stages", default_stages))
-
-        copy_text_file(
-            source_config_path,
-            dirs["config"] / "sources" / f"{source_id}.yaml",
+        planned_tasks.extend(
+            {"source_id": source_id, "stage": stage}
+            for stage in stages
         )
-
-        print("==============================")
-        print(f"Source {idx}/{len(source_entries)}: {source_id}")
-        print(f"Config: {source_config_path}")
-        print(f"Stages: {stages}")
-        print("==============================")
-
-        stage_results: list[dict[str, Any]] = []
-
-        for stage in stages:
-            print("------------------------------")
-            print(f"Running source '{source_id}' stage '{stage}'")
-            print("------------------------------")
-
-            paths = run_source_pipeline(
-                project_config_path=project_config_path,
-                source_config_path=source_config_path,
-                stage=stage,
-                run_cfg=run_cfg,
-                source_entry=source_entry,
-            )
-
-            stage_results.append(
-                {
-                    "stage": stage,
-                    "n_paths": len(paths),
-                    "paths": [str(path) for path in paths],
-                }
-            )
-
-        source_result = {
-            "id": source_id,
-            "config": str(source_config_path),
-            "stages": stages,
-            "stage_results": stage_results,
-        }
-
-        if copy_rasters:
-            source_copied = copy_stage_rasters_to_dataset(
-                source_id=source_id,
-                stage_results=stage_results,
-                dataset_rasters_dir=dirs["rasters"],
-                overwrite=overwrite_existing,
-            )
-
-            source_result["copied_rasters"] = source_copied
-            source_result["n_copied_rasters"] = len(source_copied)
-
-            copied_rasters.extend(source_copied)
-
-            print("------------------------------")
-            print(f"Copied rasters for source '{source_id}': {len(source_copied)}")
-            print("------------------------------")
-
-        source_results.append(source_result)
-
-    finished_at = now_iso()
-
-    summary: dict[str, Any] = {
-        "run_name": run_name,
-        "run_config": str(run_config_path),
-        "project_config": str(project_config_path),
-        "dataset_dir": str(dataset_dir),
-        "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
-        "run_aoi_name": run_aoi_name,
-        "run_resolution_m": run_resolution_m,
-        "run_crs": project_cfg.get("crs"),
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "copy_rasters": copy_rasters,
-        "n_sources": len(source_results),
-        "n_copied_rasters": len(copied_rasters),
-        "sources": source_results,
-    }
-
-    if write_run_summary:
-        write_json(
-            dirs["metadata"] / "run_summary.json",
-            summary,
-        )
-
-    if write_manifest:
-        manifest = build_manifest(
-            run_name=run_name,
-            run_config_path=run_config_path,
-            project_config_path=project_config_path,
-            dataset_dir=dataset_dir,
-            source_results=source_results,
-            copied_rasters=copied_rasters,
-            started_at=started_at,
-            finished_at=finished_at,
-            run_aoi_config_path=run_aoi_config_path,
-            run_aoi_name=run_aoi_name,
-            run_resolution_m=run_resolution_m,
-            run_crs=project_cfg.get("crs"),
-        )
-
-        write_json(
-            dirs["metadata"] / "manifest.json",
-            manifest,
-        )
-
-    derived_paths: list[Path] = []
-
     if run_cfg.get("derived_features"):
-        if run_aoi_cfg is None:
-            raise ValueError(
-                "derived_features require run.aoi_config to be defined."
+        planned_tasks.append({"source_id": "derived", "stage": "derived"})
+
+    stage_totals: dict[str, int] = {}
+    for task in planned_tasks:
+        stage_totals[task["stage"]] = stage_totals.get(task["stage"], 0) + 1
+
+    reporter = ProgressReporter(
+        run_name=run_name,
+        total_tasks=len(planned_tasks) or 1,
+        stage_totals=stage_totals,
+    )
+
+    source_results: list[dict[str, Any]] = []
+    copied_rasters: list[dict[str, Any]] = []
+
+    with use_progress_reporter(reporter):
+        reporter.start()
+        reporter.log(f"Run config: {run_config_path}")
+        reporter.log(f"Project config: {project_config_path}")
+        reporter.log(f"Dataset dir: {dataset_dir}")
+        reporter.log(f"Copy rasters: {copy_rasters}")
+
+        for idx, source_entry in enumerate(source_entries, start=1):
+            source_config_path = resolve_path(
+                source_entry["config"],
+                base_path=run_config_path,
+                must_exist=True,
+            )
+            source_id = source_entry.get("id", source_config_path.stem)
+            stages = normalize_stages(source_entry.get("stages", default_stages))
+
+            copy_text_file(
+                source_config_path,
+                dirs["config"] / "sources" / f"{source_id}.yaml",
             )
 
-        derived_paths = build_derived_features(
-            run_cfg=run_cfg,
-            project_cfg=project_cfg,
-            dataset_dir=dataset_dir,
-            output_aoi_cfg=run_aoi_cfg,
-        )
+            reporter.log(
+                f"Source {idx}/{len(source_entries)} prepared: {source_id} | stages={stages}"
+            )
 
-        summary["n_derived_features"] = len(derived_paths)
-        summary["derived_features"] = [str(path) for path in derived_paths]
+            stage_results: list[dict[str, Any]] = []
+
+            for stage in stages:
+                reporter.start_task(
+                    stage=stage,
+                    source_id=str(source_id),
+                    detail=f"{idx}/{len(source_entries)}",
+                )
+
+                paths = run_source_pipeline(
+                    project_config_path=project_config_path,
+                    source_config_path=source_config_path,
+                    stage=stage,
+                    run_cfg=run_cfg,
+                    source_entry=source_entry,
+                )
+
+                stage_results.append(
+                    {
+                        "stage": stage,
+                        "n_paths": len(paths),
+                        "paths": [str(path) for path in paths],
+                    }
+                )
+                reporter.finish_task(output_count=len(paths))
+
+            source_result = {
+                "id": source_id,
+                "config": str(source_config_path),
+                "stages": stages,
+                "stage_results": stage_results,
+            }
+
+            if copy_rasters:
+                source_copied = copy_stage_rasters_to_dataset(
+                    source_id=source_id,
+                    stage_results=stage_results,
+                    dataset_rasters_dir=dirs["rasters"],
+                    overwrite=overwrite_existing,
+                )
+
+                source_result["copied_rasters"] = source_copied
+                source_result["n_copied_rasters"] = len(source_copied)
+
+                copied_rasters.extend(source_copied)
+                reporter.log(
+                    f"Copied rasters for source {source_id}: {len(source_copied)}"
+                )
+
+            source_results.append(source_result)
+
+        finished_at = now_iso()
+
+        summary: dict[str, Any] = {
+            "run_name": run_name,
+            "run_config": str(run_config_path),
+            "project_config": str(project_config_path),
+            "dataset_dir": str(dataset_dir),
+            "run_aoi_config": str(run_aoi_config_path) if run_aoi_config_path else None,
+            "run_aoi_name": run_aoi_name,
+            "run_resolution_m": run_resolution_m,
+            "run_crs": project_cfg.get("crs"),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "copy_rasters": copy_rasters,
+            "n_sources": len(source_results),
+            "n_copied_rasters": len(copied_rasters),
+            "sources": source_results,
+        }
 
         if write_run_summary:
             write_json(
@@ -529,13 +521,64 @@ def run_dataset_pipeline(
                 summary,
             )
 
-    print("==============================")
-    print("Dataset run finished successfully")
-    print(f"Dataset dir: {dataset_dir}")
-    print(f"Copied rasters: {len(copied_rasters)}")
-    print(f"Derived rasters: {len(derived_paths)}")
-    print(f"Run summary: {dirs['metadata'] / 'run_summary.json'}")
-    print(f"Manifest:    {dirs['metadata'] / 'manifest.json'}")
-    print("==============================")
+        if write_manifest:
+            manifest = build_manifest(
+                run_name=run_name,
+                run_config_path=run_config_path,
+                project_config_path=project_config_path,
+                dataset_dir=dataset_dir,
+                source_results=source_results,
+                copied_rasters=copied_rasters,
+                started_at=started_at,
+                finished_at=finished_at,
+                run_aoi_config_path=run_aoi_config_path,
+                run_aoi_name=run_aoi_name,
+                run_resolution_m=run_resolution_m,
+                run_crs=project_cfg.get("crs"),
+            )
+
+            write_json(
+                dirs["metadata"] / "manifest.json",
+                manifest,
+            )
+
+        derived_paths: list[Path] = []
+
+        if run_cfg.get("derived_features"):
+            if run_aoi_cfg is None:
+                raise ValueError(
+                    "derived_features require run.aoi_config to be defined."
+                )
+
+            reporter.start_task(
+                stage="derived",
+                source_id="derived",
+                detail=f"{len(run_cfg.get('derived_features') or [])} features",
+            )
+            derived_paths = build_derived_features(
+                run_cfg=run_cfg,
+                project_cfg=project_cfg,
+                dataset_dir=dataset_dir,
+                output_aoi_cfg=run_aoi_cfg,
+            )
+            reporter.finish_task(output_count=len(derived_paths))
+
+            summary["n_derived_features"] = len(derived_paths)
+            summary["derived_features"] = [str(path) for path in derived_paths]
+
+            if write_run_summary:
+                write_json(
+                    dirs["metadata"] / "run_summary.json",
+                    summary,
+                )
+
+        reporter.finish()
+
+    progress_log("Dataset run finished successfully")
+    progress_log(f"Dataset dir: {dataset_dir}")
+    progress_log(f"Copied rasters: {len(copied_rasters)}")
+    progress_log(f"Derived rasters: {len(derived_paths)}")
+    progress_log(f"Run summary: {dirs['metadata'] / 'run_summary.json'}")
+    progress_log(f"Manifest: {dirs['metadata'] / 'manifest.json'}")
 
     return summary

@@ -11,6 +11,7 @@ from rasterio.features import rasterize
 gpd.options.io_engine = "fiona"
 
 from src.io.paths import ensure_dir, get_feature_output_dir, get_source_interim_dir
+from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     load_grid_context,
     print_grid_context,
@@ -258,7 +259,7 @@ def _write_legend_csv(
         encoding="utf-8",
     )
 
-    print(f"[build] Legend written: {legend_path}")
+    progress_log(f"[build] Legend written: {legend_path}")
 
     return legend_path
 
@@ -381,11 +382,11 @@ def _build_one_feature(
         target_resolution_m=target_resolution_m,
     )
 
-    print(f"[build] Rasterizing feature: {feature_cfg['name']}")
-    print(f"  Dataset: {dataset_name}")
-    print(f"  Layer:   {layer_name}")
-    print(f"  Field:   {value_field}")
-    print(f"  Out:     {output_path}")
+    progress_log(f"[build] Rasterizing feature: {feature_cfg['name']}")
+    progress_log(f"  Dataset: {dataset_name}")
+    progress_log(f"  Layer:   {layer_name}")
+    progress_log(f"  Field:   {value_field}")
+    progress_log(f"  Out:     {output_path}")
 
     write_feature_raster(
         output_path=output_path,

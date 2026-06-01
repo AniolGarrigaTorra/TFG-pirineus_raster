@@ -9,6 +9,7 @@ from rasterio.features import rasterize
 from scipy import ndimage
 
 from src.io.paths import get_feature_output_dir, get_source_clipped_dir
+from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     build_static_feature_metadata,
     load_grid_context,
@@ -119,10 +120,10 @@ def build_osm_features(
         resolution_m=target_resolution_m,
     )
 
-    print("[build:osm] Provider:", source["provider"])
-    print("[build:osm] Product:", source["product"])
-    print("[build:osm] Output AOI:", output_aoi_name)
-    print("[build:osm] Clip AOI:", clip_aoi_name)
+    progress_log(f"[build:osm] Provider: {source['provider']}")
+    progress_log(f"[build:osm] Product: {source['product']}")
+    progress_log(f"[build:osm] Output AOI: {output_aoi_name}")
+    progress_log(f"[build:osm] Clip AOI: {clip_aoi_name}")
     print_grid_context(grid, prefix="[build:osm]")
 
     written_paths: list[Path] = []
@@ -152,11 +153,10 @@ def build_osm_features(
             target_resolution_m=target_resolution_m,
         )
 
-        print("==============================")
-        print(f"[build:osm] Layer: {layer_key}")
-        print(f"[build:osm] Output mode: {layer_cfg.get('output', 'presence')}")
-        print(f"[build:osm] Clipped path: {clipped_path}")
-        print(f"[build:osm] Output path: {output_path}")
+        progress_log(f"[build:osm] Layer: {layer_key}")
+        progress_log(f"[build:osm] Output mode: {layer_cfg.get('output', 'presence')}")
+        progress_log(f"[build:osm] Clipped path: {clipped_path}")
+        progress_log(f"[build:osm] Output path: {output_path}")
 
         gdf = _read_clipped_features(clipped_path, target_crs=str(grid.crs))
         array, output_mode = _build_layer_array(gdf, layer_cfg, grid)

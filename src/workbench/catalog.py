@@ -6,10 +6,10 @@ from typing import Any
 from src.io.config import get_repo_root, load_yaml, resolve_path
 from src.pipeline.raster_ops import get_variable_resampling_method_name
 from src.pipeline.resampling import (
-    ADVANCED_INTERPOLATION_METHODS,
     VALUE_SEMANTICS,
     executable_resampling_names,
 )
+from src.pipeline.source_overrides import normalize_source_domains
 from src.pipeline.derived import DERIVED_OPERATION_GROUPS
 from src.pipeline.variable_expansion import expand_source_config
 from src.workbench.temporal import infer_temporal_capability
@@ -18,7 +18,7 @@ from src.workbench.temporal import infer_temporal_capability
 SUPPORTED_METRICS = ["mean", "sum", "std", "min", "max"]
 SUPPORTED_RESAMPLING = executable_resampling_names()
 SUPPORTED_STAGES = ["download", "clip", "build", "all"]
-WORLDCLIM_SOURCE_RESOLUTIONS = ["30s", "2.5m", "5m", "10m"]
+WORLDCLIM_SOURCE_RESOLUTIONS = ["30arcs", "2.5arcmin", "5arcmin", "10arcmin"]
 
 VARIABLE_DESCRIPTION_FALLBACKS: dict[str, str] = {
     "tmin": "Monthly average minimum air temperature",
@@ -178,19 +178,75 @@ def _resolution_unit(source_cfg: dict[str, Any]) -> str | None:
     source_cfg_meta = source_cfg.get("source", {}) or {}
 
     if dataset_cfg.get("native_resolution_m") is not None:
-        return "metre"
+        return "m"
 
     source_resolution = str(processing_cfg.get("source_resolution", ""))
     provider = source_cfg_meta.get("provider")
 
+    if source_resolution in {"osm", "vector", ""}:
+        return None
+
     if provider == "worldclim":
-        if source_resolution.endswith("s"):
-            return "arc_second"
-        if source_resolution.endswith("m"):
-            return "arc_minute"
+        if source_resolution.endswith("arcs") or source_resolution.endswith("s"):
+            return "arcs"
+        if source_resolution.endswith("arcmin") or source_resolution.endswith("m"):
+            return "arcmin"
+
+    if source_resolution.endswith("arcs"):
+        return "arcs"
+    if source_resolution.endswith("arcmin"):
+        return "arcmin"
 
     if source_resolution.endswith("m"):
-        return "metre"
+        return "m"
+
+    return None
+
+
+def _source_crs(source_cfg: dict[str, Any]) -> str | None:
+    source = source_cfg.get("source", {}) or {}
+    dataset = source_cfg.get("dataset", {}) or {}
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = str(processing.get("source_resolution", ""))
+    by_resolution = processing.get("source_crs_by_resolution", {}) or {}
+
+    return (
+        by_resolution.get(source_resolution)
+        or source.get("source_crs")
+        or dataset.get("source_crs")
+    )
+
+
+def _native_resolution(source_cfg: dict[str, Any]) -> str | None:
+    dataset = source_cfg.get("dataset", {}) or {}
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = processing.get("source_resolution")
+    by_resolution = processing.get("native_resolution_by_resolution", {}) or {}
+
+    if source_resolution is not None:
+        source_resolution = str(source_resolution)
+        return str(
+            by_resolution.get(
+                source_resolution,
+                dataset.get("native_resolution", source_resolution),
+            )
+        )
+
+    native_resolution = dataset.get("native_resolution")
+    return str(native_resolution) if native_resolution is not None else None
+
+
+def _native_resolution_m(source_cfg: dict[str, Any]) -> int | None:
+    dataset = source_cfg.get("dataset", {}) or {}
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = str(processing.get("source_resolution", ""))
+    by_resolution = processing.get("native_resolution_m_by_resolution", {}) or {}
+
+    if source_resolution in by_resolution:
+        return int(by_resolution[source_resolution])
+
+    if dataset.get("native_resolution_m") is not None:
+        return int(dataset["native_resolution_m"])
 
     return None
 
@@ -223,6 +279,77 @@ def _variable_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _strip_year_template(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    return (
+        value.replace(", {year}", "")
+        .replace(" {year}", "")
+        .replace("{year}", "year")
+        .strip()
+    )
+
+
+def _yearly_group_items(
+    source_cfg: dict[str, Any],
+    expanded_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if source_cfg.get("dataset", {}).get("layer_structure") != "yearly_static_collection":
+        return []
+
+    groups = source_cfg.get("variable_groups", {}) or {}
+    if not groups:
+        return []
+
+    years = (infer_temporal_capability(expanded_cfg).get("temporal_layers") or {}).get(
+        "years",
+        [],
+    )
+    items: list[dict[str, Any]] = []
+
+    for group_name, group_cfg in groups.items():
+        if not isinstance(group_cfg, dict):
+            continue
+        template = group_cfg.get("template", {}) or {}
+        if not isinstance(template, dict):
+            continue
+
+        item = {
+            "name": group_name,
+            "kind": "variable",
+            "enabled_default": bool(template.get("enabled", True)),
+            "description": _strip_year_template(template.get("description"))
+            or VARIABLE_DESCRIPTION_FALLBACKS.get(group_name),
+            "unit": template.get("unit"),
+            "scale_factor": template.get("scale_factor", 1.0),
+            "valid_range": template.get("valid_range"),
+            "data_type": template.get("data_type"),
+            "value_semantics": template.get("value_semantics"),
+            "native_resolution_m": template.get("native_resolution_m")
+            or source_cfg.get("dataset", {}).get("native_resolution_m"),
+            "resampling": get_variable_resampling_method_name(
+                expanded_cfg,
+                next(
+                    (
+                        name
+                        for name, cfg in (expanded_cfg.get("variables", {}) or {}).items()
+                        if cfg.get("generated_from_group") == group_name
+                    ),
+                    group_name,
+                ),
+            ),
+            "temporal": {
+                "type": "yearly_static_collection",
+                "years": years,
+                "variable_pattern": template.get("name"),
+            },
+            "generated_from": f"variable_groups.{group_name}",
+        }
+        items.append({key: value for key, value in item.items() if value is not None})
+
+    return items
+
+
 def _vector_layer_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
 
@@ -248,7 +375,7 @@ def _vector_layer_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _dimensions(source_cfg: dict[str, Any]) -> dict[str, Any]:
     dimensions: dict[str, Any] = {}
-    for key in ["gcms", "ssps", "periods", "years"]:
+    for key in ["gcms", "ssps", "periods"]:
         value = source_cfg.get(key)
         if value is not None:
             dimensions[key] = value
@@ -315,6 +442,8 @@ def source_catalog_from_config(
 ) -> dict[str, Any]:
     path = resolve_path(source_config_path, must_exist=True)
     cfg = load_yaml(path)
+    cfg["_config_path"] = str(path)
+    cfg = normalize_source_domains(cfg)
     expanded_cfg = expand_source_config(cfg)
 
     source = cfg.get("source", {}) or {}
@@ -324,7 +453,10 @@ def source_catalog_from_config(
     group = SOURCE_GROUPS.get(str(provider), {})
 
     source_resolution = processing.get("source_resolution")
-    native_resolution = dataset.get("native_resolution", source_resolution)
+    native_resolution = _native_resolution(cfg)
+    native_resolution_m = _native_resolution_m(cfg)
+
+    catalog_variables = _yearly_group_items(cfg, expanded_cfg) or _variable_items(expanded_cfg)
 
     catalog = {
         "id": source.get("id") or path.stem,
@@ -341,11 +473,11 @@ def source_catalog_from_config(
         "official_url": _source_url(source),
         "documentation_url": source.get("documentation_url"),
         "config_path": _rel_path(path),
-        "source_crs": source.get("source_crs") or dataset.get("source_crs"),
+        "source_crs": _source_crs(cfg),
         "source_period": source.get("source_period"),
         "source_scale": source.get("source_scale"),
         "native_resolution": native_resolution,
-        "native_resolution_m": dataset.get("native_resolution_m"),
+        "native_resolution_m": native_resolution_m,
         "native_resolution_unit": _resolution_unit(cfg),
         "source_resolution": source_resolution,
         "source_resolution_options": _source_resolution_options(cfg),
@@ -354,7 +486,7 @@ def source_catalog_from_config(
         "layer_structure": dataset.get("layer_structure"),
         "file_format": dataset.get("file_format"),
         "data_type": dataset.get("data_type"),
-        "variables": _variable_items(expanded_cfg),
+        "variables": catalog_variables,
         "layers": _vector_layer_items(expanded_cfg),
         "dimensions": _dimensions(expanded_cfg),
         "aggregations": expanded_cfg.get("temporal_aggregations", []) or [],
@@ -432,7 +564,6 @@ def workbench_catalog(
         "sources": list_source_catalogs(),
         "supported_metrics": SUPPORTED_METRICS,
         "supported_resampling": SUPPORTED_RESAMPLING,
-        "advanced_interpolation_methods": ADVANCED_INTERPOLATION_METHODS,
         "derived_operation_groups": DERIVED_OPERATION_GROUPS,
         "value_semantics": VALUE_SEMANTICS,
         "supported_stages": SUPPORTED_STAGES,

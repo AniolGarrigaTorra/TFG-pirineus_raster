@@ -7,7 +7,16 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from src.io.paths import ensure_dir
+from src.pipeline.progress import (
+    progress_advance_stage_task,
+    progress_download,
+    progress_log,
+    progress_set_stage_task_total,
+)
 from src.sources.igme_brgm.naming import build_igme_brgm_zip_name, safe_name
+
+
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _iter_enabled_datasets(source_cfg: dict):
@@ -24,22 +33,43 @@ def _download_file(
     overwrite: bool = False,
 ) -> Path:
     if output_path.exists() and not overwrite:
-        print(f"[download] Exists, skipping: {output_path}")
+        progress_log(f"[download] Exists, skipping: {output_path}")
+        progress_advance_stage_task(name=output_path.name)
         return output_path
 
     ensure_dir(output_path.parent)
 
-    print(f"[download] Downloading:")
-    print(f"  URL: {url}")
-    print(f"  Out: {output_path}")
+    progress_log("[download] Downloading IGME/BRGM file")
+    progress_log(f"  URL: {url}")
+    progress_log(f"  Out: {output_path}")
 
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
 
     try:
         with urllib.request.urlopen(url) as response, tmp_path.open("wb") as out:
-            shutil.copyfileobj(response, out)
+            total_header = response.headers.get("Content-Length")
+            total = int(total_header) if total_header else None
+            downloaded = 0
+            while True:
+                chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                out.write(chunk)
+                downloaded += len(chunk)
+                progress_download(
+                    output_path=output_path,
+                    downloaded=downloaded,
+                    total=total,
+                )
 
         tmp_path.replace(output_path)
+        progress_download(
+            output_path=output_path,
+            downloaded=output_path.stat().st_size,
+            total=output_path.stat().st_size,
+            done=True,
+        )
+        progress_advance_stage_task(name=output_path.name)
 
     except Exception:
         if tmp_path.exists():
@@ -68,7 +98,7 @@ def _extract_zip(
     overwrite: bool = False,
 ) -> Path:
     if extract_dir.exists() and any(extract_dir.iterdir()) and not overwrite:
-        print(f"[download] Extracted directory exists, skipping: {extract_dir}")
+        progress_log(f"[download] Extracted directory exists, skipping: {extract_dir}")
         return extract_dir
 
     if extract_dir.exists() and overwrite:
@@ -79,9 +109,9 @@ def _extract_zip(
     if not zipfile.is_zipfile(zip_path):
         raise ValueError(f"Downloaded file is not a valid ZIP: {zip_path}")
 
-    print(f"[download] Extracting:")
-    print(f"  ZIP: {zip_path}")
-    print(f"  Dir: {extract_dir}")
+    progress_log("[download] Extracting ZIP")
+    progress_log(f"  ZIP: {zip_path}")
+    progress_log(f"  Dir: {extract_dir}")
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
@@ -106,11 +136,13 @@ def download_igme_brgm_raw_files(
 
     ensure_dir(raw_dir)
 
-    print(f"[download] IGME/BRGM raw dir: {raw_dir}")
+    progress_log(f"[download] IGME/BRGM raw dir: {raw_dir}")
 
     output_paths: list[Path] = []
+    enabled_datasets = list(_iter_enabled_datasets(source_cfg))
+    progress_set_stage_task_total(len(enabled_datasets), label="downloads")
 
-    for dataset_name, dataset_cfg in _iter_enabled_datasets(source_cfg):
+    for dataset_name, dataset_cfg in enabled_datasets:
         url = dataset_cfg.get("url")
 
         if not url:
@@ -138,7 +170,8 @@ def download_igme_brgm_raw_files(
                 raise FileNotFoundError(
                     f"Download is disabled and ZIP does not exist: {zip_path}"
                 )
-            print(f"[download] Download disabled, using existing ZIP: {zip_path}")
+            progress_log(f"[download] Download disabled, using existing ZIP: {zip_path}")
+            progress_advance_stage_task(name=zip_path.name)
 
         output_paths.append(zip_path)
 

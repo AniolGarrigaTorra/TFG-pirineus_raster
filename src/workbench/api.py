@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import yaml
+
+from src.io.config import get_repo_root, load_yaml, resolve_path
+from src.make_grid import create_grid
+from src.pipeline.project_overrides import apply_run_overrides_to_project_cfg, normalize_crs
 from src.workbench.catalog import workbench_catalog
 from src.workbench.compiler import (
     render_run_config_yaml,
@@ -38,6 +44,94 @@ def _extract_run_config(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(run_cfg, dict):
         raise ValueError("Request body must be a run config object.")
     return run_cfg
+
+
+def _sanitize_config_name(value: Any) -> str:
+    name = str(value).strip().lower()
+    name = re.sub(r"[^a-z0-9_]+", "_", name)
+    name = re.sub(r"_+", "_", name).strip("_")
+    if not name:
+        raise ValueError("AOI name cannot be empty.")
+    return name
+
+
+def _create_aoi_config(payload: dict[str, Any]) -> dict[str, Any]:
+    name = _sanitize_config_name(payload.get("name"))
+    crs = normalize_crs(payload.get("crs"))
+    bounds_payload = payload.get("bounds", {}) or {}
+    bounds = {
+        key: float(bounds_payload[key])
+        for key in ["xmin", "xmax", "ymin", "ymax"]
+    }
+
+    if bounds["xmin"] >= bounds["xmax"]:
+        raise ValueError("AOI bounds must satisfy xmin < xmax.")
+    if bounds["ymin"] >= bounds["ymax"]:
+        raise ValueError("AOI bounds must satisfy ymin < ymax.")
+
+    repo_root = get_repo_root()
+    aoi_path = repo_root / "configs" / "aoi" / f"{name}.yaml"
+    if aoi_path.exists() and not bool(payload.get("overwrite", False)):
+        raise FileExistsError(
+            f"AOI config already exists: {aoi_path}. Choose another name."
+        )
+
+    cfg = {
+        "name": name,
+        "description": payload.get("description") or "Workbench-created AOI.",
+        "crs": crs,
+        "bounds": bounds,
+    }
+
+    aoi_path.parent.mkdir(parents=True, exist_ok=True)
+    with aoi_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            cfg,
+            f,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
+
+    return {
+        "ok": True,
+        "aoi": {
+            "name": name,
+            "path": str(aoi_path.relative_to(repo_root)),
+            "description": cfg["description"],
+            "crs": crs,
+            "bounds": bounds,
+        },
+    }
+
+
+def _create_grid(payload: dict[str, Any]) -> dict[str, Any]:
+    project_path = resolve_path(
+        payload.get("project_config", "configs/project.yaml"),
+        must_exist=True,
+    )
+    aoi_path = resolve_path(payload["aoi_config"], must_exist=True)
+    resolution_m = int(payload["resolution_m"])
+
+    project_cfg = load_yaml(project_path)
+    project_cfg["_config_path"] = str(project_path)
+    project_cfg = apply_run_overrides_to_project_cfg(
+        project_cfg,
+        {"run": {"crs": payload.get("crs")}},
+    )
+    aoi_cfg = load_yaml(aoi_path)
+    output_path = create_grid(
+        project_cfg=project_cfg,
+        aoi_cfg=aoi_cfg,
+        resolution=resolution_m,
+        overwrite=bool(payload.get("overwrite", False)),
+    )
+
+    repo_root = get_repo_root()
+    return {
+        "ok": True,
+        "grid_path": str(output_path.resolve().relative_to(repo_root)),
+    }
 
 
 class WorkbenchRequestHandler(BaseHTTPRequestHandler):
@@ -79,6 +173,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                         "GET /api/catalog",
                         "POST /api/validate-run",
                         "POST /api/render-run",
+                        "POST /api/aoi-config",
+                        "POST /api/grid",
                     ],
                 },
             )
@@ -89,6 +185,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = _read_json_body(self)
+
+            if path == "/api/aoi-config":
+                _json_response(self, 200, _create_aoi_config(payload))
+                return
+
+            if path == "/api/grid":
+                _json_response(self, 200, _create_grid(payload))
+                return
+
             run_cfg = _extract_run_config(payload)
 
             if path == "/api/validate-run":
@@ -127,7 +232,10 @@ def serve_workbench_api(
     print("Pirineus Raster Config API")
     print(f"URL: http://{host}:{port}")
     print(f"Project config: {project_config_path}")
-    print("Endpoints: /api/catalog, /api/validate-run, /api/render-run")
+    print(
+        "Endpoints: /api/catalog, /api/validate-run, /api/render-run, "
+        "/api/aoi-config, /api/grid"
+    )
     print("==============================")
 
     try:
@@ -136,4 +244,3 @@ def serve_workbench_api(
         print("\nStopping Pirineus Raster Config API.")
     finally:
         server.server_close()
-

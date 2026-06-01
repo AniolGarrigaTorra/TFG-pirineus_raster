@@ -6,6 +6,7 @@ from typing import Any
 
 RUNTIME_TEMPLATE_KEYS = {
     "source_resolution",
+    "source_resolution_token",
     "target_resolution_m",
 }
 
@@ -154,9 +155,16 @@ def _expand_groups_to_mapping(
             item_cfg.setdefault("generated_from_group", group_name)
             item_cfg.setdefault("generation_context", context)
 
-            if item_name in target and not bool(
-                group_cfg.get("overwrite_existing", False)
-            ):
+            existing = target.get(item_name)
+            if item_name in target and not bool(group_cfg.get("overwrite_existing", False)):
+                if (
+                    isinstance(existing, dict)
+                    and existing.get("generated_from_group") == group_name
+                ):
+                    if "enabled" in existing:
+                        item_cfg["enabled"] = existing["enabled"]
+                    target[item_name] = item_cfg
+                    continue
                 raise ValueError(
                     f"{target_name} {item_name!r} already exists. "
                     f"Set overwrite_existing=true in group {group_name!r} "

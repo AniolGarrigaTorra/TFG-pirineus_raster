@@ -18,3 +18,4 @@ ui/vite.config.d.ts
 *.xlsx
 *.csv
 .venv/
+ui/public/*

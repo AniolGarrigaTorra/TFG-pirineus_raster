@@ -37,7 +37,7 @@ download:
   keep_global_zip_after_clip: false
 
 processing:
-  source_resolution: 10m
+  source_resolution: 10arcmin
   target_resolution_m: 100
   grid_from_project: true
 
