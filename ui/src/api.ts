@@ -79,3 +79,15 @@ export async function renderRunConfig(runConfig: unknown): Promise<{
     body: JSON.stringify({ run_config: runConfig })
   });
 }
+
+export async function saveRunConfig(runConfig: unknown, name?: string): Promise<{
+  ok: boolean;
+  validation: ValidationReport;
+  path: string;
+  yaml: string;
+}> {
+  return requestJson("/api/save-run", {
+    method: "POST",
+    body: JSON.stringify({ run_config: runConfig, name })
+  });
+}

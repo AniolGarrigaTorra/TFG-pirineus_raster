@@ -51,8 +51,30 @@ def _sanitize_config_name(value: Any) -> str:
     name = re.sub(r"[^a-z0-9_]+", "_", name)
     name = re.sub(r"_+", "_", name).strip("_")
     if not name:
-        raise ValueError("AOI name cannot be empty.")
+        raise ValueError("Config name cannot be empty.")
     return name
+
+
+def _save_run_config(payload: dict[str, Any]) -> dict[str, Any]:
+    run_cfg = _extract_run_config(payload)
+    report = validate_researcher_run_config(run_cfg)
+    yaml_text = render_run_config_yaml(run_cfg)
+
+    run_section = run_cfg.get("run", {}) if isinstance(run_cfg.get("run"), dict) else {}
+    name = _sanitize_config_name(payload.get("name") or run_section.get("name"))
+
+    repo_root = get_repo_root()
+    run_path = repo_root / "configs" / "runs" / f"{name}.yaml"
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    with run_path.open("w", encoding="utf-8") as f:
+        f.write(yaml_text)
+
+    return {
+        "ok": report["ok"],
+        "validation": report,
+        "path": str(run_path.relative_to(repo_root)),
+        "yaml": yaml_text,
+    }
 
 
 def _create_aoi_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -173,6 +195,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                         "GET /api/catalog",
                         "POST /api/validate-run",
                         "POST /api/render-run",
+                        "POST /api/save-run",
                         "POST /api/aoi-config",
                         "POST /api/grid",
                     ],
@@ -215,6 +238,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path == "/api/save-run":
+                _json_response(self, 200, _save_run_config(payload))
+                return
+
             _json_response(self, 404, {"ok": False, "error": "Unknown endpoint."})
         except Exception as exc:
             _json_response(self, 400, {"ok": False, "error": str(exc)})
@@ -234,7 +261,7 @@ def serve_workbench_api(
     print(f"Project config: {project_config_path}")
     print(
         "Endpoints: /api/catalog, /api/validate-run, /api/render-run, "
-        "/api/aoi-config, /api/grid"
+        "/api/save-run, /api/aoi-config, /api/grid"
     )
     print("==============================")
 

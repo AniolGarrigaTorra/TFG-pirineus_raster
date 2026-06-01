@@ -1071,6 +1071,7 @@ def build_derived_features(
             raster_entry=raster_entry,
             layer_entry=layer_entry,
         )
+        layers.append(LayerSpec.from_dict(layer_entry))
 
         written_paths.append(written_path)
         progress_log(f"[derived] Written: {written_path}")

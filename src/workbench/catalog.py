@@ -35,7 +35,7 @@ VARIABLE_DESCRIPTION_FALLBACKS: dict[str, str] = {
     "rsds": "Potential solar radiation",
 }
 
-SOURCE_GROUPS: dict[str, dict[str, str]] = {
+SOURCE_GROUPS: dict[str, dict[str, Any]] = {
     "worldclim": {
         "id": "worldclim",
         "title": "WorldClim",
@@ -47,12 +47,15 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
         ),
         "long_description": (
             "WorldClim provides high spatial resolution global climate and "
-            "weather surfaces for historical, near-current and future climate "
-            "conditions. In Pirineus Raster it is treated as a climate source "
-            "whose native grid is geographic EPSG:4326 and whose variables need "
-            "careful clipping, reprojection and metadata preservation because "
-            "arc-second and arc-minute resolutions are not metre resolutions."
+            "weather surfaces for historical, recent and future climate "
+            "conditions. Pirineus Raster treats it as a climate source with a "
+            "native geographic EPSG:4326 grid, so arc-second and arc-minute "
+            "resolutions are explicitly preserved as angular units before "
+            "clipping, reprojection and resampling to the target grid."
         ),
+        "references": [
+            {"label": "WorldClim data portal", "url": "https://www.worldclim.org/data/index.html"},
+        ],
     },
     "copernicus": {
         "id": "copernicus",
@@ -65,11 +68,17 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
         ),
         "long_description": (
             "The Copernicus Land Monitoring Service provides harmonised "
-            "geospatial information for Europe and global land monitoring. The "
-            "sources integrated here include pan-European high-resolution layers "
-            "such as forest, grassland, imperviousness, water and wetness, CORINE "
-            "land cover, HRSI snow products and the Copernicus DEM family."
+            "geospatial information for land-cover change, land use, vegetation "
+            "state, water-cycle variables, surface-energy variables and reference "
+            "land datasets. The integrated Pirineus Raster sources cover DEM, "
+            "CORINE land cover, High Resolution Layers for forests, grasslands, "
+            "imperviousness, water/wetness, small landscape features and HRSI "
+            "snow products."
         ),
+        "references": [
+            {"label": "CLMS portal", "url": "https://land.copernicus.eu/"},
+            {"label": "Copernicus Land overview", "url": "https://www.copernicus.eu/en/copernicus-services/land"},
+        ],
     },
     "pdca": {
         "id": "pdca",
@@ -81,11 +90,16 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
         ),
         "long_description": (
             "The Pyrenean Digital Climate Atlas is especially valuable for this "
-            "project because it is already focused on the Pyrenees. It provides "
-            "long-term temperature, precipitation, evapotranspiration, water "
-            "availability, growing degree-day and potential solar radiation "
-            "surfaces for monthly, seasonal and annual climatological summaries."
+            "project because it is already focused on the mountain range. It is "
+            "based on long-term topoclimate modelling over the Pyrenees for "
+            "1950-2012 and provides fine-resolution surfaces for temperature, "
+            "precipitation and derived bioclimatic variables such as PET, water "
+            "availability, growing degree-days and potential solar radiation."
         ),
+        "references": [
+            {"label": "PDCA Zenodo DOI", "url": "https://doi.org/10.5281/zenodo.1186639"},
+            {"label": "Geoscience Data Journal article", "url": "https://doi.org/10.1002/gdj3.52"},
+        ],
     },
     "igme_brgm": {
         "id": "igme_brgm",
@@ -103,11 +117,16 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
         ),
         "long_description": (
             "This source contributes categorical geological information from the "
-            "joint IGME and BRGM Pyrenees mapping work. Because the input is "
-            "vector geology, Pirineus Raster rasterizes selected attributes onto "
+            "joint IGME and BRGM Pyrenees mapping work, including the published "
+            "1:400,000 geological map of the Pyrenees. Because the input is "
+            "vector geology, Pirineus Raster rasterizes selected attributes to "
             "the project grid with categorical semantics and nearest-neighbour "
             "handling."
         ),
+        "references": [
+            {"label": "IGME digital cartography", "url": "https://info.igme.es/cartografiadigital/geologica/mapa.aspx?Id=27&language=es"},
+            {"label": "BRGM Pyrenees RGF map note", "url": "https://www.brgm.fr/en/news/press-release/french-geological-reference-platform-map-pyrenees-released"},
+        ],
     },
     "openstreetmap": {
         "id": "openstreetmap",
@@ -118,11 +137,17 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
             "settlements and anthropic land-use features."
         ),
         "long_description": (
-            "Pirineus Raster uses Geofabrik OpenStreetMap extracts as regional "
-            "PBF inputs, filters OSM tags into thematic layers, clips them to "
-            "the AOI and rasterizes them as presence or distance features on "
-            "the project grid."
+            "OpenStreetMap is a community-maintained geospatial database. "
+            "Geofabrik distributes regional extracts of OSM data in raw formats "
+            "and GIS-friendly exports. Pirineus Raster downloads regional PBF "
+            "extracts, filters OSM tags into thematic anthropic layers, clips "
+            "them to the AOI and rasterizes them as presence or distance "
+            "features on the project grid."
         ),
+        "references": [
+            {"label": "Geofabrik data", "url": "https://www.geofabrik.de/en/data/index.html"},
+            {"label": "OpenStreetMap copyright", "url": "https://www.openstreetmap.org/copyright"},
+        ],
     },
     "ghsl": {
         "id": "ghsl",
@@ -133,10 +158,15 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
             "population, built-up and settlement layers."
         ),
         "long_description": (
-            "The GHSL source is configured through the generic raster connector. "
-            "It is intended for population-density features such as GHS-POP, "
-            "aligned to the same AOI and resolution as the rest of the dataset."
+            "GHSL GHS-POP provides multitemporal gridded population estimates "
+            "for historical epochs and near-future projections. Pirineus Raster "
+            "uses it through the generic raster connector to build population "
+            "features aligned to the same AOI, CRS and resolution as the rest "
+            "of the dataset."
         ),
+        "references": [
+            {"label": "GHS-POP R2023A", "url": "https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php"},
+        ],
     },
     "esa_cci": {
         "id": "esa_cci",
@@ -147,10 +177,16 @@ SOURCE_GROUPS: dict[str, dict[str, str]] = {
             "above-ground biomass maps."
         ),
         "long_description": (
-            "The ESA CCI Biomass source uses the generic static raster connector "
-            "to ingest 100 m above-ground biomass tiles and align them to the "
+            "ESA CCI Biomass provides global above-ground biomass maps in Mg/ha "
+            "and uncertainty layers for selected epochs. Pirineus Raster uses "
+            "the generic raster connector to ingest 100 m AGB and AGB standard "
+            "deviation tiles that overlap the Pyrenees and align them to the "
             "project grid."
         ),
+        "references": [
+            {"label": "ESA CCI Biomass", "url": "https://climate.esa.int/en/projects/biomass/"},
+            {"label": "ESA CCI portal", "url": "https://climate.esa.int/"},
+        ],
     },
 }
 

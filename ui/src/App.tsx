@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { createAoiConfig, createProjectGrid, fetchCatalog, renderRunConfig, validateRunConfig } from "./api";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { createAoiConfig, createProjectGrid, fetchCatalog, renderRunConfig, saveRunConfig, validateRunConfig } from "./api";
 import type {
   AoiCatalog,
+  AoiBounds,
   CustomAggregation,
   DerivedFeatureConfig,
   DerivedInputQuery,
@@ -15,10 +17,14 @@ import { renderYaml } from "./yaml";
 import "./App.css";
 
 const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"];
+type StartMode = "menu" | "project" | "aoi" | "sources";
 const defaultBackgroundUrl = "/backgrounds/pirineus-background.png";
 const backgroundManifestUrl = "/backgrounds/manifest.json";
 const backgroundRotationMs = 5 * 60 * 1000;
 const temporalDimensionKeys = new Set(["year", "years", "month", "months", "season", "seasons"]);
+const pyreneesWgs84Envelope = { xmin: -2.8, xmax: 3.9, ymin: 41.0, ymax: 43.9 };
+const aoiInitialMapZoom = 8;
+const aoiMapViewport = { width: 1180, height: 690 };
 
 function normalizeBackgroundUrls(value: unknown) {
   if (!Array.isArray(value)) return [defaultBackgroundUrl];
@@ -43,6 +49,293 @@ function pickRandomBackground(urls: string[], currentUrl?: string) {
 
 function cssBackgroundImage(url: string) {
   return `url("${url.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")`;
+}
+
+function BackgroundCredit() {
+  return <div className="photo-credit">Photo: Felipe Valladares</div>;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function lonLatToPixel(lon: number, lat: number, zoom: number) {
+  const sinLat = Math.sin((lat * Math.PI) / 180);
+  const scale = 256 * 2 ** zoom;
+  return {
+    x: ((lon + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale
+  };
+}
+
+function pixelToLonLat(x: number, y: number, zoom: number) {
+  const scale = 256 * 2 ** zoom;
+  const lon = (x / scale) * 360 - 180;
+  const n = Math.PI - (2 * Math.PI * y) / scale;
+  const lat = (180 / Math.PI) * Math.atan(Math.sinh(n));
+  return { lon, lat };
+}
+
+function orderedBounds(bounds: AoiBounds): AoiBounds {
+  return {
+    xmin: Math.min(bounds.xmin, bounds.xmax),
+    xmax: Math.max(bounds.xmin, bounds.xmax),
+    ymin: Math.min(bounds.ymin, bounds.ymax),
+    ymax: Math.max(bounds.ymin, bounds.ymax)
+  };
+}
+
+function formatCoord(value: number) {
+  return Number(value.toFixed(8));
+}
+
+function formatCrsCoord(value: number, crs: string) {
+  return /4326/i.test(crs)
+    ? Number(value.toFixed(8))
+    : Number(value.toFixed(3));
+}
+
+function normalizeCrsCode(crs: string) {
+  const value = crs.trim().toUpperCase();
+  if (value === "4326" || value.endsWith(":4326")) return "EPSG:4326";
+  if (value === "3035" || value.endsWith(":3035")) return "EPSG:3035";
+  return value;
+}
+
+function canProjectToMap(crs: string) {
+  return ["EPSG:4326", "EPSG:3035"].includes(normalizeCrsCode(crs));
+}
+
+const laea3035 = (() => {
+  const a = 6378137;
+  const invF = 298.257222101;
+  const f = 1 / invF;
+  const e2 = 2 * f - f * f;
+  const e = Math.sqrt(e2);
+  const lat0 = 52 * Math.PI / 180;
+  const lon0 = 10 * Math.PI / 180;
+  const falseEasting = 4321000;
+  const falseNorthing = 3210000;
+
+  function q(phi: number) {
+    const sinPhi = Math.sin(phi);
+    return (1 - e2) * (
+      sinPhi / (1 - e2 * sinPhi * sinPhi) -
+      (1 / (2 * e)) * Math.log((1 - e * sinPhi) / (1 + e * sinPhi))
+    );
+  }
+
+  const qp = q(Math.PI / 2);
+  const beta0 = Math.asin(q(lat0) / qp);
+  const rq = a * Math.sqrt(qp / 2);
+  const sinBeta0 = Math.sin(beta0);
+  const cosBeta0 = Math.cos(beta0);
+  const m0 = Math.cos(lat0) / Math.sqrt(1 - e2 * Math.sin(lat0) ** 2);
+  const d = (a * m0) / (rq * cosBeta0);
+
+  function betaToGeodetic(beta: number) {
+    const targetQ = qp * Math.sin(beta);
+    let phi = beta;
+    for (let i = 0; i < 8; i += 1) {
+      const currentQ = q(phi);
+      const delta = 1e-7;
+      const derivative = (q(phi + delta) - q(phi - delta)) / (2 * delta);
+      if (!Number.isFinite(derivative) || Math.abs(derivative) < 1e-12) break;
+      phi -= (currentQ - targetQ) / derivative;
+    }
+    return phi;
+  }
+
+  return {
+    forward(lon: number, lat: number) {
+      const lambda = lon * Math.PI / 180;
+      const phi = lat * Math.PI / 180;
+      const beta = Math.asin(q(phi) / qp);
+      const b = rq * Math.sqrt(2 / (1 + sinBeta0 * Math.sin(beta) + cosBeta0 * Math.cos(beta) * Math.cos(lambda - lon0)));
+      return {
+        x: falseEasting + b * d * Math.cos(beta) * Math.sin(lambda - lon0),
+        y: falseNorthing + (b / d) * (cosBeta0 * Math.sin(beta) - sinBeta0 * Math.cos(beta) * Math.cos(lambda - lon0))
+      };
+    },
+    inverse(x: number, y: number) {
+      const xp = (x - falseEasting) / d;
+      const yp = (y - falseNorthing) * d;
+      const rho = Math.sqrt(xp * xp + yp * yp);
+      if (rho < 1e-9) {
+        return { lon: 10, lat: 52 };
+      }
+      const c = 2 * Math.asin(Math.min(1, rho / (2 * rq)));
+      const beta = Math.asin(Math.cos(c) * sinBeta0 + (yp * Math.sin(c) * cosBeta0) / rho);
+      const lambda = lon0 + Math.atan2(
+        xp * Math.sin(c),
+        rho * cosBeta0 * Math.cos(c) - yp * sinBeta0 * Math.sin(c)
+      );
+      return {
+        lon: lambda * 180 / Math.PI,
+        lat: betaToGeodetic(beta) * 180 / Math.PI
+      };
+    }
+  };
+})();
+
+function pointToWgs84(x: number, y: number, crs: string) {
+  const normalized = normalizeCrsCode(crs);
+  if (normalized === "EPSG:4326") return { lon: x, lat: y };
+  if (normalized === "EPSG:3035") return laea3035.inverse(x, y);
+  return null;
+}
+
+function pointFromWgs84(lon: number, lat: number, crs: string) {
+  const normalized = normalizeCrsCode(crs);
+  if (normalized === "EPSG:4326") return { x: lon, y: lat };
+  if (normalized === "EPSG:3035") return laea3035.forward(lon, lat);
+  return null;
+}
+
+function boundsToWgs84(bounds: AoiBounds, crs: string) {
+  const corners = [
+    pointToWgs84(bounds.xmin, bounds.ymin, crs),
+    pointToWgs84(bounds.xmin, bounds.ymax, crs),
+    pointToWgs84(bounds.xmax, bounds.ymin, crs),
+    pointToWgs84(bounds.xmax, bounds.ymax, crs)
+  ].filter((point): point is { lon: number; lat: number } => Boolean(point));
+  if (corners.length !== 4) return null;
+  return orderedBounds({
+    xmin: Math.min(...corners.map((point) => point.lon)),
+    xmax: Math.max(...corners.map((point) => point.lon)),
+    ymin: Math.min(...corners.map((point) => point.lat)),
+    ymax: Math.max(...corners.map((point) => point.lat))
+  });
+}
+
+function boundsFromWgs84(bounds: AoiBounds, crs: string) {
+  const corners = [
+    pointFromWgs84(bounds.xmin, bounds.ymin, crs),
+    pointFromWgs84(bounds.xmin, bounds.ymax, crs),
+    pointFromWgs84(bounds.xmax, bounds.ymin, crs),
+    pointFromWgs84(bounds.xmax, bounds.ymax, crs)
+  ].filter((point): point is { x: number; y: number } => Boolean(point));
+  if (corners.length !== 4) return null;
+  return orderedBounds({
+    xmin: Math.min(...corners.map((point) => point.x)),
+    xmax: Math.max(...corners.map((point) => point.x)),
+    ymin: Math.min(...corners.map((point) => point.y)),
+    ymax: Math.max(...corners.map((point) => point.y))
+  });
+}
+
+function gcd(left: number, right: number): number {
+  let a = Math.abs(Math.round(left));
+  let b = Math.abs(Math.round(right));
+  while (b > 0) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return a || 1;
+}
+
+function lcm(values: number[]) {
+  const positive = values.map((value) => Math.round(value)).filter((value) => value > 0);
+  if (positive.length === 0) return 1;
+  return positive.reduce((acc, value) => Math.abs(acc * value) / gcd(acc, value));
+}
+
+function resolutionStepForBounds(bounds: AoiBounds, crs: string, resolutionM: number) {
+  if (/4326/i.test(crs)) {
+    const midLat = ((bounds.ymin + bounds.ymax) / 2) * Math.PI / 180;
+    const metresPerDegLat = 111_320;
+    const metresPerDegLon = Math.max(1, 111_320 * Math.cos(midLat));
+    return {
+      x: resolutionM / metresPerDegLon,
+      y: resolutionM / metresPerDegLat,
+      approximate: true
+    };
+  }
+  return { x: resolutionM, y: resolutionM, approximate: false };
+}
+
+function isMultipleOfStep(value: number, step: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return false;
+  const ratio = value / step;
+  const nearest = Math.round(ratio) * step;
+  const tolerance = step < 1 ? step * 0.08 : 0.01;
+  return Math.abs(value - nearest) <= tolerance;
+}
+
+function resolutionChecksForBounds(bounds: AoiBounds, crs: string, resolutions: number[]) {
+  const safeBounds = orderedBounds(bounds);
+  const width = safeBounds.xmax - safeBounds.xmin;
+  const height = safeBounds.ymax - safeBounds.ymin;
+  return resolutions.map((resolution) => {
+    const step = resolutionStepForBounds(safeBounds, crs, resolution);
+    return {
+      resolution,
+      widthOk: isMultipleOfStep(width, step.x),
+      heightOk: isMultipleOfStep(height, step.y),
+      approximate: step.approximate
+    };
+  });
+}
+
+function shiftIntoEnvelope(bounds: AoiBounds, envelope: AoiBounds) {
+  let next = { ...bounds };
+  const width = next.xmax - next.xmin;
+  const height = next.ymax - next.ymin;
+  if (width >= envelope.xmax - envelope.xmin) {
+    next.xmin = envelope.xmin;
+    next.xmax = envelope.xmax;
+  } else {
+    if (next.xmin < envelope.xmin) {
+      next.xmax += envelope.xmin - next.xmin;
+      next.xmin = envelope.xmin;
+    }
+    if (next.xmax > envelope.xmax) {
+      next.xmin -= next.xmax - envelope.xmax;
+      next.xmax = envelope.xmax;
+    }
+  }
+  if (height >= envelope.ymax - envelope.ymin) {
+    next.ymin = envelope.ymin;
+    next.ymax = envelope.ymax;
+  } else {
+    if (next.ymin < envelope.ymin) {
+      next.ymax += envelope.ymin - next.ymin;
+      next.ymin = envelope.ymin;
+    }
+    if (next.ymax > envelope.ymax) {
+      next.ymin -= next.ymax - envelope.ymax;
+      next.ymax = envelope.ymax;
+    }
+  }
+  return next;
+}
+
+function expandBoundsToResolutions(bounds: AoiBounds, crs: string, resolutions: number[]) {
+  const safeBounds = orderedBounds(bounds);
+  const commonResolution = lcm(resolutions);
+  const step = resolutionStepForBounds(safeBounds, crs, commonResolution);
+  const width = safeBounds.xmax - safeBounds.xmin;
+  const height = safeBounds.ymax - safeBounds.ymin;
+  const nextWidth = Math.max(step.x, Math.ceil(width / step.x) * step.x);
+  const nextHeight = Math.max(step.y, Math.ceil(height / step.y) * step.y);
+  const dx = (nextWidth - width) / 2;
+  const dy = (nextHeight - height) / 2;
+  let next = {
+    xmin: safeBounds.xmin - dx,
+    xmax: safeBounds.xmax + dx,
+    ymin: safeBounds.ymin - dy,
+    ymax: safeBounds.ymax + dy
+  };
+  if (/4326/i.test(crs)) {
+    next = shiftIntoEnvelope(next, pyreneesWgs84Envelope);
+  }
+  return {
+    xmin: formatCrsCoord(next.xmin, crs),
+    xmax: formatCrsCoord(next.xmax, crs),
+    ymin: formatCrsCoord(next.ymin, crs),
+    ymax: formatCrsCoord(next.ymax, crs)
+  };
 }
 
 function sourceVariables(source: SourceCatalog) {
@@ -284,7 +577,9 @@ function App() {
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [serverYaml, setServerYaml] = useState("");
   const [apiError, setApiError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const [startMode, setStartMode] = useState<StartMode>("menu");
   const [backgroundUrls, setBackgroundUrls] = useState<string[]>([defaultBackgroundUrl]);
   const [backgroundUrl, setBackgroundUrl] = useState(defaultBackgroundUrl);
 
@@ -371,6 +666,11 @@ function App() {
   const selectedCatalogSources = useMemo(
     () => catalog?.sources.filter((source) => selections[source.id]?.selected) ?? [],
     [catalog?.sources, selections]
+  );
+
+  const plannedReviewLayers = useMemo(
+    () => catalog ? buildPlannedLayers(catalog, selectedSources) : [],
+    [catalog, selectedSources]
   );
 
   const availableAois = useMemo(() => {
@@ -514,6 +814,7 @@ function App() {
 
   async function renderFromServer() {
     setApiError(null);
+    setSaveStatus(null);
     try {
       const result = await renderRunConfig(runConfig);
       setValidation(result.validation);
@@ -527,7 +828,20 @@ function App() {
     await navigator.clipboard.writeText(yamlText);
   }
 
-  function saveYaml() {
+  async function saveYamlToRuns() {
+    setApiError(null);
+    setSaveStatus(null);
+    try {
+      const result = await saveRunConfig(runConfig, runName);
+      setValidation(result.validation);
+      setServerYaml(result.yaml);
+      setSaveStatus(`Saved as: ${result.path}`);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function downloadYaml() {
     const blob = new Blob([yamlText], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -535,6 +849,34 @@ function App() {
     anchor.download = `${runName}.yaml`;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  function removePlannedLayer(layer: PlannedLayer) {
+    const dependents = derivedFeatures
+      .filter((feature) => derivedFeatureDependsOnLayer(feature, layer))
+      .map((feature) => feature.name);
+    if (dependents.length > 0) {
+      const shouldRemove = window.confirm(
+        `Removing ${layer.label} will also remove these derived layers: ${dependents.join(", ")}. Continue?`
+      );
+      if (!shouldRemove) return;
+    }
+
+    setDerivedFeatures((current) =>
+      current.filter((feature) => !derivedFeatureDependsOnLayer(feature, layer))
+    );
+    setSelections((current) => {
+      const sourceId = layer.query.source_id;
+      if (!sourceId || !current[sourceId]) return current;
+      const variableName = layer.baseVariable ?? layer.variable;
+      return {
+        ...current,
+        [sourceId]: {
+          ...current[sourceId],
+          variables: current[sourceId].variables.filter((name) => name !== variableName)
+        }
+      };
+    });
   }
 
   if (!hasStarted) {
@@ -551,7 +893,75 @@ function App() {
             Start building my personalized dataset
           </button>
         </section>
+        <BackgroundCredit />
       </main>
+    );
+  }
+
+  if (startMode === "menu") {
+    return (
+      <div className="app-shell workbench-shell">
+        <header className="topbar">
+          <div>
+            <h1>Pirineus Raster</h1>
+            <p>{targetCrs} · choose how you want to start</p>
+          </div>
+          <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
+            {apiStatus}
+          </div>
+        </header>
+        <StartModePanel setStartMode={setStartMode} />
+        <BackgroundCredit />
+      </div>
+    );
+  }
+
+  if (startMode === "aoi") {
+    return (
+      <div className="app-shell workbench-shell">
+        <header className="topbar">
+          <div>
+            <h1>New AOI</h1>
+            <p>Create an AOI config and target grid for this project.</p>
+          </div>
+          <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
+        </header>
+        <AoiBuilderPanel
+          projectConfig={projectConfig}
+          resolutions={catalog?.project.available_resolutions_m ?? [resolution]}
+          targetCrs={targetCrs}
+          setTargetCrs={setTargetCrs}
+          aoiPath={aoiPath}
+          setAoiPath={setAoiPath}
+          resolution={resolution}
+          setResolution={setResolution}
+          onAoiCreated={(aoi) => {
+            setCreatedAois((current) => [...current.filter((item) => item.path !== aoi.path), aoi]);
+            setAoiPath(aoi.path);
+          }}
+        />
+        <BackgroundCredit />
+      </div>
+    );
+  }
+
+  if (startMode === "sources") {
+    return (
+      <div className="app-shell workbench-shell">
+        <header className="topbar">
+          <div>
+            <h1>Sources Information</h1>
+            <p>{catalog?.sources.length ?? 0} source configs available locally.</p>
+          </div>
+          <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
+        </header>
+        {catalog ? <SourcesInfoPanel catalog={catalog} /> : (
+          <section className={`notice ${catalogError ? "error" : "info"}`}>
+            {catalogLoading ? "Loading project catalog..." : `Config API is not available: ${catalogError}`}
+          </section>
+        )}
+        <BackgroundCredit />
+      </div>
     );
   }
 
@@ -562,8 +972,11 @@ function App() {
           <h1>Pirineus Raster Workbench</h1>
           <p>{targetCrs} · {selectedSources.length} sources · {validation?.estimated_layers ?? 0} estimated layers</p>
         </div>
-        <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
-          {apiStatus}
+        <div className="topbar-actions">
+          <button className="ghost" onClick={() => setStartMode("menu")}>Home</button>
+          <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
+            {apiStatus}
+          </div>
         </div>
       </header>
 
@@ -608,6 +1021,7 @@ function App() {
           setStages={setStages}
           datasetDir={datasetDir}
           setDatasetDir={setDatasetDir}
+          showAoiTools={false}
           onAoiCreated={(aoi) => {
             setCreatedAois((current) => [...current.filter((item) => item.path !== aoi.path), aoi]);
             setAoiPath(aoi.path);
@@ -671,13 +1085,573 @@ function App() {
           yamlText={yamlText}
           validation={validation}
           apiError={apiError}
+          saveStatus={saveStatus}
           validate={validate}
           renderFromServer={renderFromServer}
           copyYaml={copyYaml}
-          saveYaml={saveYaml}
+          saveYamlToRuns={saveYamlToRuns}
+          downloadYaml={downloadYaml}
+          plannedLayers={plannedReviewLayers}
+          derivedFeatures={derivedFeatures}
+          removePlannedLayer={removePlannedLayer}
+          removeDerivedFeature={(index) =>
+            setDerivedFeatures(derivedFeatures.filter((_, itemIndex) => itemIndex !== index))
+          }
         />
       )}
+      <BackgroundCredit />
     </div>
+  );
+}
+
+function StartModePanel({ setStartMode }: { setStartMode: (mode: StartMode) => void }) {
+  return (
+    <main className="workspace start-mode-grid">
+      <button className="start-mode-card" onClick={() => setStartMode("project")}>
+        <strong>Start new project</strong>
+        <small>Open the dataset configuration workflow.</small>
+      </button>
+      <button className="start-mode-card" onClick={() => setStartMode("aoi")}>
+        <strong>New AOI</strong>
+        <small>Create a new area-of-interest config and grid.</small>
+      </button>
+      <button className="start-mode-card" onClick={() => setStartMode("sources")}>
+        <strong>Sources information</strong>
+        <small>Browse available sources, sub-sources and variables.</small>
+      </button>
+    </main>
+  );
+}
+
+function MapBboxPicker({
+  bounds,
+  onChange
+}: {
+  bounds: AoiBounds | null;
+  onChange: (bounds: AoiBounds) => void;
+}) {
+  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
+  const [tool, setTool] = useState<"pan" | "draw">("pan");
+  const [zoom, setZoom] = useState(aoiInitialMapZoom);
+  const [center, setCenter] = useState({ lon: 0.55, lat: 42.45 });
+  const [panStart, setPanStart] = useState<{
+    clientX: number;
+    clientY: number;
+    centerPixel: { x: number; y: number };
+  } | null>(null);
+  const [showLayerMenu, setShowLayerMenu] = useState(false);
+  const [dragStart, setDragStart] = useState<{ lon: number; lat: number } | null>(null);
+  const [dragEnd, setDragEnd] = useState<{ lon: number; lat: number } | null>(null);
+
+  useEffect(() => {
+    if (!bounds) return;
+    const safeBounds = orderedBounds(bounds);
+    const nextCenter = {
+      lon: clamp((safeBounds.xmin + safeBounds.xmax) / 2, pyreneesWgs84Envelope.xmin, pyreneesWgs84Envelope.xmax),
+      lat: clamp((safeBounds.ymin + safeBounds.ymax) / 2, pyreneesWgs84Envelope.ymin, pyreneesWgs84Envelope.ymax)
+    };
+    setCenter((current) =>
+      Math.abs(current.lon - nextCenter.lon) < 1e-8 && Math.abs(current.lat - nextCenter.lat) < 1e-8
+        ? current
+        : nextCenter
+    );
+  }, [bounds?.xmin, bounds?.xmax, bounds?.ymin, bounds?.ymax]);
+
+  const mapPixels = useMemo(() => {
+    const centerPixel = lonLatToPixel(center.lon, center.lat, zoom);
+    return {
+      left: centerPixel.x - aoiMapViewport.width / 2,
+      top: centerPixel.y - aoiMapViewport.height / 2,
+      width: aoiMapViewport.width,
+      height: aoiMapViewport.height
+    };
+  }, [center, zoom]);
+  const tiles = useMemo(() => {
+    const minX = Math.floor(mapPixels.left / 256);
+    const maxX = Math.floor((mapPixels.left + mapPixels.width) / 256);
+    const minY = Math.floor(mapPixels.top / 256);
+    const maxY = Math.floor((mapPixels.top + mapPixels.height) / 256);
+    const rows: Array<{ x: number; y: number; left: number; top: number; width: number; height: number }> = [];
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let y = minY; y <= maxY; y += 1) {
+        rows.push({
+          x,
+          y,
+          left: ((x * 256 - mapPixels.left) / mapPixels.width) * 100,
+          top: ((y * 256 - mapPixels.top) / mapPixels.height) * 100,
+          width: (256 / mapPixels.width) * 100,
+          height: (256 / mapPixels.height) * 100
+        });
+      }
+    }
+    return rows;
+  }, [mapPixels]);
+
+  function pointFromEvent(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const localX = clamp(event.clientX - rect.left, 0, rect.width);
+    const localY = clamp(event.clientY - rect.top, 0, rect.height);
+    const pixelX = mapPixels.left + (localX / rect.width) * mapPixels.width;
+    const pixelY = mapPixels.top + (localY / rect.height) * mapPixels.height;
+    const lonLat = pixelToLonLat(pixelX, pixelY, zoom);
+    return {
+      lon: clamp(lonLat.lon, pyreneesWgs84Envelope.xmin, pyreneesWgs84Envelope.xmax),
+      lat: clamp(lonLat.lat, pyreneesWgs84Envelope.ymin, pyreneesWgs84Envelope.ymax)
+    };
+  }
+
+  function overlayStyle(nextBounds: AoiBounds) {
+    const safeBounds = orderedBounds(nextBounds);
+    const nw = lonLatToPixel(safeBounds.xmin, safeBounds.ymax, zoom);
+    const se = lonLatToPixel(safeBounds.xmax, safeBounds.ymin, zoom);
+    return {
+      left: `${((nw.x - mapPixels.left) / mapPixels.width) * 100}%`,
+      top: `${((nw.y - mapPixels.top) / mapPixels.height) * 100}%`,
+      width: `${((se.x - nw.x) / mapPixels.width) * 100}%`,
+      height: `${((se.y - nw.y) / mapPixels.height) * 100}%`
+    };
+  }
+
+  const draftBounds = dragStart && dragEnd
+    ? orderedBounds({
+        xmin: dragStart.lon,
+        xmax: dragEnd.lon,
+        ymin: dragStart.lat,
+        ymax: dragEnd.lat
+      })
+    : null;
+  const shownBounds = draftBounds ?? bounds;
+  const tileBase = mapStyle === "street"
+    ? "https://tile.openstreetmap.org"
+    : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile";
+
+  return (
+    <div className="bbox-map-panel">
+      <div
+        className={`bbox-map ${mapStyle} ${tool === "draw" ? "drawing" : "panning"}`}
+        onPointerDown={(event) => {
+          if (tool === "draw") {
+            const point = pointFromEvent(event);
+            setDragStart(point);
+            setDragEnd(point);
+          } else {
+            setPanStart({
+              clientX: event.clientX,
+              clientY: event.clientY,
+              centerPixel: lonLatToPixel(center.lon, center.lat, zoom)
+            });
+          }
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (tool === "draw") {
+            if (!dragStart) return;
+            setDragEnd(pointFromEvent(event));
+            return;
+          }
+          if (!panStart) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const scaleX = mapPixels.width / rect.width;
+          const scaleY = mapPixels.height / rect.height;
+          const nextPixel = {
+            x: panStart.centerPixel.x - (event.clientX - panStart.clientX) * scaleX,
+            y: panStart.centerPixel.y - (event.clientY - panStart.clientY) * scaleY
+          };
+          const nextCenter = pixelToLonLat(nextPixel.x, nextPixel.y, zoom);
+          setCenter({
+            lon: clamp(nextCenter.lon, pyreneesWgs84Envelope.xmin, pyreneesWgs84Envelope.xmax),
+            lat: clamp(nextCenter.lat, pyreneesWgs84Envelope.ymin, pyreneesWgs84Envelope.ymax)
+          });
+        }}
+        onPointerUp={(event) => {
+          if (tool === "draw" && dragStart) {
+            const point = pointFromEvent(event);
+            const next = orderedBounds({
+              xmin: dragStart.lon,
+              xmax: point.lon,
+              ymin: dragStart.lat,
+              ymax: point.lat
+            });
+            if (Math.abs(next.xmax - next.xmin) > 0.001 && Math.abs(next.ymax - next.ymin) > 0.001) {
+              onChange({
+                xmin: formatCoord(next.xmin),
+                xmax: formatCoord(next.xmax),
+                ymin: formatCoord(next.ymin),
+                ymax: formatCoord(next.ymax)
+              });
+            }
+          }
+          setDragStart(null);
+          setDragEnd(null);
+          setPanStart(null);
+        }}
+      >
+        <div className="map-control-stack zoom-controls" onPointerDown={(event) => event.stopPropagation()}>
+          <button title="Zoom in" onClick={(event) => { event.stopPropagation(); setZoom((current) => Math.min(12, current + 1)); }}>+</button>
+          <button title="Zoom out" onClick={(event) => { event.stopPropagation(); setZoom((current) => Math.max(6, current - 1)); }}>-</button>
+        </div>
+        <div className="map-control-stack map-tool-controls" onPointerDown={(event) => event.stopPropagation()}>
+          <button
+            title="Move map"
+            className={tool === "pan" ? "active" : ""}
+            onClick={(event) => { event.stopPropagation(); setTool("pan"); }}
+          >
+            ↕
+          </button>
+          <button
+            title="Draw bounding box"
+            className={tool === "draw" ? "active" : ""}
+            onClick={(event) => { event.stopPropagation(); setTool("draw"); }}
+          >
+            ▭
+          </button>
+          <button
+            title="Map layers"
+            className={showLayerMenu ? "active" : ""}
+            onClick={(event) => { event.stopPropagation(); setShowLayerMenu((current) => !current); }}
+          >
+            ▧
+          </button>
+        </div>
+        {showLayerMenu && (
+          <div className="map-layer-menu" onPointerDown={(event) => event.stopPropagation()}>
+            <button className={mapStyle === "street" ? "active" : ""} onClick={() => { setMapStyle("street"); setShowLayerMenu(false); }}>Map</button>
+            <button className={mapStyle === "satellite" ? "active" : ""} onClick={() => { setMapStyle("satellite"); setShowLayerMenu(false); }}>Satellite</button>
+          </div>
+        )}
+        {tiles.map((tile) => (
+          <img
+            key={`${mapStyle}-${tile.x}-${tile.y}`}
+            alt=""
+            draggable={false}
+            src={mapStyle === "street"
+              ? `${tileBase}/${zoom}/${tile.x}/${tile.y}.png`
+              : `${tileBase}/${zoom}/${tile.y}/${tile.x}`}
+            style={{
+              left: `${tile.left}%`,
+              top: `${tile.top}%`,
+              width: `${tile.width}%`,
+              height: `${tile.height}%`
+            }}
+          />
+        ))}
+        {shownBounds && <div className="bbox-selection" style={overlayStyle(shownBounds)} />}
+        <div className="map-attribution">
+          {mapStyle === "street" ? "© OpenStreetMap contributors" : "Esri World Imagery"}
+        </div>
+      </div>
+      {bounds && (
+        <div className="bbox-readout">
+          <span>xmin {bounds.xmin}</span>
+          <span>xmax {bounds.xmax}</span>
+          <span>ymin {bounds.ymin}</span>
+          <span>ymax {bounds.ymax}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AoiBuilderPanel({
+  projectConfig,
+  resolutions,
+  targetCrs,
+  setTargetCrs,
+  aoiPath,
+  setAoiPath,
+  resolution,
+  setResolution,
+  onAoiCreated
+}: {
+  projectConfig: string;
+  resolutions: number[];
+  targetCrs: string;
+  setTargetCrs: (value: string) => void;
+  aoiPath: string;
+  setAoiPath: (value: string) => void;
+  resolution: number;
+  setResolution: (value: number) => void;
+  onAoiCreated: (aoi: AoiCatalog) => void;
+}) {
+  const [aoiForm, setAoiForm] = useState({
+    name: "custom_aoi",
+    description: "Workbench-created AOI.",
+    crs: targetCrs,
+    xmin: "",
+    xmax: "",
+    ymin: "",
+    ymax: ""
+  });
+  const [aoiStatus, setAoiStatus] = useState<string | null>(null);
+  const [gridStatus, setGridStatus] = useState<string | null>(null);
+  const normalizedAoiCrs = normalizeCrsCode(aoiForm.crs);
+  const bounds = {
+    xmin: Number(aoiForm.xmin),
+    xmax: Number(aoiForm.xmax),
+    ymin: Number(aoiForm.ymin),
+    ymax: Number(aoiForm.ymax)
+  };
+  const boundsAreNumeric = Object.values(bounds).every(Number.isFinite);
+  const boundsAreOrdered = boundsAreNumeric && bounds.xmin < bounds.xmax && bounds.ymin < bounds.ymax;
+  const mapProjectionSupported = canProjectToMap(aoiForm.crs);
+  const mapBounds = boundsAreOrdered && mapProjectionSupported ? boundsToWgs84(bounds, aoiForm.crs) : null;
+  const insidePyreneesBuffer = !boundsAreOrdered || !mapProjectionSupported || !mapBounds || (
+    mapBounds.xmin >= pyreneesWgs84Envelope.xmin &&
+    mapBounds.xmax <= pyreneesWgs84Envelope.xmax &&
+    mapBounds.ymin >= pyreneesWgs84Envelope.ymin &&
+    mapBounds.ymax <= pyreneesWgs84Envelope.ymax
+  );
+  const resolutionChecks = boundsAreOrdered
+    ? resolutionChecksForBounds(bounds, aoiForm.crs, resolutions)
+    : [];
+  const allResolutionChecksPass = resolutionChecks.length > 0 &&
+    resolutionChecks.every((check) => check.widthOk && check.heightOk);
+  const canCreateAoi = aoiForm.name.trim().length > 0 && aoiForm.crs.trim().length > 0 && boundsAreOrdered && insidePyreneesBuffer;
+
+  function applyResolutionRebounding() {
+    if (!boundsAreOrdered) return;
+    const next = expandBoundsToResolutions(bounds, aoiForm.crs, resolutions);
+    setAoiForm({
+      ...aoiForm,
+      xmin: String(next.xmin),
+      xmax: String(next.xmax),
+      ymin: String(next.ymin),
+      ymax: String(next.ymax)
+    });
+  }
+
+  async function submitAoi() {
+    if (!canCreateAoi) return;
+    setAoiStatus(null);
+    try {
+      const result = await createAoiConfig({
+        name: aoiForm.name,
+        description: aoiForm.description,
+        crs: normalizedAoiCrs,
+        bounds
+      });
+      onAoiCreated(result.aoi);
+      setTargetCrs(result.aoi.crs ?? targetCrs);
+      setAoiPath(result.aoi.path);
+      setAoiStatus(`Created ${result.aoi.path}`);
+    } catch (error) {
+      setAoiStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function submitGrid() {
+    setGridStatus(null);
+    try {
+      const result = await createProjectGrid({
+        project_config: projectConfig,
+        aoi_config: aoiPath,
+        crs: targetCrs,
+        resolution_m: resolution,
+        overwrite: false
+      });
+      setGridStatus(`Grid ready at ${result.grid_path}`);
+    } catch (error) {
+      setGridStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return (
+    <main className="workspace two-col aoi-workspace">
+      <section className="panel">
+        <h2>Create AOI Config</h2>
+        <div className="form-grid">
+          <label>
+            AOI name
+            <input value={aoiForm.name} onChange={(event) => setAoiForm({ ...aoiForm, name: event.target.value })} />
+          </label>
+          <label>
+            AOI CRS
+            <select value={normalizedAoiCrs} onChange={(event) => setAoiForm({ ...aoiForm, crs: event.target.value })}>
+              <option value="EPSG:3035">EPSG:3035</option>
+              <option value="EPSG:4326">EPSG:4326</option>
+            </select>
+          </label>
+          <label>
+            Target grid resolution
+            <select value={resolution} onChange={(event) => setResolution(Number(event.target.value))}>
+              {!resolutions.includes(resolution) && <option value={resolution}>{resolution} m</option>}
+              {resolutions.map((item) => (
+                <option key={item} value={item}>{item} m</option>
+              ))}
+            </select>
+          </label>
+          <label className="span-2">
+            Description
+            <input value={aoiForm.description} onChange={(event) => setAoiForm({ ...aoiForm, description: event.target.value })} />
+          </label>
+          {(["xmin", "xmax", "ymin", "ymax"] as const).map((key) => (
+            <label key={key}>
+              {key}
+              <input type="number" value={aoiForm[key]} onChange={(event) => setAoiForm({ ...aoiForm, [key]: event.target.value })} />
+            </label>
+          ))}
+        </div>
+        {!boundsAreOrdered && <div className="notice info">Bounds must satisfy xmin &lt; xmax and ymin &lt; ymax.</div>}
+        {boundsAreOrdered && !insidePyreneesBuffer && (
+          <div className="notice error">Bounds must stay inside the broad Pyrenees working envelope.</div>
+        )}
+        {boundsAreOrdered && mapProjectionSupported && insidePyreneesBuffer && (
+          <div className="notice success">Bounds are inside the broad Pyrenees working envelope.</div>
+        )}
+        {boundsAreOrdered && (
+          <div className={`resolution-check-panel ${allResolutionChecksPass ? "ok" : "warn"}`}>
+            <div className="resolution-check-head">
+              <strong>Resolution divisibility</strong>
+              <small>{normalizedAoiCrs === "EPSG:4326" ? "Estimated from WGS84 bounds" : `Checked in ${normalizedAoiCrs}`}</small>
+            </div>
+            <div className="resolution-check-list">
+              {resolutionChecks.map((check) => (
+                <span key={check.resolution} className={check.widthOk && check.heightOk ? "ok" : "warn"}>
+                  {check.resolution} m {check.widthOk && check.heightOk ? "accepted" : "needs rebounding"}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="button-row aoi-actions">
+          <button className="ghost" disabled={!boundsAreOrdered || allResolutionChecksPass} onClick={applyResolutionRebounding}>
+            Apply resolution rebounding
+          </button>
+          <button className="primary" disabled={!canCreateAoi} onClick={submitAoi}>Create AOI config</button>
+          <button className="ghost" onClick={submitGrid}>Create target grid</button>
+        </div>
+        {aoiStatus && <div className="notice info">{aoiStatus}</div>}
+        {gridStatus && <div className="notice info">{gridStatus}</div>}
+      </section>
+      <section className="panel">
+        <h2>Map Preview</h2>
+        <MapBboxPicker
+          bounds={mapBounds}
+          onChange={(nextBounds) => {
+            const targetBounds = boundsFromWgs84(nextBounds, normalizedAoiCrs);
+            if (!targetBounds) return;
+            setAoiForm({
+              ...aoiForm,
+              crs: normalizedAoiCrs,
+              xmin: String(formatCrsCoord(targetBounds.xmin, normalizedAoiCrs)),
+              xmax: String(formatCrsCoord(targetBounds.xmax, normalizedAoiCrs)),
+              ymin: String(formatCrsCoord(targetBounds.ymin, normalizedAoiCrs)),
+              ymax: String(formatCrsCoord(targetBounds.ymax, normalizedAoiCrs))
+            });
+          }}
+        />
+        {!mapProjectionSupported && (
+          <div className="notice info compact-notice">
+            Map drawing currently supports EPSG:4326 and EPSG:3035. Other CRS values can still be typed manually.
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function SourcesInfoPanel({ catalog }: { catalog: WorkbenchCatalog }) {
+  const groupedSources = useMemo(() => {
+    const groupMap = new Map<string, SourceCatalog[]>();
+    for (const source of catalog.sources) {
+      const key = source.provider ?? "other";
+      groupMap.set(key, [...(groupMap.get(key) ?? []), source]);
+    }
+    const groupMeta = new Map((catalog.source_groups ?? []).map((group) => [group.id, group]));
+    const groupOrder = new Map((catalog.source_groups ?? []).map((group, index) => [group.id, index]));
+    return [...groupMap.entries()]
+      .sort(([left], [right]) => {
+        const leftOrder = groupOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = groupOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder || left.localeCompare(right);
+      })
+      .map(([provider, sources]) => ({
+        provider,
+        meta: groupMeta.get(provider),
+        sources: sources.sort((a, b) => sourceDisplayName(a).localeCompare(sourceDisplayName(b)))
+      }));
+  }, [catalog.source_groups, catalog.sources]);
+
+  return (
+    <main className="workspace sources-info-workspace">
+      <section className="panel sources-overview-panel">
+        <h2>Available Sources</h2>
+        <p className="builder-copy">
+          Browse source families first, then open each configured sub-source to inspect variables,
+          temporal behaviour, units and links.
+        </p>
+      </section>
+      <section className="source-info-tree">
+        {groupedSources.map((group) => (
+          <details key={group.provider} className="source-group source-family">
+            <summary>
+              <span>
+                <strong>{group.meta?.title ?? humanizeId(group.provider)}</strong>
+                <small>{group.meta?.summary ?? `${group.sources.length} configured sub-sources`}</small>
+              </span>
+              {group.meta?.official_url && (
+                <a href={group.meta.official_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                  Official site
+                </a>
+              )}
+            </summary>
+            {group.meta?.long_description && <p className="source-group-description">{group.meta.long_description}</p>}
+            {group.meta?.references && group.meta.references.length > 0 && (
+              <div className="reference-links">
+                {group.meta.references.map((reference) => (
+                  <a key={reference.url} href={reference.url} target="_blank" rel="noreferrer">{reference.label}</a>
+                ))}
+              </div>
+            )}
+            <div className="source-stack nested-source-stack">
+              {group.sources.map((source) => (
+                <details key={source.id} className="source-card detailed subsource-card">
+              <summary>
+                <span>
+                  <strong>{sourceDisplayName(source)}</strong>
+                  <small>{sourceShortName(source)} · {providerDisplayName(source)}</small>
+                </span>
+                {sourceOfficialUrl(source) && <a href={sourceOfficialUrl(source)} target="_blank" rel="noreferrer">Official site</a>}
+              </summary>
+              <p className="source-group-description">{source.long_description ?? source.description ?? source.summary ?? "No extended description available."}</p>
+              <div className="source-stack">
+                {sourceDimensionEntries(source).length > 0 && (
+                  <div className="mini-list">
+                    {sourceDimensionEntries(source).map(([key, values]) => (
+                      <span key={key}>{key}: {values.length} values</span>
+                    ))}
+                  </div>
+                )}
+                {source.temporal && (
+                  <div className="notice info compact-notice">
+                    Temporal model: {source.temporal.label ?? source.temporal.kind}
+                  </div>
+                )}
+                {sourceVariables(source).map((variable) => (
+                  <details key={variable.name} className="variable-card detailed">
+                    <summary className="source-head">
+                      <span className="source-title-row">
+                        <strong>{variable.description ?? humanizeId(variable.name)}</strong>
+                        <small>{variable.name} · {variable.kind}</small>
+                      </span>
+                      <em>{variable.unit ?? variable.geometry_type ?? variable.value_semantics ?? ""}</em>
+                    </summary>
+                    <div className="variable-detail-grid">
+                      <span><strong>Type</strong>{variable.data_type ?? variable.value_semantics ?? "continuous"}</span>
+                      <span><strong>Resampling</strong>{variable.resampling ?? "source default"}</span>
+                      <span><strong>Native resolution</strong>{variable.native_resolution_m ? `${variable.native_resolution_m} m` : source.native_resolution ?? "source default"}</span>
+                      {variable.valid_range && <span><strong>Valid range</strong>{variable.valid_range.join(" to ")}</span>}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </details>
+              ))}
+            </div>
+          </details>
+        ))}
+      </section>
+    </main>
   );
 }
 
@@ -700,6 +1674,7 @@ interface ProjectPanelProps {
   setStages: (value: string[]) => void;
   datasetDir: string;
   setDatasetDir: (value: string) => void;
+  showAoiTools?: boolean;
   onAoiCreated: (aoi: AoiCatalog) => void;
 }
 
@@ -808,21 +1783,10 @@ function ProjectPanel(props: ProjectPanelProps) {
               ))}
             </select>
           </label>
-          <label>
-            Custom target resolution
-            <input
-              type="number"
-              min={1}
-              value={props.resolution}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next) && next > 0) props.setResolution(next);
-              }}
-            />
-          </label>
         </div>
       </section>
 
+      {props.showAoiTools !== false && (
       <section className="panel">
         <h2>Create AOI</h2>
         <div className="form-grid">
@@ -862,6 +1826,7 @@ function ProjectPanel(props: ProjectPanelProps) {
         {aoiStatus && <div className="notice info">{aoiStatus}</div>}
         {gridStatus && <div className="notice info">{gridStatus}</div>}
       </section>
+      )}
 
       <section className="panel">
         <h2>Stages</h2>
@@ -1269,8 +2234,8 @@ function VariablesPanel({
               const defaultMethod = variable.resampling ?? "nearest";
               const currentMethod = selection.resamplingByVariable[variable.name] ?? defaultMethod;
               return (
-                <label key={variable.name}>
-                  {variable.name}
+                <label key={variable.name} className="resampling-row">
+                  <span className="resampling-name">{variable.name}</span>
                   <select
                     value={currentMethod}
                     onChange={(event) =>
@@ -1507,8 +2472,7 @@ function TemporalPanel({
         {temporal.outputMode === "supplied_layers" && supportsSupplied && (
           <div className="temporal-layer-editor">
             <div className="notice info compact-notice">
-              Select only the supplied temporal layers you want to build. Year choices live here,
-              not in the Variables dimensions panel.
+              Select only the supplied temporal layers you want to build.
             </div>
             <div className="choice-list compact">
               {capability?.temporal_layers?.annual && (
@@ -1857,8 +2821,20 @@ interface PlannedLayer {
   sourceTitle: string;
   query: DerivedInputQuery;
   variable: string;
+  baseVariable?: string;
   unit?: string | null;
   valueSemantics?: string;
+}
+
+function queryMatchesLayer(layer: PlannedLayer, query: DerivedInputQuery) {
+  return Object.entries(query).every(([key, value]) => {
+    if (value === undefined || value === null) return true;
+    return layer.query[key as keyof DerivedInputQuery] === value;
+  });
+}
+
+function derivedFeatureDependsOnLayer(feature: DerivedFeatureConfig, layer: PlannedLayer) {
+  return Object.values(feature.inputs ?? {}).some((query) => queryMatchesLayer(layer, query));
 }
 
 function buildPlannedLayers(
@@ -1911,6 +2887,7 @@ function buildPlannedLayers(
             sourceTitle: sourceDisplayName(source),
             query,
             variable: expandedVariable,
+            baseVariable: variable.name,
             unit: variable.unit,
             valueSemantics: variable.value_semantics ?? variable.data_type
           });
@@ -1972,12 +2949,56 @@ function isDemLayer(layer?: PlannedLayer) {
   return /\b(dem|elev|elevation|altitude|height|glo-30|glo30)\b/.test(tokens);
 }
 
+function layerTokens(layer?: PlannedLayer) {
+  if (!layer) return "";
+  return `${layer.variable} ${layer.label} ${layer.valueSemantics ?? ""} ${layer.unit ?? ""}`.toLowerCase();
+}
+
+function layerVariableMatches(layer: PlannedLayer, names: string[]) {
+  const variable = layer.variable.toLowerCase();
+  const label = layer.label.toLowerCase();
+  return names.some((name) => {
+    const normalized = name.toLowerCase();
+    const tokenPattern = new RegExp(`(^|[^a-z0-9])${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`);
+    return variable === normalized || tokenPattern.test(variable) || tokenPattern.test(label);
+  });
+}
+
+function isCategoricalLayer(layer?: PlannedLayer) {
+  const tokens = layerTokens(layer);
+  return /\b(categorical|ordinal|binary|mask|class|classes|landcover|land_cover|corine|forest|road|roads|track|building|settlement)\b/.test(tokens);
+}
+
+function isBinaryLayer(layer?: PlannedLayer) {
+  const tokens = layerTokens(layer);
+  return /\b(binary|mask|presence|absence|0\/1)\b/.test(tokens);
+}
+
+function isNumericLayer(layer?: PlannedLayer) {
+  if (!layer) return false;
+  return !isCategoricalLayer(layer) || /\b(count|percentage|fraction|ratio|intensive|extensive|depth|temperature|precipitation|pet|biomass|density|distance|slope|aspect)\b/.test(layerTokens(layer));
+}
+
+function sameLayerContext(left?: PlannedLayer, right?: PlannedLayer) {
+  if (!left || !right) return true;
+  return (
+    left.query.source_id === right.query.source_id &&
+    left.query.aggregation_name === right.query.aggregation_name &&
+    left.query.gcm === right.query.gcm &&
+    left.query.ssp === right.query.ssp &&
+    left.query.period === right.query.period
+  );
+}
+
 const recipeHelp: Record<string, string> = {
   thermal_range: "Difference between maximum and minimum temperature. Useful as a simple temperature variability layer.",
   water_balance: "Precipitation minus potential evapotranspiration. Positive values indicate wetter conditions.",
   aridity_index: "Ratio between precipitation and PET. It summarizes moisture limitation.",
   seasonal_contrast: "Difference or ratio between two selected layers, often two seasons or periods.",
-  snow_persistence_ratio: "Snow observation days divided by valid observation days.",
+  snow_persistence_ratio: "Snow observation days divided by valid observation days."
+};
+
+const maskingHelp: Record<string, string> = {
   binary_threshold_mask: "Creates a 0/1 mask from a numeric threshold.",
   class_mask: "Creates a 0/1 mask for one categorical class value."
 };
@@ -2015,11 +3036,35 @@ function DerivedPanel({
     () => buildPlannedLayers(catalog, selectedSources),
     [catalog, selectedSources]
   );
+  const derivedInputLayers = useMemo<PlannedLayer[]>(
+    () => derivedFeatures.map((feature) => ({
+      id: `derived:${feature.name}`,
+      label: `Derived · ${feature.name}`,
+      sourceTitle: "Derived features",
+      query: {
+        source_id: "derived",
+        variable: feature.name
+      },
+      variable: feature.name,
+      unit: feature.unit,
+      valueSemantics: feature.value_semantics
+    })),
+    [derivedFeatures]
+  );
+  const availableLayers = useMemo(
+    () => [...plannedLayers, ...derivedInputLayers],
+    [plannedLayers, derivedInputLayers]
+  );
   const [recipe, setRecipe] = useState("thermal_range");
   const [primaryLayerId, setPrimaryLayerId] = useState("");
   const [secondaryLayerId, setSecondaryLayerId] = useState("");
   const [recipeInputs, setRecipeInputs] = useState<Record<string, string>>({});
   const [recipeOutputName, setRecipeOutputName] = useState("");
+  const [maskRecipe, setMaskRecipe] = useState("binary_threshold_mask");
+  const [maskLayerId, setMaskLayerId] = useState("");
+  const [maskOutputName, setMaskOutputName] = useState("");
+  const [maskThreshold, setMaskThreshold] = useState(0);
+  const [maskClassValue, setMaskClassValue] = useState(1);
   const [expression, setExpression] = useState("x - y");
   const [expressionLayerIds, setExpressionLayerIds] = useState<Record<string, string>>({});
   const [expressionOutputName, setExpressionOutputName] = useState("");
@@ -2033,31 +3078,39 @@ function DerivedPanel({
   const [terrainMethod, setTerrainMethod] = useState("slope");
   const [focalMethod, setFocalMethod] = useState("mean");
   const [radius, setRadius] = useState(1);
-  const [threshold, setThreshold] = useState(0);
   const [classValue, setClassValue] = useState(1);
 
   const layerById = useMemo(
-    () => new Map(plannedLayers.map((layer) => [layer.id, layer])),
-    [plannedLayers]
+    () => new Map(availableLayers.map((layer) => [layer.id, layer])),
+    [availableLayers]
   );
-  const firstLayer = plannedLayers[0];
+  const firstLayer = availableLayers[0];
   const primaryLayer = layerById.get(primaryLayerId) ?? firstLayer;
-  const secondaryLayer = layerById.get(secondaryLayerId) ?? plannedLayers[1] ?? firstLayer;
-  const distanceLayer = layerById.get(distanceLayerId) ?? primaryLayer;
-  const primaryIsDem = isDemLayer(primaryLayer);
+  const secondaryLayer = layerById.get(secondaryLayerId) ?? availableLayers[1] ?? firstLayer;
+  const demLayers = availableLayers.filter(isDemLayer);
+  const numericLayers = availableLayers.filter(isNumericLayer);
+  const categoricalLayers = availableLayers.filter(isCategoricalLayer);
+  const distanceLayers = availableLayers.filter((layer) => isBinaryLayer(layer) || isCategoricalLayer(layer));
+  const terrainLayer = demLayers.find((layer) => layer.id === primaryLayerId) ?? demLayers[0];
+  const focalCandidateLayers = ["majority", "diversity"].includes(focalMethod) && categoricalLayers.length > 0
+    ? categoricalLayers
+    : availableLayers;
+  const focalLayer = focalCandidateLayers.find((layer) => layer.id === primaryLayerId) ?? focalCandidateLayers[0];
+  const distanceLayer = distanceLayers.find((layer) => layer.id === distanceLayerId) ?? distanceLayers[0];
+  const maskCandidateLayers = maskRecipe === "binary_threshold_mask"
+    ? numericLayers
+    : categoricalLayers;
+  const maskLayer = maskCandidateLayers.find((layer) => layer.id === maskLayerId) ?? maskCandidateLayers[0];
 
   function findLayer(variable: string, sameAs?: PlannedLayer) {
-    return plannedLayers.find((layer) =>
+    return availableLayers.find((layer) =>
       layer.variable === variable &&
-      (!sameAs ||
-        (
-          layer.query.source_id === sameAs.query.source_id &&
-          layer.query.aggregation_name === sameAs.query.aggregation_name &&
-          layer.query.gcm === sameAs.query.gcm &&
-          layer.query.ssp === sameAs.query.ssp &&
-          layer.query.period === sameAs.query.period
-        ))
+      sameLayerContext(layer, sameAs)
     );
+  }
+
+  function findMatchingLayer(names: string[], sameAs?: PlannedLayer) {
+    return availableLayers.find((layer) => layerVariableMatches(layer, names) && sameLayerContext(layer, sameAs));
   }
 
   function addFeature(feature: DerivedFeatureConfig) {
@@ -2065,26 +3118,59 @@ function DerivedPanel({
     setDescription("");
   }
 
-  function layerFromRecipeInput(alias: string, fallback?: PlannedLayer) {
-    return layerById.get(recipeInputs[alias] ?? "") ?? fallback;
+  function layerFromRecipeInput(alias: string, candidates: PlannedLayer[], fallback?: PlannedLayer) {
+    const selected = layerById.get(recipeInputs[alias] ?? "");
+    if (selected && candidates.some((layer) => layer.id === selected.id)) return selected;
+    if (fallback && candidates.some((layer) => layer.id === fallback.id)) return fallback;
+    return candidates[0];
   }
 
-  function recipeInputSelect(alias: string, label: string, fallback?: PlannedLayer) {
+  function recipeInputSelect(alias: string, label: string, candidates: PlannedLayer[], fallback?: PlannedLayer, emptyText?: string) {
+    const fallbackAllowed = fallback && candidates.some((layer) => layer.id === fallback.id);
+    const currentValue = candidates.some((layer) => layer.id === recipeInputs[alias])
+      ? recipeInputs[alias]
+      : "";
     return (
       <label>
         {label}
         <select
-          value={recipeInputs[alias] ?? ""}
+          value={currentValue}
+          disabled={candidates.length === 0}
           onChange={(event) => setRecipeInputs({ ...recipeInputs, [alias]: event.target.value })}
         >
-          {fallback && <option value="">Auto: {fallback.label}</option>}
-          {!fallback && <option value="">Select layer</option>}
-          {plannedLayers.map((layer) => (
+          {fallbackAllowed && <option value="">Auto: {fallback.label}</option>}
+          {!fallbackAllowed && <option value="">{candidates.length === 0 ? "No valid layers" : "Select layer"}</option>}
+          {candidates.map((layer) => (
             <option key={layer.id} value={layer.id}>{layer.label}</option>
           ))}
         </select>
+        {candidates.length === 0 && (
+          <small className="field-hint">{emptyText ?? "No selected layer matches this input requirement."}</small>
+        )}
       </label>
     );
+  }
+
+  function recipeCandidates(alias: string) {
+    if (recipe === "thermal_range") {
+      return alias === "tmax"
+        ? availableLayers.filter((layer) => layerVariableMatches(layer, ["tmax", "tasmax", "maximum_temperature"]))
+        : availableLayers.filter((layer) => layerVariableMatches(layer, ["tmin", "tasmin", "minimum_temperature"]));
+    }
+    if (recipe === "water_balance" || recipe === "aridity_index") {
+      return alias === "prec"
+        ? availableLayers.filter((layer) => layerVariableMatches(layer, ["prec", "precipitation", "ppt"]))
+        : availableLayers.filter((layer) => layerVariableMatches(layer, ["pet", "eto", "evapotranspiration"]));
+    }
+    if (recipe === "snow_persistence_ratio") {
+      return alias === "snow_days"
+        ? availableLayers.filter((layer) => layerVariableMatches(layer, ["snow_days", "snow_days_count", "snow"]))
+        : availableLayers.filter((layer) => layerVariableMatches(layer, ["valid_days", "valid_observations", "valid"]));
+    }
+    if (recipe === "seasonal_contrast") {
+      return numericLayers;
+    }
+    return availableLayers;
   }
 
   function addGuidedRecipe() {
@@ -2096,51 +3182,44 @@ function DerivedPanel({
     let defaultExpressionName = recipe;
 
     if (recipe === "thermal_range") {
-      const tmax = findLayer("tmax", primaryLayer) ?? findLayer("tmax");
-      const tmin = findLayer("tmin", tmax ?? primaryLayer) ?? findLayer("tmin");
-      const selectedTmax = layerFromRecipeInput("tmax", tmax);
-      const selectedTmin = layerFromRecipeInput("tmin", tmin);
+      const tmaxCandidates = recipeCandidates("tmax");
+      const tminCandidates = recipeCandidates("tmin");
+      const tmax = findLayer("tmax", primaryLayer) ?? findMatchingLayer(["tmax", "tasmax", "maximum_temperature"], primaryLayer) ?? tmaxCandidates[0];
+      const tmin = findLayer("tmin", tmax ?? primaryLayer) ?? findMatchingLayer(["tmin", "tasmin", "minimum_temperature"], tmax ?? primaryLayer) ?? tminCandidates[0];
+      const selectedTmax = layerFromRecipeInput("tmax", tmaxCandidates, tmax);
+      const selectedTmin = layerFromRecipeInput("tmin", tminCandidates, tmin);
       if (!selectedTmax || !selectedTmin) return;
       inputs = { tmax: selectedTmax.query, tmin: selectedTmin.query };
       defaultUnit = unit || "degC";
     } else if (recipe === "water_balance" || recipe === "aridity_index") {
-      const prec = findLayer("prec", primaryLayer) ?? findLayer("prec");
-      const pet = findLayer("pet", prec ?? primaryLayer) ?? findLayer("pet");
-      const selectedPrec = layerFromRecipeInput("prec", prec);
-      const selectedPet = layerFromRecipeInput("pet", pet);
+      const precCandidates = recipeCandidates("prec");
+      const petCandidates = recipeCandidates("pet");
+      const prec = findLayer("prec", primaryLayer) ?? findMatchingLayer(["prec", "precipitation", "ppt"], primaryLayer) ?? precCandidates[0];
+      const pet = findLayer("pet", prec ?? primaryLayer) ?? findMatchingLayer(["pet", "eto", "evapotranspiration"], prec ?? primaryLayer) ?? petCandidates[0];
+      const selectedPrec = layerFromRecipeInput("prec", precCandidates, prec);
+      const selectedPet = layerFromRecipeInput("pet", petCandidates, pet);
       if (!selectedPrec || !selectedPet) return;
       inputs = { prec: selectedPrec.query, pet: selectedPet.query };
       defaultUnit = recipe === "aridity_index" ? "ratio" : (unit || "mm");
       parameters = recipe === "aridity_index" ? { convention: "prec_over_pet" } : {};
     } else if (recipe === "snow_persistence_ratio") {
-      const snow = findLayer("snow_days", primaryLayer) ?? primaryLayer;
-      const valid = findLayer("valid_days", snow) ?? secondaryLayer;
-      const selectedSnow = layerFromRecipeInput("snow_days", snow);
-      const selectedValid = layerFromRecipeInput("valid_days", valid);
+      const snowCandidates = recipeCandidates("snow_days");
+      const validCandidates = recipeCandidates("valid_days");
+      const snow = findLayer("snow_days", primaryLayer) ?? findMatchingLayer(["snow_days", "snow_days_count", "snow"], primaryLayer) ?? snowCandidates[0];
+      const valid = findLayer("valid_days", snow) ?? findMatchingLayer(["valid_days", "valid_observations", "valid"], snow) ?? validCandidates[0];
+      const selectedSnow = layerFromRecipeInput("snow_days", snowCandidates, snow);
+      const selectedValid = layerFromRecipeInput("valid_days", validCandidates, valid);
       if (!selectedSnow || !selectedValid) return;
       inputs = { snow_days: selectedSnow.query, valid_days: selectedValid.query };
       defaultUnit = "ratio";
     } else if (recipe === "seasonal_contrast") {
-      const a = layerFromRecipeInput("a", primaryLayer);
-      const b = layerFromRecipeInput("b", secondaryLayer);
+      const candidates = recipeCandidates("a");
+      const a = layerFromRecipeInput("a", candidates, candidates.find((layer) => layer.id === primaryLayer?.id) ?? candidates[0]);
+      const b = layerFromRecipeInput("b", candidates, candidates.find((layer) => layer.id === secondaryLayer?.id) ?? candidates[1] ?? candidates[0]);
       if (!a || !b) return;
       inputs = { a: a.query, b: b.query };
       parameters = { metric: "difference" };
       defaultUnit = unit || a.unit || "source_units";
-    } else if (recipe === "binary_threshold_mask") {
-      const x = layerFromRecipeInput("x", primaryLayer);
-      if (!x) return;
-      inputs = { x: x.query };
-      parameters = { operator: ">=", threshold };
-      defaultUnit = "binary";
-      defaultExpressionName = `${x.variable}_threshold_mask`;
-    } else if (recipe === "class_mask") {
-      const x = layerFromRecipeInput("x", primaryLayer);
-      if (!x) return;
-      inputs = { x: x.query };
-      parameters = { class_value: classValue };
-      defaultUnit = "binary";
-      defaultExpressionName = `${x.variable}_class_${classValue}_mask`;
     }
 
     addFeature({
@@ -2155,6 +3234,34 @@ function DerivedPanel({
       inputs
     });
     setRecipeOutputName("");
+  }
+
+  function addMaskingFeature() {
+    if (!maskLayer) return;
+    const isThreshold = maskRecipe === "binary_threshold_mask";
+    addFeature({
+      name: sanitizeDerivedName(
+        maskOutputName ||
+          (isThreshold
+            ? `${maskLayer.variable}_threshold_mask`
+            : `${maskLayer.variable}_class_${maskClassValue}_mask`)
+      ),
+      operation: "recipe",
+      recipe: maskRecipe,
+      description: description || (isThreshold
+        ? `Binary threshold mask derived from ${maskLayer.label}.`
+        : `Class mask derived from ${maskLayer.label}.`),
+      unit: "binary",
+      value_semantics: "categorical",
+      output_dtype: "uint8",
+      parameters: isThreshold
+        ? { operator: ">=", threshold: maskThreshold }
+        : { class_value: maskClassValue },
+      inputs: {
+        x: maskLayer.query
+      }
+    });
+    setMaskOutputName("");
   }
 
   function addExpression() {
@@ -2179,9 +3286,13 @@ function DerivedPanel({
   }
 
   function addSpatialOperation(operation: "terrain" | "focal" | "distance") {
-    const inputLayer = operation === "distance" ? distanceLayer : primaryLayer;
+    const inputLayer = operation === "terrain"
+      ? terrainLayer
+      : operation === "distance"
+        ? distanceLayer
+        : focalLayer;
     if (!inputLayer) return;
-    if (operation === "terrain" && !primaryIsDem) return;
+    if (operation === "terrain" && !isDemLayer(inputLayer)) return;
     const spatialMethod = operation === "terrain" ? terrainMethod : operation === "focal" ? focalMethod : "distance_to_mask";
     const nameFromState = operation === "terrain"
       ? terrainOutputName
@@ -2214,12 +3325,12 @@ function DerivedPanel({
       <section className="panel derived-header-panel">
         <div className="panel-head">
           <h2>Derived Features</h2>
-          <span className="field-hint">{plannedLayers.length} planned input layers</span>
+          <span className="field-hint">{availableLayers.length} available input layers</span>
         </div>
         {selectedSources.length === 0 && (
           <div className="notice info">Select at least one source before adding derived features.</div>
         )}
-        {selectedSources.length > 0 && plannedLayers.length === 0 && (
+        {selectedSources.length > 0 && availableLayers.length === 0 && (
           <div className="notice info">Select variables before adding derived features.</div>
         )}
       </section>
@@ -2234,7 +3345,7 @@ function DerivedPanel({
               and add a secondary layer when the recipe combines two variables.
             </p>
           </div>
-          <InfoTip text="Predefined pixel-wise formulas. Thermal range needs max/min temperature, water balance needs precipitation/PET, and masks need a threshold or class value." />
+          <InfoTip text="Predefined pixel-wise formulas with strict input filters. Thermal range only accepts max/min temperature, water balance needs precipitation/PET, and snow persistence needs snow/valid-day layers." />
         </div>
         <div className="form-grid">
           <label className="span-2">
@@ -2245,119 +3356,103 @@ function DerivedPanel({
               <option value="aridity_index">Aridity index</option>
               <option value="seasonal_contrast">Seasonal contrast</option>
               <option value="snow_persistence_ratio">Snow persistence ratio</option>
-              <option value="binary_threshold_mask">Binary threshold mask</option>
-              <option value="class_mask">Class mask</option>
             </select>
             <small className="field-hint">{recipeHelp[recipe]}</small>
           </label>
           {recipe === "thermal_range" && (
             <>
-              {recipeInputSelect("tmax", "Maximum temperature input", findLayer("tmax", primaryLayer) ?? findLayer("tmax"))}
-              {recipeInputSelect("tmin", "Minimum temperature input", findLayer("tmin", primaryLayer) ?? findLayer("tmin"))}
+              {recipeInputSelect("tmax", "Maximum temperature input", recipeCandidates("tmax"), findLayer("tmax", primaryLayer) ?? findMatchingLayer(["tmax", "tasmax", "maximum_temperature"], primaryLayer), "No tmax/tasmax layer is selected.")}
+              {recipeInputSelect("tmin", "Minimum temperature input", recipeCandidates("tmin"), findLayer("tmin", primaryLayer) ?? findMatchingLayer(["tmin", "tasmin", "minimum_temperature"], primaryLayer), "No tmin/tasmin layer is selected.")}
             </>
           )}
           {(recipe === "water_balance" || recipe === "aridity_index") && (
             <>
-              {recipeInputSelect("prec", "Precipitation input", findLayer("prec", primaryLayer) ?? findLayer("prec"))}
-              {recipeInputSelect("pet", "PET input", findLayer("pet", primaryLayer) ?? findLayer("pet"))}
+              {recipeInputSelect("prec", "Precipitation input", recipeCandidates("prec"), findLayer("prec", primaryLayer) ?? findMatchingLayer(["prec", "precipitation", "ppt"], primaryLayer), "No precipitation layer is selected.")}
+              {recipeInputSelect("pet", "PET input", recipeCandidates("pet"), findLayer("pet", primaryLayer) ?? findMatchingLayer(["pet", "eto", "evapotranspiration"], primaryLayer), "No PET/evapotranspiration layer is selected.")}
             </>
           )}
           {recipe === "seasonal_contrast" && (
             <>
-              {recipeInputSelect("a", "First input", primaryLayer)}
-              {recipeInputSelect("b", "Second input", secondaryLayer)}
+              {recipeInputSelect("a", "First input", recipeCandidates("a"), primaryLayer && isNumericLayer(primaryLayer) ? primaryLayer : numericLayers[0], "No numeric layer is selected.")}
+              {recipeInputSelect("b", "Second input", recipeCandidates("b"), secondaryLayer && isNumericLayer(secondaryLayer) ? secondaryLayer : numericLayers[1] ?? numericLayers[0], "No second numeric layer is selected.")}
             </>
           )}
           {recipe === "snow_persistence_ratio" && (
             <>
-              {recipeInputSelect("snow_days", "Snow-days input", findLayer("snow_days", primaryLayer) ?? primaryLayer)}
-              {recipeInputSelect("valid_days", "Valid-days input", findLayer("valid_days", primaryLayer) ?? secondaryLayer)}
-            </>
-          )}
-          {(recipe === "binary_threshold_mask" || recipe === "class_mask") && (
-            <>
-              {recipeInputSelect("x", "Mask input", primaryLayer)}
+              {recipeInputSelect("snow_days", "Snow-days input", recipeCandidates("snow_days"), findLayer("snow_days", primaryLayer) ?? findMatchingLayer(["snow_days", "snow_days_count", "snow"], primaryLayer), "No snow-days layer is selected.")}
+              {recipeInputSelect("valid_days", "Valid-days input", recipeCandidates("valid_days"), findLayer("valid_days", primaryLayer) ?? findMatchingLayer(["valid_days", "valid_observations", "valid"], primaryLayer), "No valid-days layer is selected.")}
             </>
           )}
           <label>
             Output name
             <input value={recipeOutputName} onChange={(event) => setRecipeOutputName(event.target.value)} placeholder="auto if blank" />
           </label>
-          {recipe === "binary_threshold_mask" && (
-            <label>
-              Threshold
-              <input type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-            </label>
-          )}
-          {recipe === "class_mask" && (
-            <label>
-              Class value
-              <input type="number" value={classValue} onChange={(event) => setClassValue(Number(event.target.value))} />
-            </label>
-          )}
         </div>
         <button className="primary" onClick={addGuidedRecipe} disabled={!primaryLayer}>Add guided feature</button>
       </section>
 
-      <section className="panel derived-builder">
+      <section className="panel derived-builder masking-builder">
         <div className="builder-head">
           <span className="builder-step">02</span>
           <div>
-            <h3>Advanced expression</h3>
+            <h3>Maskings</h3>
             <p className="builder-copy">
-              Write a custom raster expression using the selected inputs as aliases. Use this for
-              formulas that are not covered by the guided recipes.
+              Build binary masks from numeric thresholds or categorical classes before using them
+              in distance and focal operations.
             </p>
           </div>
-          <InfoTip text="Custom map algebra. Use x for the main input and y for the secondary input. Safe functions include where, sqrt, log, minimum and maximum." />
+          <InfoTip text="Threshold masks need numeric layers. Class masks need categorical or binary layers. Outputs are 0/1 rasters." />
         </div>
         <div className="form-grid">
-          <label className="span-2">
-            Expression
-            <input value={expression} onChange={(event) => setExpression(event.target.value)} />
-            <small className="field-hint">Example: where(x &gt; 0, x / maximum(y, 1), nan). Use x, y and z as the selected aliases below.</small>
-          </label>
-          {(["x", "y", "z"] as const).map((alias) => (
-            <label key={alias}>
-              {alias} input
-              <select
-                value={expressionLayerIds[alias] ?? ""}
-                onChange={(event) =>
-                  setExpressionLayerIds({ ...expressionLayerIds, [alias]: event.target.value })
-                }
-              >
-                <option value="">{alias === "x" ? `Auto: ${primaryLayer?.label ?? "select layer"}` : "Unused"}</option>
-                {plannedLayers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>{layer.label}</option>
-                ))}
-              </select>
-            </label>
-          ))}
           <label>
-            Output name
-            <input value={expressionOutputName} onChange={(event) => setExpressionOutputName(event.target.value)} placeholder="custom_expression" />
+            Mask type
+            <select value={maskRecipe} onChange={(event) => setMaskRecipe(event.target.value)}>
+              <option value="binary_threshold_mask">Binary threshold mask</option>
+              <option value="class_mask">Class mask</option>
+            </select>
+            <small className="field-hint">{maskingHelp[maskRecipe]}</small>
           </label>
           <label>
-            Unit
-            <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
-          </label>
-          <label>
-            Value semantics
-            <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
-              {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
-                <option key={item} value={item}>{item}</option>
+            Input layer
+            <select
+              value={maskLayer?.id ?? ""}
+              disabled={maskCandidateLayers.length === 0}
+              onChange={(event) => setMaskLayerId(event.target.value)}
+            >
+              {maskCandidateLayers.length === 0 && <option value="">No valid layers</option>}
+              {maskCandidateLayers.map((layer) => (
+                <option key={layer.id} value={layer.id}>{layer.label}</option>
               ))}
             </select>
+            {maskCandidateLayers.length === 0 && (
+              <small className="field-hint">
+                {maskRecipe === "binary_threshold_mask"
+                  ? "Select a numeric layer before creating a threshold mask."
+                  : "Select a categorical or binary layer before creating a class mask."}
+              </small>
+            )}
           </label>
-          <label className="span-2">
-            Description
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+          {maskRecipe === "binary_threshold_mask" && (
+            <label>
+              Threshold
+              <input type="number" value={maskThreshold} onChange={(event) => setMaskThreshold(Number(event.target.value))} />
+            </label>
+          )}
+          {maskRecipe === "class_mask" && (
+            <label>
+              Class value
+              <input type="number" value={maskClassValue} onChange={(event) => setMaskClassValue(Number(event.target.value))} />
+            </label>
+          )}
+          <label>
+            Output name
+            <input value={maskOutputName} onChange={(event) => setMaskOutputName(event.target.value)} placeholder="auto if blank" />
           </label>
         </div>
-        <button className="primary" onClick={addExpression} disabled={!primaryLayer}>Add expression feature</button>
+        <button className="primary" onClick={addMaskingFeature} disabled={!maskLayer}>Add masking feature</button>
       </section>
 
-      <section className="panel derived-builder">
+      <section className="panel derived-builder spatial-builder">
         <div className="builder-head">
           <span className="builder-step">03</span>
           <div>
@@ -2381,8 +3476,13 @@ function DerivedPanel({
             </p>
             <label>
               DEM input
-              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
-                {plannedLayers.map((layer) => (
+              <select
+                value={terrainLayer?.id ?? ""}
+                disabled={demLayers.length === 0}
+                onChange={(event) => setPrimaryLayerId(event.target.value)}
+              >
+                {demLayers.length === 0 && <option value="">No DEM layer selected</option>}
+                {demLayers.map((layer) => (
                   <option key={layer.id} value={layer.id}>{layer.label}</option>
                 ))}
               </select>
@@ -2408,12 +3508,12 @@ function DerivedPanel({
               </label>
             )}
             <small className="field-hint">{terrainHelp[terrainMethod]}</small>
-            {!primaryIsDem && (
+            {demLayers.length === 0 && (
               <div className="notice info compact-notice">
-                Select an elevation or DEM layer as main input before adding terrain-derived features.
+                Select a DEM/elevation variable before adding terrain-derived features.
               </div>
             )}
-            <button onClick={() => addSpatialOperation("terrain")} disabled={!primaryLayer || !primaryIsDem}>
+            <button onClick={() => addSpatialOperation("terrain")} disabled={!terrainLayer}>
               Add terrain
             </button>
           </div>
@@ -2441,8 +3541,13 @@ function DerivedPanel({
             </label>
             <label>
               Input layer
-              <select value={primaryLayer?.id ?? ""} onChange={(event) => setPrimaryLayerId(event.target.value)}>
-                {plannedLayers.map((layer) => (
+              <select
+                value={focalLayer?.id ?? ""}
+                disabled={focalCandidateLayers.length === 0}
+                onChange={(event) => setPrimaryLayerId(event.target.value)}
+              >
+                {focalCandidateLayers.length === 0 && <option value="">No valid layer selected</option>}
+                {focalCandidateLayers.map((layer) => (
                   <option key={layer.id} value={layer.id}>{layer.label}</option>
                 ))}
               </select>
@@ -2456,7 +3561,7 @@ function DerivedPanel({
               <input value={focalOutputName} onChange={(event) => setFocalOutputName(event.target.value)} placeholder="auto if blank" />
             </label>
             <small className="field-hint">{focalHelp[focalMethod]}</small>
-            <button onClick={() => addSpatialOperation("focal")} disabled={!primaryLayer}>Add focal</button>
+            <button onClick={() => addSpatialOperation("focal")} disabled={!focalLayer}>Add focal</button>
           </div>
 
           <div className="spatial-method-card">
@@ -2470,8 +3575,13 @@ function DerivedPanel({
             </p>
             <label>
               Distance-to input
-              <select value={distanceLayer?.id ?? ""} onChange={(event) => setDistanceLayerId(event.target.value)}>
-                {plannedLayers.map((layer) => (
+              <select
+                value={distanceLayer?.id ?? ""}
+                disabled={distanceLayers.length === 0}
+                onChange={(event) => setDistanceLayerId(event.target.value)}
+              >
+                {distanceLayers.length === 0 && <option value="">No binary/categorical layer selected</option>}
+                {distanceLayers.map((layer) => (
                   <option key={layer.id} value={layer.id}>{layer.label}</option>
                 ))}
               </select>
@@ -2485,9 +3595,73 @@ function DerivedPanel({
               <input value={distanceOutputName} onChange={(event) => setDistanceOutputName(event.target.value)} placeholder="auto if blank" />
             </label>
             <small className="field-hint">Use a binary mask or select a class value from a categorical raster.</small>
+            {distanceLayers.length === 0 && (
+              <div className="notice info compact-notice">
+                Distance inputs must be binary masks or categorical rasters.
+              </div>
+            )}
             <button onClick={() => addSpatialOperation("distance")} disabled={!distanceLayer}>Add distance-to</button>
           </div>
         </div>
+      </section>
+
+      <section className="panel derived-builder advanced-expression-builder">
+        <div className="builder-head">
+          <span className="builder-step">04</span>
+          <div>
+            <h3>Advanced expression</h3>
+            <p className="builder-copy">
+              Write a custom raster expression using selected inputs as aliases. Use this for
+              formulas that are not covered by the guided recipes.
+            </p>
+          </div>
+          <InfoTip text="Custom map algebra. Use x, y and z as selected inputs. Safe functions include where, sqrt, log, minimum and maximum." />
+        </div>
+        <div className="form-grid">
+          <label className="span-2">
+            Expression
+            <input value={expression} onChange={(event) => setExpression(event.target.value)} />
+            <small className="field-hint">Example: where(x &gt; 0, x / maximum(y, 1), nan). Use x, y and z as the selected aliases below.</small>
+          </label>
+          {(["x", "y", "z"] as const).map((alias) => (
+            <label key={alias}>
+              {alias} input
+              <select
+                value={expressionLayerIds[alias] ?? ""}
+                disabled={availableLayers.length === 0}
+                onChange={(event) =>
+                  setExpressionLayerIds({ ...expressionLayerIds, [alias]: event.target.value })
+                }
+              >
+                <option value="">{alias === "x" ? `Auto: ${primaryLayer?.label ?? "select layer"}` : "Unused"}</option>
+                {availableLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layer.label}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <label>
+            Output name
+            <input value={expressionOutputName} onChange={(event) => setExpressionOutputName(event.target.value)} placeholder="custom_expression" />
+          </label>
+          <label>
+            Unit
+            <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
+          </label>
+          <label>
+            Value semantics
+            <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
+              {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <label className="span-2">
+            Description
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+          </label>
+        </div>
+        <button className="primary" onClick={addExpression} disabled={!primaryLayer}>Add expression feature</button>
       </section>
 
       <section className="panel derived-summary-panel">
@@ -2518,18 +3692,30 @@ function ReviewPanel({
   yamlText,
   validation,
   apiError,
+  saveStatus,
   validate,
   renderFromServer,
   copyYaml,
-  saveYaml
+  saveYamlToRuns,
+  downloadYaml,
+  plannedLayers,
+  derivedFeatures,
+  removePlannedLayer,
+  removeDerivedFeature
 }: {
   yamlText: string;
   validation: ValidationReport | null;
   apiError: string | null;
+  saveStatus: string | null;
   validate: () => void;
   renderFromServer: () => void;
   copyYaml: () => void;
-  saveYaml: () => void;
+  saveYamlToRuns: () => void;
+  downloadYaml: () => void;
+  plannedLayers: PlannedLayer[];
+  derivedFeatures: DerivedFeatureConfig[];
+  removePlannedLayer: (layer: PlannedLayer) => void;
+  removeDerivedFeature: (index: number) => void;
 }) {
   return (
     <main className="workspace review-grid">
@@ -2540,10 +3726,12 @@ function ReviewPanel({
             <button className="primary" onClick={validate}>Validate</button>
             <button onClick={renderFromServer}>Render</button>
             <button onClick={copyYaml}>Copy YAML</button>
-            <button onClick={saveYaml}>Save YAML</button>
+            <button onClick={saveYamlToRuns}>Save YAML</button>
+            <button onClick={downloadYaml}>Download YAML</button>
           </div>
         </div>
         {apiError && <div className="notice error">{apiError}</div>}
+        {saveStatus && <div className="notice success">{saveStatus}</div>}
         {validation && (
           <div className={`notice ${validation.ok ? "success" : "error"}`}>
             {validation.ok ? "Valid config" : "Invalid config"} · {validation.estimated_layers} estimated layers
@@ -2561,6 +3749,36 @@ function ReviewPanel({
             <span>{source.estimated_layers} layers</span>
           </div>
         ))}
+      </section>
+
+      <section className="panel review-layers-panel">
+        <div className="panel-head">
+          <h2>Planned Layers</h2>
+          <span className="field-hint">{plannedLayers.length + derivedFeatures.length} selected outputs</span>
+        </div>
+        <div className="review-layer-list">
+          {plannedLayers.map((layer) => (
+            <div className="review-layer-row" key={layer.id}>
+              <span>
+                <strong>{layer.label}</strong>
+                <small>{layer.sourceTitle}{layer.valueSemantics ? ` · ${layer.valueSemantics}` : ""}</small>
+              </span>
+              <button className="ghost danger" onClick={() => removePlannedLayer(layer)}>Remove</button>
+            </div>
+          ))}
+          {derivedFeatures.map((feature, index) => (
+            <div className="review-layer-row derived-row" key={`${feature.name}-${index}`}>
+              <span>
+                <strong>{feature.name}</strong>
+                <small>{feature.operation}{feature.recipe ? ` · ${feature.recipe}` : ""}{feature.method ? ` · ${feature.method}` : ""}</small>
+              </span>
+              <button className="ghost danger" onClick={() => removeDerivedFeature(index)}>Remove</button>
+            </div>
+          ))}
+          {plannedLayers.length === 0 && derivedFeatures.length === 0 && (
+            <div className="empty-state">No layers selected yet.</div>
+          )}
+        </div>
       </section>
 
       <section className="panel yaml-panel">

@@ -93,6 +93,9 @@ class ProgressReporter:
         )
         self._line_len = 0
         self._download_states: dict[str, DownloadState] = {}
+        self._plain_status_interval_s = 20.0
+        self._last_plain_status_at = 0.0
+        self._last_plain_status_percent = -1.0
 
     @property
     def elapsed(self) -> float:
@@ -167,7 +170,18 @@ class ProgressReporter:
         self._clear_dynamic_line()
         _ORIGINAL_PRINT(text, file=self.stream, flush=True)
 
-    def render_status(self) -> None:
+    def _should_render_plain_status(self, *, force: bool) -> bool:
+        if force:
+            return True
+        now = _now()
+        percent = self._percent()
+        if percent >= 100.0 and self._last_plain_status_percent < 100.0:
+            return True
+        if percent - self._last_plain_status_percent >= 5.0:
+            return True
+        return now - self._last_plain_status_at >= self._plain_status_interval_s
+
+    def render_status(self, *, force: bool = False) -> None:
         text = self._status_text()
         rendered = self._decorate_status(text)
         if self.dynamic:
@@ -176,7 +190,11 @@ class ProgressReporter:
             self.stream.flush()
             self._line_len = len(text)
         else:
+            if not self._should_render_plain_status(force=force):
+                return
             self._write_line(text)
+            self._last_plain_status_at = _now()
+            self._last_plain_status_percent = self._percent()
 
     def start(self) -> None:
         self._write_line("=" * 72)
@@ -188,7 +206,7 @@ class ProgressReporter:
             )
             self._write_line(f"Stage plan: {stages}")
         self._write_line("=" * 72)
-        self.render_status()
+        self.render_status(force=True)
 
     def log(self, message: str, *, level: str = "info") -> None:
         self._write_line(f"[{level}] {message}")
@@ -225,14 +243,14 @@ class ProgressReporter:
             f"[start] task {task_no}/{self.total_tasks} | {stage_text}"
             f"{source_text}{detail_text}"
         )
-        self.render_status()
+        self.render_status(force=True)
 
     def set_stage_task_total(self, total: int, *, label: str = "tasks") -> None:
         self.current_stage_task_total = max(0, int(total))
         self.current_stage_task_done = 0
         self.current_stage_task_label = label
         self.current_stage_task_name = None
-        self.render_status()
+        self.render_status(force=True)
 
     def advance_stage_task(
         self,
@@ -274,7 +292,7 @@ class ProgressReporter:
         self.current_stage_task_name = None
         self.current_stage_task_done = 0
         self.current_stage_task_total = None
-        self.render_status()
+        self.render_status(force=True)
 
     def finish(self) -> None:
         self.completed_tasks = min(self.completed_tasks, self.total_tasks)

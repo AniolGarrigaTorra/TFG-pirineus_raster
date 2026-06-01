@@ -68,6 +68,9 @@ describe("App", () => {
     expect(screen.getByText("Welcome to Pirineus Raster")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
 
+    expect(screen.getByText("Start new project")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Start new project/i }));
+
     expect(screen.getByText("Pirineus Raster Workbench")).toBeTruthy();
 
     await waitFor(() => {

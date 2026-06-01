@@ -114,6 +114,10 @@ export interface SourceGroupCatalog {
   official_url?: string;
   summary?: string;
   long_description?: string;
+  references?: Array<{
+    label: string;
+    url: string;
+  }>;
 }
 
 export interface WorkbenchCatalog {

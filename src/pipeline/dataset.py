@@ -427,6 +427,8 @@ def run_dataset_pipeline(
         reporter.log(f"Dataset dir: {dataset_dir}")
         reporter.log(f"Copy rasters: {copy_rasters}")
 
+        source_contexts: list[dict[str, Any]] = []
+
         for idx, source_entry in enumerate(source_entries, start=1):
             source_config_path = resolve_path(
                 source_entry["config"],
@@ -445,24 +447,39 @@ def run_dataset_pipeline(
                 f"Source {idx}/{len(source_entries)} prepared: {source_id} | stages={stages}"
             )
 
-            stage_results: list[dict[str, Any]] = []
+            source_contexts.append(
+                {
+                    "idx": idx,
+                    "entry": source_entry,
+                    "id": source_id,
+                    "config_path": source_config_path,
+                    "stages": stages,
+                    "stage_results": [],
+                }
+            )
 
-            for stage in stages:
+        for stage in ["download", "clip", "build"]:
+            stage_contexts = [
+                context
+                for context in source_contexts
+                if stage in context["stages"]
+            ]
+            for context in stage_contexts:
                 reporter.start_task(
                     stage=stage,
-                    source_id=str(source_id),
-                    detail=f"{idx}/{len(source_entries)}",
+                    source_id=str(context["id"]),
+                    detail=f"{context['idx']}/{len(source_entries)}",
                 )
 
                 paths = run_source_pipeline(
                     project_config_path=project_config_path,
-                    source_config_path=source_config_path,
+                    source_config_path=context["config_path"],
                     stage=stage,
                     run_cfg=run_cfg,
-                    source_entry=source_entry,
+                    source_entry=context["entry"],
                 )
 
-                stage_results.append(
+                context["stage_results"].append(
                     {
                         "stage": stage,
                         "n_paths": len(paths),
@@ -470,6 +487,12 @@ def run_dataset_pipeline(
                     }
                 )
                 reporter.finish_task(output_count=len(paths))
+
+        for context in source_contexts:
+            source_id = context["id"]
+            stage_results = context["stage_results"]
+            stages = context["stages"]
+            source_config_path = context["config_path"]
 
             source_result = {
                 "id": source_id,
