@@ -13,6 +13,7 @@ _SOURCE_CONNECTORS: dict[str, RasterSourceConnector] = {
     "worldclim": WorldClimConnector(),
     "copernicus": CopernicusConnector(),
     "esa_cci": GenericRasterConnector(provider="esa_cci"),
+    "esa_worldcover": GenericRasterConnector(provider="esa_worldcover"),
     "ghsl": GenericRasterConnector(provider="ghsl"),
     "igme_brgm": IgmeBrgmConnector(),
     "openstreetmap": OpenStreetMapConnector(),

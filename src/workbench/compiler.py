@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from copy import deepcopy
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,16 @@ from src.workbench.temporal import (
 
 class ConfigValidationError(ValueError):
     """Raised when a researcher-facing run config is not valid."""
+
+
+SUPPORTED_POSTPROCESS_METRICS = [
+    "mean",
+    "std",
+    "min",
+    "max",
+    "count_threshold",
+    "valid_observation_count",
+]
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -124,9 +136,11 @@ def _compile_variable_selection(
     variables = cfg.get("variables", {}) or {}
     indices = cfg.get("indices", {}) or {}
 
-    if selected_variables:
+    if "variables" in select_cfg:
         if variables:
-            if _is_yearly_static_collection(cfg):
+            if not selected_variables:
+                _disable_all(variables)
+            elif _is_yearly_static_collection(cfg):
                 _enable_selected(
                     variables,
                     _expanded_variables_for_yearly_groups(cfg, selected_variables),
@@ -210,6 +224,198 @@ def _compile_dimensions(
             )
 
         cfg[key] = selected
+
+
+def _configured_category_values(variable_cfg: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for item in variable_cfg.get("category_classes", []) or []:
+        if not isinstance(item, dict):
+            continue
+        raw_values = item.get("values")
+        if raw_values is None and "value" in item:
+            raw_values = [item["value"]]
+        for value in _as_list(raw_values):
+            values.add(str(value))
+    return values
+
+
+def _category_fraction_values(item: dict[str, Any]) -> list[Any]:
+    values = item.get("class_values")
+    if values is None and "class_value" in item:
+        values = [item["class_value"]]
+    values = _as_list(values)
+    if not values:
+        raise ConfigValidationError(f"Category fraction is missing class_values: {item}")
+    return values
+
+
+def _category_fraction_targets(
+    cfg: dict[str, Any],
+    variable: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    variables = cfg.get("variables", {}) or {}
+    if variable in variables:
+        return [(variable, variables[variable])]
+
+    if not _is_yearly_static_collection(cfg) or variable not in _yearly_group_names(cfg):
+        raise ConfigValidationError(
+            f"Category fraction references unknown variable {variable!r}. "
+            f"Available: {sorted(set(variables) | _yearly_group_names(cfg))}"
+        )
+
+    temporal_cfg = cfg.get("temporal", {}) or {}
+    if temporal_cfg.get("output_mode") == "aggregate":
+        raise ConfigValidationError(
+            "Category fractions for yearly static collections require "
+            "temporal output_mode='supplied_layers'. Build-time aggregation of "
+            "categorical class fractions is not supported directly."
+        )
+
+    selected_years = set(
+        int(year)
+        for year in (temporal_cfg.get("layers", {}) or {}).get("years", []) or []
+    )
+    all_targets = [
+        (name, variable_cfg)
+        for name, variable_cfg in variables.items()
+        if isinstance(variable_cfg, dict)
+        and str(variable_cfg.get("generated_from_group")) == variable
+    ]
+
+    if selected_years:
+        targets = [
+            (name, variable_cfg)
+            for name, variable_cfg in all_targets
+            if _variable_reference_year(variable_cfg) in selected_years
+        ]
+    else:
+        enabled_targets = [
+            (name, variable_cfg)
+            for name, variable_cfg in all_targets
+            if bool(variable_cfg.get("enabled", False))
+        ]
+        targets = enabled_targets or all_targets
+
+    if not targets:
+        raise ConfigValidationError(
+            f"Category fraction references yearly group {variable!r}, but no "
+            "yearly variables match the temporal selection."
+        )
+
+    return sorted(
+        targets,
+        key=lambda item: _variable_reference_year(item[1]) or 0,
+    )
+
+
+def _category_fraction_name(
+    *,
+    item: dict[str, Any],
+    variable: str,
+    target_variable: str,
+    target_cfg: dict[str, Any],
+    class_values: list[Any],
+    target_count: int,
+) -> str:
+    raw_name = item.get("name")
+    year = _variable_reference_year(target_cfg)
+
+    if raw_name:
+        name = str(raw_name)
+        if "{year}" in name and year is not None:
+            return name.format(year=year)
+        if target_count > 1 and year is not None:
+            return f"{name}_{year}"
+        return name
+
+    values_token = _sanitize_token("_".join(map(str, class_values)))
+    if target_count > 1 and year is not None:
+        return f"{variable}_fraction_{values_token}_{year}"
+    return f"{target_variable}_fraction_{values_token}"
+
+
+def _compile_category_fractions(
+    cfg: dict[str, Any],
+    select_cfg: dict[str, Any],
+) -> None:
+    selected = select_cfg.get("category_fractions") or []
+    if not selected:
+        cfg.pop("category_fractions", None)
+        return
+
+    if not isinstance(selected, list):
+        raise ConfigValidationError("select.category_fractions must be a list.")
+
+    variables = cfg.get("variables", {}) or {}
+    compiled: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for item in selected:
+        if not isinstance(item, dict):
+            raise ConfigValidationError("Each category fraction must be a dictionary.")
+
+        variable = str(item.get("variable", ""))
+        targets = _category_fraction_targets(cfg, variable)
+        class_values = _category_fraction_values(item)
+
+        for target_variable, variable_cfg in targets:
+            semantics = str(
+                variable_cfg.get("value_semantics")
+                or variable_cfg.get("data_type")
+                or ""
+            )
+            if semantics not in {"categorical", "binary", "ordinal"}:
+                raise ConfigValidationError(
+                    f"Category fractions require a categorical/binary variable. "
+                    f"{target_variable!r} has semantics {semantics!r}."
+                )
+
+            configured_values = _configured_category_values(variable_cfg)
+            if configured_values:
+                unknown = sorted(set(map(str, class_values)) - configured_values)
+                if unknown:
+                    raise ConfigValidationError(
+                        f"Category fraction {item.get('name', variable)!r} uses "
+                        f"unknown class values for {target_variable}: {unknown}. "
+                        f"Available: {sorted(configured_values)}"
+                    )
+
+            name = _category_fraction_name(
+                item=item,
+                variable=variable,
+                target_variable=target_variable,
+                target_cfg=variable_cfg,
+                class_values=class_values,
+                target_count=len(targets),
+            )
+            if name in seen_names:
+                raise ConfigValidationError(f"Duplicate category fraction name: {name}")
+            seen_names.add(name)
+
+            build_output_enabled = bool(variable_cfg.get("enabled", False))
+            variable_cfg["enabled"] = True
+            variable_cfg.setdefault("build_output_enabled", build_output_enabled)
+
+            compiled.append(
+                {
+                    "name": name,
+                    "variable": target_variable,
+                    "source_variable_group": (
+                        variable
+                        if variable != target_variable
+                        else variable_cfg.get("generated_from_group")
+                    ),
+                    "class_values": class_values,
+                    "label": item.get("label") or name,
+                    "unit": "fraction",
+                    "valid_range": [0, 1],
+                    "data_type": "percentage",
+                    "value_semantics": "fraction",
+                    "resampling": item.get("resampling", "average"),
+                }
+            )
+
+    cfg["category_fractions"] = compiled
 
 
 def _aggregation_variable_names(cfg: dict[str, Any]) -> set[str]:
@@ -388,6 +594,372 @@ def _compile_aggregation_selection(
     cfg["temporal_aggregations"] = selected
 
 
+def _postprocess_presets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    temporal_cfg = cfg.get("temporal_postprocess", {}) or {}
+    presets = temporal_cfg.get("aggregation_presets", []) or []
+    result: dict[str, dict[str, Any]] = {}
+
+    if isinstance(presets, dict):
+        for name, item in presets.items():
+            if isinstance(item, dict):
+                result[str(name)] = {"name": str(name), **deepcopy(item)}
+        return result
+
+    if isinstance(presets, list):
+        for item in presets:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            result[str(item["name"])] = deepcopy(item)
+        return result
+
+    raise ConfigValidationError("temporal_postprocess.aggregation_presets must be a list or dictionary.")
+
+
+def _month_list_from_selection(value: Any) -> list[int]:
+    months = [int(item) for item in _as_list(value)]
+    if not months:
+        raise ConfigValidationError("Postprocess aggregation months cannot be empty.")
+
+    invalid = [month for month in months if month < 1 or month > 12]
+    if invalid:
+        raise ConfigValidationError(f"Invalid postprocess aggregation months: {invalid}")
+
+    if len(months) == 2:
+        start, end = months
+        if start <= end:
+            return list(range(start, end + 1))
+        return list(range(start, 13)) + list(range(1, end + 1))
+
+    seen: set[int] = set()
+    result: list[int] = []
+    for month in months:
+        if month not in seen:
+            result.append(month)
+            seen.add(month)
+    return result
+
+
+def _postprocess_years(
+    aggregation: dict[str, Any],
+    temporal_cfg: dict[str, Any],
+) -> list[int] | None:
+    raw_years = aggregation.get("years")
+    if raw_years is None:
+        raw_years = temporal_cfg.get("default_years") or temporal_cfg.get("available_years")
+    if raw_years is None:
+        return None
+
+    start, end = _validate_range_pair(
+        raw_years,
+        name=f"Postprocess aggregation {aggregation['name']!r} years",
+    )
+    available = temporal_cfg.get("available_years")
+    if available is not None:
+        available_start, available_end = _validate_range_pair(
+            available,
+            name="temporal_postprocess.available_years",
+        )
+        if start < available_start or end > available_end:
+            raise ConfigValidationError(
+                f"Postprocess aggregation {aggregation['name']!r} years "
+                f"{[start, end]} are outside available source years "
+                f"{[available_start, available_end]}."
+            )
+    return list(range(start, end + 1))
+
+
+def _parse_iso_date(value: Any, *, name: str) -> date | None:
+    if value in [None, ""]:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ConfigValidationError(f"{name} must be YYYY-MM-DD: {value!r}") from exc
+
+
+def _months_between_dates(start: date, end: date) -> list[int]:
+    months: list[int] = []
+    cursor_year = start.year
+    cursor_month = start.month
+
+    while (cursor_year, cursor_month) <= (end.year, end.month):
+        months.append(cursor_month)
+        cursor_month += 1
+        if cursor_month > 12:
+            cursor_month = 1
+            cursor_year += 1
+
+    seen: set[int] = set()
+    result: list[int] = []
+    for month in months:
+        if month not in seen:
+            result.append(month)
+            seen.add(month)
+    return result
+
+
+def _postprocess_metric_defaults(method: str) -> dict[str, Any]:
+    if method in {"mean", "std", "min", "max"}:
+        return {
+            "unit": "percent",
+            "valid_range": [0, 100],
+            "data_type": "percentage",
+            "value_semantics": "percentage",
+        }
+
+    if method == "count_threshold":
+        return {
+            "unit": "days",
+            "valid_range": [0, 366],
+            "data_type": "continuous",
+            "value_semantics": "count",
+        }
+
+    if method == "valid_observation_count":
+        return {
+            "unit": "observations",
+            "valid_range": [0, 366],
+            "data_type": "continuous",
+            "value_semantics": "count",
+        }
+
+    return {}
+
+
+def _normalise_postprocess_aggregation(
+    aggregation: dict[str, Any],
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    if "name" not in aggregation:
+        raise ConfigValidationError(f"Postprocess aggregation is missing name: {aggregation}")
+
+    temporal_cfg = cfg.get("temporal_postprocess", {}) or {}
+    supported = temporal_cfg.get("supported_methods") or SUPPORTED_POSTPROCESS_METRICS
+
+    name = str(aggregation["name"]).strip()
+    if not name:
+        raise ConfigValidationError("Postprocess aggregation name cannot be empty.")
+
+    method = str(aggregation.get("method") or aggregation.get("metric") or "mean")
+    if method not in supported:
+        raise ConfigValidationError(
+            f"Unsupported postprocess metric {method!r}. Supported: {supported}"
+        )
+
+    exact_start = _parse_iso_date(
+        aggregation.get("start_date"),
+        name=f"Postprocess aggregation {name!r} start_date",
+    )
+    exact_end = _parse_iso_date(
+        aggregation.get("end_date"),
+        name=f"Postprocess aggregation {name!r} end_date",
+    )
+    if exact_start and exact_end and exact_start > exact_end:
+        raise ConfigValidationError(
+            f"Postprocess aggregation {name!r} start_date must be <= end_date."
+        )
+
+    if exact_start and exact_end:
+        available = temporal_cfg.get("available_years")
+        if available is not None:
+            available_start, available_end = _validate_range_pair(
+                available,
+                name="temporal_postprocess.available_years",
+            )
+            min_date = date(available_start, 1, 1)
+            max_date = date(available_end, 12, 31)
+            if exact_start < min_date or exact_end > max_date:
+                raise ConfigValidationError(
+                    f"Postprocess aggregation {name!r} exact date range "
+                    f"{exact_start.isoformat()} to {exact_end.isoformat()} "
+                    f"is outside available source years "
+                    f"{available_start}-{available_end}."
+                )
+        months = _months_between_dates(exact_start, exact_end)
+        years = list(range(exact_start.year, exact_end.year + 1))
+    else:
+        months = _month_list_from_selection(
+            aggregation.get("months") or temporal_cfg.get("default_months", [1, 12])
+        )
+        years = _postprocess_years({"name": name, **aggregation}, temporal_cfg)
+    base = {
+        "filename": f"{name}.tif",
+        "method": method,
+        "months": months,
+        "description": aggregation.get("description") or f"{method} temporal postprocess aggregation.",
+        "native_resolution_m": aggregation.get(
+            "native_resolution_m",
+            cfg.get("dataset", {}).get("native_resolution_m"),
+        ),
+        "temporal": {
+            "type": "download_postprocess_aggregation",
+            "months": months,
+            "years": [min(years), max(years)] if years else None,
+        },
+        "required": bool(aggregation.get("required", False)),
+    }
+    base.update(_postprocess_metric_defaults(method))
+
+    for key in [
+        "unit",
+        "valid_range",
+        "data_type",
+        "value_semantics",
+        "scale_factor",
+        "round_values",
+    ]:
+        if key in aggregation:
+            base[key] = aggregation[key]
+
+    if method == "count_threshold":
+        base["threshold"] = float(aggregation.get("threshold", 50))
+        base["comparison"] = str(aggregation.get("comparison", ">="))
+
+    if years:
+        base["years"] = [min(years), max(years)]
+    if exact_start:
+        base["start_date"] = exact_start.isoformat()
+        base["temporal"]["start_date"] = exact_start.isoformat()
+    if exact_end:
+        base["end_date"] = exact_end.isoformat()
+        base["temporal"]["end_date"] = exact_end.isoformat()
+
+    return base
+
+
+def _selected_postprocess_date_bounds(
+    output_variables: dict[str, dict[str, Any]],
+) -> tuple[date, date] | None:
+    dates: list[date] = []
+
+    for variable_cfg in output_variables.values():
+        exact_start = _parse_iso_date(
+            variable_cfg.get("start_date"),
+            name=f"Postprocess output {variable_cfg.get('filename', '')} start_date",
+        )
+        exact_end = _parse_iso_date(
+            variable_cfg.get("end_date"),
+            name=f"Postprocess output {variable_cfg.get('filename', '')} end_date",
+        )
+        if exact_start and exact_end:
+            dates.extend([exact_start, exact_end])
+            continue
+
+        years_value = variable_cfg.get("years")
+        if not years_value:
+            continue
+
+        years = range(int(years_value[0]), int(years_value[1]) + 1)
+        months = _month_list_from_selection(variable_cfg.get("months", [1, 12]))
+
+        for year in years:
+            for month in months:
+                dates.append(date(year, month, 1))
+                dates.append(date(year, month, monthrange(year, month)[1]))
+
+    if not dates:
+        return None
+
+    return min(dates), max(dates)
+
+
+def _iso_start(value: date) -> str:
+    return f"{value.isoformat()}T00:00:00.000Z"
+
+
+def _iso_end(value: date) -> str:
+    return f"{value.isoformat()}T23:59:59.999Z"
+
+
+def _apply_postprocess_download_bounds(
+    cfg: dict[str, Any],
+    output_variables: dict[str, dict[str, Any]],
+) -> None:
+    bounds = _selected_postprocess_date_bounds(output_variables)
+    if bounds is None:
+        return
+
+    start, end = bounds
+    temporal_cfg = cfg.setdefault("temporal_postprocess", {})
+    temporal_cfg["start_date"] = start.isoformat()
+    temporal_cfg["end_date"] = end.isoformat()
+
+    day_count = max(1, (end - start).days + 1)
+    per_day_estimate = int(temporal_cfg.get("hda_max_results_per_day_estimate", 0) or 0)
+    estimated_max_results = day_count * per_day_estimate if per_day_estimate > 0 else None
+
+    files_cfg = cfg.setdefault("download", {}).setdefault("files", {})
+    for file_cfg in files_cfg.values():
+        if not isinstance(file_cfg, dict):
+            continue
+        query = file_cfg.get("hda_query")
+        if isinstance(query, dict):
+            query["startdate"] = _iso_start(start)
+            query["enddate"] = _iso_end(end)
+        if estimated_max_results is not None:
+            file_cfg["max_results"] = max(
+                int(file_cfg.get("max_results", 0) or 0),
+                estimated_max_results,
+            )
+
+
+def _compile_postprocess_aggregation_selection(
+    cfg: dict[str, Any],
+    temporal_select: dict[str, Any],
+) -> None:
+    temporal_cfg = cfg.setdefault("temporal_postprocess", {})
+    aggregation_select = temporal_select.get("aggregations")
+
+    if aggregation_select is None:
+        existing = temporal_cfg.get("output_variables", {}) or {}
+        if existing:
+            return
+        raise ConfigValidationError(
+            "Temporal output_mode='postprocess_aggregate' requires at least one "
+            "postprocess aggregation."
+        )
+
+    if isinstance(aggregation_select, list):
+        use = [str(item) for item in aggregation_select]
+        custom: list[dict[str, Any]] = []
+    elif isinstance(aggregation_select, dict):
+        use = [str(item) for item in _as_list(aggregation_select.get("use"))]
+        custom = list(aggregation_select.get("custom", []) or [])
+    else:
+        raise ConfigValidationError("select.temporal.aggregations must be a list or dictionary.")
+
+    presets = _postprocess_presets(cfg)
+    unknown = sorted(set(use) - set(presets))
+    if unknown:
+        raise ConfigValidationError(
+            f"Unknown postprocess aggregation presets: {unknown}. Available: {sorted(presets)}"
+        )
+
+    selected = [deepcopy(presets[name]) for name in use]
+    selected.extend(deepcopy(custom))
+    if not selected:
+        raise ConfigValidationError(
+            "Temporal output_mode='postprocess_aggregate' requires at least one "
+            "selected preset or custom aggregation."
+        )
+
+    output_variables: dict[str, dict[str, Any]] = {}
+    for aggregation in selected:
+        if not isinstance(aggregation, dict):
+            raise ConfigValidationError("Each postprocess aggregation must be a dictionary.")
+        name = str(aggregation.get("name", "")).strip()
+        if name in output_variables:
+            raise ConfigValidationError(f"Duplicate postprocess aggregation name: {name}")
+        output_variables[name] = _normalise_postprocess_aggregation(aggregation, cfg)
+
+    temporal_cfg["output_variables"] = output_variables
+    _apply_postprocess_download_bounds(cfg, output_variables)
+
+    for variable_cfg in (cfg.get("variables", {}) or {}).values():
+        if isinstance(variable_cfg, dict):
+            variable_cfg["enabled"] = False
+
+
 def _compile_aggregations(
     cfg: dict[str, Any],
     select_cfg: dict[str, Any],
@@ -438,6 +1010,8 @@ def _variable_reference_year(variable_cfg: dict[str, Any]) -> int | None:
 def _enable_static_year_variables(
     cfg: dict[str, Any],
     selected_years: list[int] | None,
+    *,
+    require_match: bool = True,
 ) -> None:
     if selected_years is None:
         return
@@ -458,7 +1032,7 @@ def _enable_static_year_variables(
     if not selected:
         return
 
-    if not matched:
+    if require_match and not matched:
         raise ConfigValidationError(
             f"No enabled variables match selected temporal years: {sorted(selected)}"
         )
@@ -602,6 +1176,7 @@ def _compile_temporal_selection(
                 [int(item) for item in temporal_layers["years"]]
                 if "years" in temporal_layers
                 else None,
+                require_match=not bool(select_cfg.get("category_fractions")),
             )
         return
 
@@ -610,6 +1185,7 @@ def _compile_temporal_selection(
             raise ConfigValidationError(
                 "Raw timestep export is not implemented for this temporal product yet."
             )
+        _compile_postprocess_aggregation_selection(cfg, temporal_select)
         return
 
     raise ConfigValidationError(f"Unsupported temporal output_mode: {output_mode}")
@@ -634,11 +1210,20 @@ def _compile_resampling_overrides(
     by_variable = overrides.get("by_variable") or overrides.get("variables") or {}
     if by_variable:
         target = resampling.setdefault("by_variable", {})
+        fractions = cfg.get("category_fractions", []) or []
+        fractions_by_name = {
+            str(item.get("name")): item
+            for item in fractions
+            if isinstance(item, dict) and item.get("name")
+        }
         for variable, method in by_variable.items():
             if method not in SUPPORTED_RESAMPLING:
                 raise ConfigValidationError(
                     f"Unsupported resampling method for {variable}: {method}"
                 )
+            if str(variable) in fractions_by_name:
+                fractions_by_name[str(variable)]["resampling"] = method
+                continue
             variable_names = (
                 _expanded_variables_for_yearly_groups(cfg, [str(variable)])
                 if _is_yearly_static_collection(cfg)
@@ -737,6 +1322,7 @@ def compile_source_config_for_run(
         _compile_layer_selection(cfg, select_cfg)
         _compile_dimensions(cfg, select_cfg)
         _compile_temporal_selection(cfg, select_cfg)
+        _compile_category_fractions(cfg, select_cfg)
         if "temporal" not in select_cfg:
             _compile_aggregations(cfg, select_cfg)
 
@@ -1127,6 +1713,18 @@ def _enabled_keys(collection: dict[str, Any]) -> list[str]:
     ]
 
 
+def _enabled_output_keys(collection: dict[str, Any]) -> list[str]:
+    return [
+        key
+        for key, value in collection.items()
+        if (
+            isinstance(value, dict)
+            and bool(value.get("enabled", False))
+            and bool(value.get("build_output_enabled", True))
+        )
+    ]
+
+
 def _range_count(value: Any, default: int = 1) -> int:
     if not value:
         return default
@@ -1183,10 +1781,11 @@ def _source_summary(
     source_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     source = source_cfg.get("source", {}) or {}
-    variables = _enabled_keys(source_cfg.get("variables", {}) or {})
+    variables = _enabled_output_keys(source_cfg.get("variables", {}) or {})
     indices = _enabled_keys(source_cfg.get("indices", {}) or {})
+    category_fractions = source_cfg.get("category_fractions", []) or []
 
-    layer_count = len(variables) + len(indices)
+    layer_count = len(variables) + len(indices) + len(category_fractions)
 
     dimensions = {
         key: source_cfg.get(key, [])
@@ -1267,6 +1866,7 @@ def _source_summary(
         "dimensions": dimensions,
         "temporal_output_mode": output_mode,
         "aggregations": [item.get("name") for item in aggregations],
+        "category_fractions": [item.get("name") for item in category_fractions],
         "vector_layers": vector_layers,
         "estimated_layers": layer_count,
     }

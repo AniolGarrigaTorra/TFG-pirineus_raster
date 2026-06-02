@@ -74,6 +74,148 @@ variables:
     value_semantics: categorical
     native_resolution_m: 100
     round_values: true
+    category_classes:
+      - value: 111
+        name: continuous_urban_fabric
+        label: "Continuous urban fabric"
+      - value: 112
+        name: discontinuous_urban_fabric
+        label: "Discontinuous urban fabric"
+      - value: 121
+        name: industrial_or_commercial_units
+        label: "Industrial or commercial units"
+      - value: 122
+        name: road_and_rail_networks
+        label: "Road and rail networks and associated land"
+      - value: 123
+        name: port_areas
+        label: "Port areas"
+      - value: 124
+        name: airports
+        label: "Airports"
+      - value: 131
+        name: mineral_extraction_sites
+        label: "Mineral extraction sites"
+      - value: 132
+        name: dump_sites
+        label: "Dump sites"
+      - value: 133
+        name: construction_sites
+        label: "Construction sites"
+      - value: 141
+        name: green_urban_areas
+        label: "Green urban areas"
+      - value: 142
+        name: sport_and_leisure_facilities
+        label: "Sport and leisure facilities"
+      - value: 211
+        name: non_irrigated_arable_land
+        label: "Non-irrigated arable land"
+      - value: 212
+        name: permanently_irrigated_land
+        label: "Permanently irrigated land"
+      - value: 213
+        name: rice_fields
+        label: "Rice fields"
+      - value: 221
+        name: vineyards
+        label: "Vineyards"
+      - value: 222
+        name: fruit_trees_and_berry_plantations
+        label: "Fruit trees and berry plantations"
+      - value: 223
+        name: olive_groves
+        label: "Olive groves"
+      - value: 231
+        name: pastures
+        label: "Pastures"
+      - value: 241
+        name: annual_crops_with_permanent_crops
+        label: "Annual crops associated with permanent crops"
+      - value: 242
+        name: complex_cultivation_patterns
+        label: "Complex cultivation patterns"
+      - value: 243
+        name: agriculture_with_natural_vegetation
+        label: "Land principally occupied by agriculture with natural vegetation"
+      - value: 244
+        name: agro_forestry_areas
+        label: "Agro-forestry areas"
+      - value: 311
+        name: broadleaved_forest
+        label: "Broad-leaved forest"
+      - value: 312
+        name: coniferous_forest
+        label: "Coniferous forest"
+      - value: 313
+        name: mixed_forest
+        label: "Mixed forest"
+      - values: [311, 312, 313]
+        name: forest_total
+        label: "Forest classes"
+      - value: 321
+        name: natural_grasslands
+        label: "Natural grasslands"
+      - value: 322
+        name: moors_and_heathland
+        label: "Moors and heathland"
+      - value: 323
+        name: sclerophyllous_vegetation
+        label: "Sclerophyllous vegetation"
+      - value: 324
+        name: transitional_woodland_shrub
+        label: "Transitional woodland-shrub"
+      - values: [322, 323, 324]
+        name: shrubland_and_transitional_vegetation
+        label: "Shrubland and transitional vegetation"
+      - value: 331
+        name: beaches_dunes_sands
+        label: "Beaches, dunes and sands"
+      - value: 332
+        name: bare_rocks
+        label: "Bare rocks"
+      - value: 333
+        name: sparsely_vegetated_areas
+        label: "Sparsely vegetated areas"
+      - values: [332, 333]
+        name: rocky_and_sparsely_vegetated_areas
+        label: "Rocky and sparsely vegetated areas"
+      - value: 334
+        name: burnt_areas
+        label: "Burnt areas"
+      - value: 335
+        name: glaciers_and_perpetual_snow
+        label: "Glaciers and perpetual snow"
+      - value: 411
+        name: inland_marshes
+        label: "Inland marshes"
+      - value: 412
+        name: peat_bogs
+        label: "Peat bogs"
+      - value: 421
+        name: salt_marshes
+        label: "Salt marshes"
+      - value: 422
+        name: salines
+        label: "Salines"
+      - value: 423
+        name: intertidal_flats
+        label: "Intertidal flats"
+      - value: 511
+        name: water_courses
+        label: "Water courses"
+      - value: 512
+        name: water_bodies
+        label: "Water bodies"
+      - value: 521
+        name: coastal_lagoons
+        label: "Coastal lagoons"
+      - value: 522
+        name: estuaries
+        label: "Estuaries"
+      - value: 523
+        name: sea_and_ocean
+        label: "Sea and ocean"
     temporal:
       type: static
       reference_year: 2018

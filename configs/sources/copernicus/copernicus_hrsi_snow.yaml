@@ -5,14 +5,14 @@ source:
   product_group: snow
   version: "2022"
   title: "Copernicus HRSI Fractional Snow Cover"
-  description: "Copernicus High Resolution Snow and Ice Fractional Snow Cover temporal aggregations"
-  summary: "Daily 20 m Fractional Snow Cover observations for Europe, configured for seasonal and yearly snow metrics."
+  description: "Copernicus High Resolution Snow and Ice Fractional Snow Cover daily observations"
+  summary: "Daily 20 m Fractional Snow Cover observations for Europe, aggregated during download according to the run config."
   long_description: >-
     The Copernicus High Resolution Snow and Ice Fractional Snow Cover product
     is derived from Sentinel-2 observations and represents snow fraction at
     high spatial resolution. Pirineus Raster uses it as a temporal source whose
-    daily observations can be post-processed into seasonal or annual snow-cover
-    metrics.
+    daily observations can be post-processed into user-selected snow-cover
+    metrics during the download stage.
   page_url: "https://land.copernicus.eu/en/products/snow/fractional-snow-cover"
   source_crs: EPSG:3035
   source_period: "2022"
@@ -68,18 +68,30 @@ processing:
 
 resampling:
   default: average
-  by_variable:
-    snow_fraction_mean_winter: average
-    snow_fraction_mean_spring: average
-    snow_fraction_mean_annual: average
-    snow_cover_days_winter: average
-    snow_cover_days_spring: average
-    snow_valid_observations_annual: average
+
+variables:
+  snow_fraction:
+    enabled: true
+    description: "Daily fractional snow cover on ground."
+    unit: percent
+    scale_factor: 1.0
+    valid_range: [0, 100]
+    data_type: percentage
+    value_semantics: percentage
+    native_resolution_m: 20
+    temporal:
+      type: daily_observation_series
+      temporal_axis: date
 
 temporal_postprocess:
   zip_member_pattern: ".*FSCOG.*\\.tif$"
   date_regex: "(\\d{8})"
   date_format: "%Y%m%d"
+  available_years: [2022, 2022]
+  default_years: [2022, 2022]
+  default_months: [1, 3]
+  supported_methods: [mean, std, min, max, count_threshold, valid_observation_count]
+  hda_max_results_per_day_estimate: 8
 
   target_crs: EPSG:3035
   target_resolution_m: 20
@@ -114,86 +126,76 @@ temporal_postprocess:
     value_semantics: percentage
     native_resolution_m: 20
 
-  output_variable_groups:
-    snow_fraction_means:
-      template:
-        name: "snow_fraction_mean_{season}"
-        filename: "snow_fraction_mean_{season}.tif"
-        method: mean
-        months: "{months}"
-        description: "Mean fractional snow cover on ground during {season_label}"
-        unit: percent
-        valid_range: [0, 100]
-        data_type: percentage
-        value_semantics: percentage
-        native_resolution_m: 20
-        temporal:
-          type: seasonal_aggregation
-          season: "{season}"
-          months: "{months}"
-          reference_year: 2022
-      foreach:
-        - season: winter
-          season_label: "winter period December-March"
-          months: [12, 1, 2, 3]
+  aggregation_presets:
+    - name: snow_fraction_mean_winter
+      method: mean
+      months: [12, 1, 2, 3]
+      years: [2022, 2022]
+      description: "Mean fractional snow cover on ground during winter period December-March."
+      unit: percent
+      valid_range: [0, 100]
+      data_type: percentage
+      value_semantics: percentage
+      native_resolution_m: 20
 
-        - season: spring
-          season_label: "spring period April-June"
-          months: [4, 5, 6]
+    - name: snow_fraction_mean_spring
+      method: mean
+      months: [4, 5, 6]
+      years: [2022, 2022]
+      description: "Mean fractional snow cover on ground during spring period April-June."
+      unit: percent
+      valid_range: [0, 100]
+      data_type: percentage
+      value_semantics: percentage
+      native_resolution_m: 20
 
-        - season: annual
-          season_label: "the full year"
-          months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    - name: snow_fraction_mean_annual
+      method: mean
+      months: [1, 12]
+      years: [2022, 2022]
+      description: "Mean fractional snow cover on ground during the selected year."
+      unit: percent
+      valid_range: [0, 100]
+      data_type: percentage
+      value_semantics: percentage
+      native_resolution_m: 20
 
-    snow_cover_days:
-      template:
-        name: "snow_cover_days_{season}"
-        filename: "snow_cover_days_{season}.tif"
-        method: count_threshold
-        threshold: 50
-        comparison: ">="
-        months: "{months}"
-        description: "Number of valid observation days with fractional snow cover >= 50% during {season_label}"
-        unit: days
-        valid_range: [0, 250]
-        data_type: continuous
-        value_semantics: count
-        native_resolution_m: 20
-        temporal:
-          type: seasonal_aggregation
-          season: "{season}"
-          months: "{months}"
-          reference_year: 2022
-      foreach:
-        - season: winter
-          season_label: "winter period December-March"
-          months: [12, 1, 2, 3]
+    - name: snow_cover_days_winter
+      method: count_threshold
+      threshold: 50
+      comparison: ">="
+      months: [12, 1, 2, 3]
+      years: [2022, 2022]
+      description: "Number of valid observation days with fractional snow cover >= 50% during winter period December-March."
+      unit: days
+      valid_range: [0, 250]
+      data_type: continuous
+      value_semantics: count
+      native_resolution_m: 20
 
-        - season: spring
-          season_label: "spring period April-June"
-          months: [4, 5, 6]
+    - name: snow_cover_days_spring
+      method: count_threshold
+      threshold: 50
+      comparison: ">="
+      months: [4, 5, 6]
+      years: [2022, 2022]
+      description: "Number of valid observation days with fractional snow cover >= 50% during spring period April-June."
+      unit: days
+      valid_range: [0, 250]
+      data_type: continuous
+      value_semantics: count
+      native_resolution_m: 20
 
-    snow_valid_observations:
-      template:
-        name: "snow_valid_observations_{season}"
-        filename: "snow_valid_observations_{season}.tif"
-        method: valid_observation_count
-        months: "{months}"
-        description: "Number of valid fractional snow cover observations during {season_label}"
-        unit: observations
-        valid_range: [0, 365]
-        data_type: continuous
-        value_semantics: count
-        native_resolution_m: 20
-        temporal:
-          type: seasonal_aggregation
-          season: "{season}"
-          months: "{months}"
-          reference_year: 2022
-      foreach:
-        - season: annual
-          season_label: "the full year"
-          months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    - name: snow_valid_observations_annual
+      method: valid_observation_count
+      months: [1, 12]
+      years: [2022, 2022]
+      description: "Number of valid fractional snow cover observations during the selected year."
+      unit: observations
+      valid_range: [0, 365]
+      data_type: continuous
+      value_semantics: count
+      native_resolution_m: 20
 
 output:
   write_geotiff: true

@@ -188,6 +188,26 @@ SOURCE_GROUPS: dict[str, dict[str, Any]] = {
             {"label": "ESA CCI portal", "url": "https://climate.esa.int/"},
         ],
     },
+    "esa_worldcover": {
+        "id": "esa_worldcover",
+        "title": "ESA WorldCover",
+        "official_url": "https://esa-worldcover.org/",
+        "summary": (
+            "Global 10 m land-cover maps derived from Sentinel-1 and "
+            "Sentinel-2 observations."
+        ),
+        "long_description": (
+            "ESA WorldCover provides global land-cover classification at 10 m "
+            "resolution. Pirineus Raster ingests the official 3 x 3 degree "
+            "tiles overlapping the Pyrenees, mosaics them and exposes both the "
+            "native categorical layer and optional class-fraction variables "
+            "for safer aggregation to coarser grids."
+        ),
+        "references": [
+            {"label": "ESA WorldCover portal", "url": "https://esa-worldcover.org/"},
+            {"label": "ESA WorldCover data access", "url": "https://esa-worldcover.org/en/data-access"},
+        ],
+    },
 }
 
 
@@ -305,6 +325,7 @@ def _variable_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 "data_type": cfg.get("data_type"),
                 "value_semantics": cfg.get("value_semantics"),
                 "native_resolution_m": cfg.get("native_resolution_m"),
+                "category_classes": cfg.get("category_classes"),
                 "index": cfg.get("index"),
                 "resampling": get_variable_resampling_method_name(source_cfg, name),
                 "temporal": cfg.get("temporal"),
@@ -333,51 +354,67 @@ def _yearly_group_items(
     if source_cfg.get("dataset", {}).get("layer_structure") != "yearly_static_collection":
         return []
 
-    groups = source_cfg.get("variable_groups", {}) or {}
-    if not groups:
+    expanded_variables = expanded_cfg.get("variables", {}) or {}
+    group_names = sorted(
+        {
+            str(cfg.get("generated_from_group"))
+            for cfg in expanded_variables.values()
+            if isinstance(cfg, dict) and cfg.get("generated_from_group")
+        }
+    )
+    if not group_names:
         return []
 
-    years = (infer_temporal_capability(expanded_cfg).get("temporal_layers") or {}).get(
-        "years",
-        [],
-    )
     items: list[dict[str, Any]] = []
 
-    for group_name, group_cfg in groups.items():
-        if not isinstance(group_cfg, dict):
+    for group_name in group_names:
+        group_variables = [
+            (name, cfg)
+            for name, cfg in expanded_variables.items()
+            if isinstance(cfg, dict)
+            and str(cfg.get("generated_from_group")) == group_name
+        ]
+        if not group_variables:
             continue
-        template = group_cfg.get("template", {}) or {}
-        if not isinstance(template, dict):
-            continue
+        group_variables.sort(
+            key=lambda item: int(
+                (item[1].get("temporal", {}) or {}).get("reference_year", 0)
+            )
+        )
+        first_name, first_cfg = group_variables[0]
+        years = [
+            int((cfg.get("temporal", {}) or {}).get("reference_year"))
+            for _, cfg in group_variables
+            if (cfg.get("temporal", {}) or {}).get("reference_year") is not None
+        ]
+        template_pattern = (
+            first_cfg.get("source_variable_pattern")
+            or first_cfg.get("source_filename")
+            or first_name
+        )
 
         item = {
             "name": group_name,
             "kind": "variable",
-            "enabled_default": bool(template.get("enabled", True)),
-            "description": _strip_year_template(template.get("description"))
+            "enabled_default": any(bool(cfg.get("enabled", True)) for _, cfg in group_variables),
+            "description": _strip_year_template(first_cfg.get("description"))
             or VARIABLE_DESCRIPTION_FALLBACKS.get(group_name),
-            "unit": template.get("unit"),
-            "scale_factor": template.get("scale_factor", 1.0),
-            "valid_range": template.get("valid_range"),
-            "data_type": template.get("data_type"),
-            "value_semantics": template.get("value_semantics"),
-            "native_resolution_m": template.get("native_resolution_m")
+            "unit": first_cfg.get("unit"),
+            "scale_factor": first_cfg.get("scale_factor", 1.0),
+            "valid_range": first_cfg.get("valid_range"),
+            "data_type": first_cfg.get("data_type"),
+            "value_semantics": first_cfg.get("value_semantics"),
+            "native_resolution_m": first_cfg.get("native_resolution_m")
             or source_cfg.get("dataset", {}).get("native_resolution_m"),
+            "category_classes": first_cfg.get("category_classes"),
             "resampling": get_variable_resampling_method_name(
                 expanded_cfg,
-                next(
-                    (
-                        name
-                        for name, cfg in (expanded_cfg.get("variables", {}) or {}).items()
-                        if cfg.get("generated_from_group") == group_name
-                    ),
-                    group_name,
-                ),
+                first_name,
             ),
             "temporal": {
                 "type": "yearly_static_collection",
                 "years": years,
-                "variable_pattern": template.get("name"),
+                "variable_pattern": template_pattern,
             },
             "generated_from": f"variable_groups.{group_name}",
         }

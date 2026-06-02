@@ -115,6 +115,13 @@ variables:
     value_semantics: categorical
     native_resolution_m: 10
     round_values: true
+    category_classes:
+      - value: 1
+        name: broadleaved_forest
+        label: "Broadleaved forest"
+      - value: 2
+        name: coniferous_forest
+        label: "Coniferous forest"
     temporal:
       type: static
       reference_year: 2021

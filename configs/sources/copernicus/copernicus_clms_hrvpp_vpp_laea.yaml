@@ -1,0 +1,208 @@
+source:
+  id: copernicus_clms_hrvpp_vpp_laea
+  provider: copernicus
+  product: clms_hrvpp_vpp_laea
+  product_group: vegetation
+  version: "v01"
+  title: "Copernicus HR-VPP Phenology and Productivity"
+  description: "High Resolution Vegetation Phenology and Productivity seasonal metrics."
+  summary: "Annual Sentinel-2 based vegetation phenology and productivity parameters at 10 m and 100 m."
+  long_description: >-
+    The Copernicus High Resolution Vegetation Phenology and Productivity
+    product provides annual seasonal metrics derived from Sentinel-2 vegetation
+    trajectories. Pirineus Raster exposes each metric and season as a yearly
+    static collection so the user can select individual years or compute
+    build-time temporal aggregations across years.
+  page_url: "https://land.copernicus.eu/en/products/vegetation"
+  documentation_url: "https://land.copernicus.eu/en/products/vegetation"
+  source_crs: EPSG:3035
+  source_period: "2017-2024"
+  citation: "Copernicus Land Monitoring Service. High Resolution Vegetation Phenology and Productivity."
+
+dataset:
+  layer_structure: yearly_static_collection
+  temporal_axis: year
+  file_format: geotiff
+  native_resolution_m: 10
+  data_type: continuous
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+
+download:
+  enabled: true
+  mode: wekeo_hda
+  overwrite_existing: false
+  hda:
+    max_workers: 2
+    max_results: 500
+    temporary_dir: data_raw/copernicus/_hda_downloads
+    move_downloaded_to_raw: false
+    mosaic_compression: LZW
+    sleep_after_download_seconds: 2
+
+processing:
+  source_resolution: 10m
+  source_resolutions: [10m, 100m]
+  source_resolution_tokens:
+    10m: "10"
+    100m: "100"
+  source_crs_by_resolution:
+    10m: EPSG:3035
+    100m: EPSG:3035
+  native_resolution_m_by_resolution:
+    10m: 10
+    100m: 100
+  native_resolution_by_resolution:
+    10m: 10m
+    100m: 100m
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: average
+
+variable_groups:
+  phenology_productivity:
+    overwrite_existing: true
+    template:
+      name: "{season}_{metric_name}_{year}"
+      generated_from_group: "{season}_{metric_name}"
+      enabled: true
+      description: "{metric_label}, {season_label}, {year}"
+      unit: "{unit}"
+      scale_factor: 1.0
+      valid_range: "{valid_range}"
+      data_type: continuous
+      value_semantics: intensive
+      native_resolution_m: "{native_resolution_m}"
+      source_variable_pattern: "{season}_{metric_name}_{year}"
+      source_filename: "hrvpp_vpp_laea_{season}_{metric_name}_{year}_{source_resolution}.tif"
+      file_pattern: "*_{season}_{product_type}.tif"
+      zip_member_pattern: ".*_{season}_{product_type}\\.tif$"
+      allow_multiple: true
+      allow_multiple_zip_members: true
+      postprocess: mosaic_mixed_geotiff
+      max_results: 500
+      hda_query:
+        dataset_id: "EO:EEA:DAT:CLMS_HRVPP_VPP-LAEA"
+        productType: "{product_type}"
+        resolution: "{source_resolution_token}"
+        start: "{year}-01-01T00:00:00.000Z"
+        end: "{year}-12-31T23:59:59.999Z"
+        bbox:
+          - -2.28618323
+          - 41.9550235
+          - 3.18030846
+          - 43.47467682
+        itemsPerPage: 500
+        startIndex: 0
+      temporal:
+        type: static
+        reference_year: "{year}"
+    cartesian:
+      season:
+        - season: s1
+          season_label: "season 1"
+        - season: s2
+          season_label: "season 2"
+      metric:
+        - metric_name: start_of_season_day
+          product_type: SOSD
+          metric_label: "Start of season day"
+          unit: day of year
+          valid_range: [1, 366]
+          native_resolution_m: 10
+        - metric_name: end_of_season_day
+          product_type: EOSD
+          metric_label: "End of season day"
+          unit: day of year
+          valid_range: [1, 366]
+          native_resolution_m: 10
+        - metric_name: season_length
+          product_type: LENGTH
+          metric_label: "Season length"
+          unit: days
+          valid_range: [0, 366]
+          native_resolution_m: 10
+        - metric_name: max_value_day
+          product_type: MAXD
+          metric_label: "Day of maximum vegetation value"
+          unit: day of year
+          valid_range: [1, 366]
+          native_resolution_m: 10
+        - metric_name: minimum_value
+          product_type: MINV
+          metric_label: "Minimum vegetation value"
+          unit: index
+          valid_range: [0, 65535]
+          native_resolution_m: 10
+        - metric_name: maximum_value
+          product_type: MAXV
+          metric_label: "Maximum vegetation value"
+          unit: index
+          valid_range: [0, 65535]
+          native_resolution_m: 10
+        - metric_name: start_of_season_value
+          product_type: SOSV
+          metric_label: "Vegetation value at start of season"
+          unit: index
+          valid_range: [0, 65535]
+          native_resolution_m: 10
+        - metric_name: end_of_season_value
+          product_type: EOSV
+          metric_label: "Vegetation value at end of season"
+          unit: index
+          valid_range: [0, 65535]
+          native_resolution_m: 10
+        - metric_name: amplitude
+          product_type: AMPL
+          metric_label: "Seasonal amplitude"
+          unit: index
+          valid_range: [0, 65535]
+          native_resolution_m: 10
+        - metric_name: greenup_slope
+          product_type: LSLOPE
+          metric_label: "Green-up slope"
+          unit: index per day
+          valid_range: [-65535, 65535]
+          native_resolution_m: 10
+        - metric_name: senescence_slope
+          product_type: RSLOPE
+          metric_label: "Senescence slope"
+          unit: index per day
+          valid_range: [-65535, 65535]
+          native_resolution_m: 10
+        - metric_name: seasonal_productivity
+          product_type: SPROD
+          metric_label: "Seasonal productivity"
+          unit: index days
+          valid_range: [0, 100000000]
+          native_resolution_m: 10
+        - metric_name: total_productivity
+          product_type: TPROD
+          metric_label: "Total productivity"
+          unit: index days
+          valid_range: [0, 100000000]
+          native_resolution_m: 10
+      year:
+        - {year: 2017}
+        - {year: 2018}
+        - {year: 2019}
+        - {year: 2020}
+        - {year: 2021}
+        - {year: 2022}
+        - {year: 2023}
+        - {year: 2024}
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false

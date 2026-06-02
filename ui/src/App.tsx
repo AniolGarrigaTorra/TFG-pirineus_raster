@@ -10,6 +10,7 @@ import type {
   SourceCatalog,
   SourceSelection,
   TemporalSelection,
+  VariableCatalog,
   ValidationReport,
   WorkbenchCatalog
 } from "./types";
@@ -342,6 +343,24 @@ function sourceVariables(source: SourceCatalog) {
   return [...(source.variables ?? []), ...(source.layers ?? [])];
 }
 
+function categoryClassValues(item: { value?: string | number; values?: Array<string | number> }) {
+  if (Array.isArray(item.values) && item.values.length > 0) return item.values;
+  return item.value !== undefined ? [item.value] : [];
+}
+
+function categoryClassToken(item: { name?: string; label?: string; value?: string | number; values?: Array<string | number> }) {
+  const fallback = categoryClassValues(item).join("_");
+  return sanitizeToken(item.name ?? item.label ?? fallback);
+}
+
+function sanitizeToken(value: string | number) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function humanizeId(value: string) {
   const acronyms: Record<string, string> = {
     cmip6: "CMIP6",
@@ -490,6 +509,8 @@ function buildTemporalConfig(source: SourceCatalog | undefined, selection: Sourc
       } else {
         base.metric = item.metric;
       }
+      if (item.threshold !== undefined) base.threshold = item.threshold;
+      if (item.comparison) base.comparison = item.comparison;
       return base;
     });
 
@@ -524,8 +545,28 @@ function buildTemporalConfig(source: SourceCatalog | undefined, selection: Sourc
   }
 
   if (mode === "postprocess_aggregate") {
+    const custom = temporal.customAggregations.map((item) => {
+      const base: Record<string, unknown> = {
+        name: item.name,
+        form: item.form,
+        variables: item.variables,
+        metric: item.metric
+      };
+      if (item.months) base.months = item.months;
+      if (item.years) base.years = item.years;
+      if (item.threshold !== undefined) base.threshold = item.threshold;
+      if (item.comparison) base.comparison = item.comparison;
+      if (item.start_date) base.start_date = item.start_date;
+      if (item.end_date) base.end_date = item.end_date;
+      return base;
+    });
+
     return {
-      output_mode: "postprocess_aggregate"
+      output_mode: "postprocess_aggregate",
+      aggregations: {
+        use: temporal.aggregationUse,
+        custom
+      }
     };
   }
 
@@ -551,6 +592,7 @@ function createSelection(source: SourceCatalog): SourceSelection {
     keepRawAfterClip: source.keep_raw_after_clip_default ?? true,
     variables,
     layers: [],
+    categoryFractions: [],
     dimensions,
     temporal: sourceTemporalSelection(source),
     resamplingByVariable: {}
@@ -731,8 +773,18 @@ function App() {
       };
       const hasOverrides = Object.values(overrides).some((value) => value !== undefined);
       const select = {
-        variables: variableNames.length > 0 ? variableNames : undefined,
+        variables: (source?.variables ?? []).length > 0 || selection.categoryFractions.length > 0
+          ? variableNames
+          : undefined,
         layers: layerNames.length > 0 ? layerNames : undefined,
+        category_fractions: selection.categoryFractions.length > 0
+          ? selection.categoryFractions.map((item) => ({
+              variable: item.variable,
+              name: item.name,
+              class_values: item.class_values,
+              label: item.label
+            }))
+          : undefined,
         dimensions: Object.keys(dimensions).length > 0 ? dimensions : undefined,
         temporal
       };
@@ -868,6 +920,23 @@ function App() {
     setSelections((current) => {
       const sourceId = layer.query.source_id;
       if (!sourceId || !current[sourceId]) return current;
+      const isCategoryFraction = current[sourceId].categoryFractions.some(
+        (item) => item.name === layer.variable
+      );
+      if (isCategoryFraction) {
+        const nextResampling = { ...current[sourceId].resamplingByVariable };
+        delete nextResampling[layer.variable];
+        return {
+          ...current,
+          [sourceId]: {
+            ...current[sourceId],
+            categoryFractions: current[sourceId].categoryFractions.filter(
+              (item) => item.name !== layer.variable
+            ),
+            resamplingByVariable: nextResampling
+          }
+        };
+      }
       const variableName = layer.baseVariable ?? layer.variable;
       return {
         ...current,
@@ -2121,7 +2190,50 @@ function VariablesPanel({
 }) {
   const variables = sourceVariables(source);
   const selectedVariableItems = variables.filter((variable) => selection.variables.includes(variable.name));
+  const selectedFractionItems = selection.categoryFractions.map((fraction) => ({
+    name: fraction.name,
+    label: fraction.label ?? humanizeId(fraction.name),
+    defaultMethod: "average",
+    semantics: "fraction",
+    sourceVariable: fraction.variable
+  }));
   const dimensionEntries = sourceDimensionEntries(source);
+  const fractionKey = (variableName: string, values: Array<string | number>) =>
+    `${variableName}:${values.map(String).join(",")}`;
+  const selectedFractionKeys = new Set(
+    selection.categoryFractions.map((item) => fractionKey(item.variable, item.class_values))
+  );
+
+  function toggleCategoryFraction(variable: VariableCatalog, category: NonNullable<VariableCatalog["category_classes"]>[number]) {
+    const values = categoryClassValues(category);
+    if (values.length === 0) return;
+    const key = fractionKey(variable.name, values);
+    const selected = selectedFractionKeys.has(key);
+    const label = category.label ?? category.name ?? values.join(", ");
+    const name = `${variable.name}_fraction_${categoryClassToken(category)}`;
+
+    patchSelectionMut(source.id, (current) => {
+      const nextResampling = { ...current.resamplingByVariable };
+      if (selected) {
+        delete nextResampling[name];
+      }
+      return {
+        ...current,
+        resamplingByVariable: nextResampling,
+        categoryFractions: selected
+          ? current.categoryFractions.filter((item) => fractionKey(item.variable, item.class_values) !== key)
+          : [
+              ...current.categoryFractions,
+              {
+                variable: variable.name,
+                name,
+                class_values: values,
+                label
+              }
+            ]
+      };
+    });
+  }
 
   return (
     <main className="workspace two-col wide-left">
@@ -2167,6 +2279,30 @@ function VariablesPanel({
                   {variable.generated_from && <p>Generated from: {variable.generated_from}</p>}
                   {variable.temporal && <pre>{JSON.stringify(variable.temporal, null, 2)}</pre>}
                 </details>
+              )}
+              {(variable.category_classes ?? []).length > 0 && (
+                <div className="category-fraction-panel">
+                  <div className="category-fraction-head">
+                    <strong>Category fractions</strong>
+                    <small>Build 0-1 coverage rasters before target-grid resampling.</small>
+                  </div>
+                  <div className="choice-list compact token-grid">
+                    {(variable.category_classes ?? []).map((category) => {
+                      const values = categoryClassValues(category);
+                      const key = fractionKey(variable.name, values);
+                      return (
+                        <label key={key} className="check-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedFractionKeys.has(key)}
+                            onChange={() => toggleCategoryFraction(variable, category)}
+                          />
+                          <span>{category.label ?? category.name ?? values.join(", ")}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -2230,21 +2366,32 @@ function VariablesPanel({
         <div className="dimension-block">
           <h2>Resampling</h2>
           <div className="choice-list compact">
-            {selectedVariableItems.map((variable) => {
-              const defaultMethod = variable.resampling ?? "nearest";
-              const currentMethod = selection.resamplingByVariable[variable.name] ?? defaultMethod;
+            {[
+              ...selectedVariableItems.map((variable) => ({
+                name: variable.name,
+                label: variable.name,
+                defaultMethod: variable.resampling ?? "nearest",
+                semantics: variable.value_semantics ?? variable.data_type ?? "continuous",
+                sourceVariable: undefined as string | undefined
+              })),
+              ...selectedFractionItems
+            ].map((item) => {
+              const currentMethod = selection.resamplingByVariable[item.name] ?? item.defaultMethod;
               return (
-                <label key={variable.name} className="resampling-row">
-                  <span className="resampling-name">{variable.name}</span>
+                <label key={item.name} className="resampling-row">
+                  <span className="resampling-name">
+                    {item.label}
+                    {item.sourceVariable && <small>from {item.sourceVariable}</small>}
+                  </span>
                   <select
                     value={currentMethod}
                     onChange={(event) =>
                       patchSelectionMut(source.id, (current) => {
                         const next = { ...current.resamplingByVariable };
-                        if (event.target.value === defaultMethod) {
-                          delete next[variable.name];
+                        if (event.target.value === item.defaultMethod) {
+                          delete next[item.name];
                         } else {
-                          next[variable.name] = event.target.value;
+                          next[item.name] = event.target.value;
                         }
                         return { ...current, resamplingByVariable: next };
                       })
@@ -2252,12 +2399,12 @@ function VariablesPanel({
                   >
                     {catalog.supported_resampling.map((method) => (
                       <option key={method} value={method}>
-                        {method}{method === defaultMethod ? " (default)" : ""}
+                        {method}{method === item.defaultMethod ? " (default)" : ""}
                       </option>
                     ))}
                   </select>
                   <small className="field-hint">
-                    {variable.value_semantics ?? variable.data_type ?? "continuous"}
+                    {item.semantics}
                   </small>
                 </label>
               );
@@ -2290,32 +2437,48 @@ function TemporalPanel({
   const temporal = selection.temporal;
   const isTimeSeries = capability?.kind === "year_month_series";
   const isYearlyCollection = capability?.kind === "yearly_static_collection";
+  const isPostprocess = capability?.kind === "temporal_postprocess";
+  const postprocessMetricOptions = capability?.postprocess_metrics ?? [
+    "mean",
+    "std",
+    "min",
+    "max",
+    "count_threshold",
+    "valid_observation_count"
+  ];
+  const defaultMetric = isPostprocess ? postprocessMetricOptions[0] ?? "mean" : "mean";
   const defaultForm = isYearlyCollection
     ? "year_range_metric"
-    : isTimeSeries
+    : isPostprocess
+      ? "explicit_month_list_metric"
+      : isTimeSeries
       ? "year_then_across_years"
       : "month_range_metric";
   const [custom, setCustom] = useState<CustomAggregation>({
     name: isYearlyCollection ? "custom_year_mean" : "custom_mean",
     form: defaultForm,
-    metric: "mean",
+    metric: defaultMetric,
     months: isYearlyCollection ? undefined : [1, 12],
     years: temporal.years,
     within_year_metric: "sum",
     across_year_metric: "mean",
+    threshold: 50,
+    comparison: ">=",
     variables: selection.variables.slice(0, 1)
   });
 
   useEffect(() => {
     setCustom({
-      name: isYearlyCollection ? "custom_year_mean" : isTimeSeries ? "custom_period" : "custom_mean",
-      form: isYearlyCollection ? "year_range_metric" : isTimeSeries ? "year_then_across_years" : "month_range_metric",
-      metric: "mean",
+      name: isYearlyCollection ? "custom_year_mean" : isTimeSeries ? "custom_period" : isPostprocess ? "custom_snow_metric" : "custom_mean",
+      form: isYearlyCollection ? "year_range_metric" : isTimeSeries ? "year_then_across_years" : isPostprocess ? "explicit_month_list_metric" : "month_range_metric",
+      metric: isPostprocess ? postprocessMetricOptions[0] ?? "mean" : "mean",
       months: isYearlyCollection ? undefined : temporal.months,
       years: temporal.years,
       within_year_metric: "sum",
       across_year_metric: "mean",
       output_metric_name: isTimeSeries ? "mean_period_sum" : undefined,
+      threshold: 50,
+      comparison: ">=",
       variables: selection.variables.slice(0, 1)
     });
   }, [source.id]);
@@ -2326,6 +2489,17 @@ function TemporalPanel({
   const supportsRaw = capability?.output_modes.includes("raw_slices") ?? false;
   const supportsSupplied = capability?.output_modes.includes("supplied_layers") ?? false;
   const supportsPostprocess = capability?.output_modes.includes("postprocess_aggregate") ?? false;
+  const availableYearStart = capability?.available_years?.[0] ?? capability?.default_years?.[0];
+  const availableYearEnd = capability?.available_years?.[1] ?? capability?.default_years?.[1];
+  const dateMin = availableYearStart ? `${availableYearStart}-01-01` : undefined;
+  const dateMax = availableYearEnd ? `${availableYearEnd}-12-31` : undefined;
+  const clampMonth = (value: number) => clamp(Number.isFinite(value) ? value : 1, 1, 12);
+  const clampYear = (value: number) => {
+    let next = Number.isFinite(value) ? value : availableYearStart ?? new Date().getFullYear();
+    if (availableYearStart !== undefined) next = Math.max(availableYearStart, next);
+    if (availableYearEnd !== undefined) next = Math.min(availableYearEnd, next);
+    return next;
+  };
 
   function patchTemporal(patch: Partial<TemporalSelection>) {
     patchSelectionMut(source.id, (current) => ({
@@ -2613,18 +2787,242 @@ function TemporalPanel({
         {temporal.outputMode === "postprocess_aggregate" && supportsPostprocess && (
           <>
             <div className="notice info">
-              This source creates temporal products during download/postprocess. Select the generated output variables in the Variables tab.
+              This source creates temporal products during download/postprocess. Select presets or define custom outputs here.
             </div>
-            <div className="aggregation-list">
+            <h3>Presets</h3>
+            <div className="choice-list compact">
               {(capability?.postprocess_outputs ?? []).map((item) => (
-                <div className="aggregation-chip" key={String(item.name)}>
+                <label key={String(item.name)} className="check-row rich preset-row">
+                  <input
+                    type="checkbox"
+                    checked={temporal.aggregationUse.includes(String(item.name))}
+                    onChange={() =>
+                      patchSelectionMut(source.id, (current) => ({
+                        ...current,
+                        temporal: {
+                          ...current.temporal,
+                          aggregationUse: toggleValue(current.temporal.aggregationUse, String(item.name))
+                        }
+                      }))
+                    }
+                  />
                   <span>
                     <strong>{String(item.name)}</strong>
                     <small>
                       {String(item.method ?? "")}
                       {Array.isArray(item.months) ? ` · months ${item.months.join(", ")}` : ""}
+                      {Array.isArray(item.years) ? ` · years ${item.years.join("-")}` : ""}
                     </small>
                   </span>
+                </label>
+              ))}
+            </div>
+            {(capability?.postprocess_outputs ?? []).length === 0 && (
+              <div className="notice info compact-notice">
+                This source has no predefined postprocess presets.
+              </div>
+            )}
+
+            <h3>Custom postprocess aggregation</h3>
+            <div className="form-grid custom-aggregation-grid postprocess-aggregation-grid">
+              <label className="postprocess-name-field">
+                Name
+                <input value={custom.name} onChange={(event) => setCustom({ ...custom, name: event.target.value })} />
+              </label>
+              <label className="postprocess-metric-field">
+                Metric
+                <select value={custom.metric} onChange={(event) => setCustom({ ...custom, metric: event.target.value })}>
+                  {postprocessMetricOptions.map((metric) => (
+                    <option key={metric} value={metric}>{metric}</option>
+                  ))}
+                </select>
+              </label>
+              {capability?.available_years && (
+                <>
+                  <label className="postprocess-year-start-field">
+                    Start year
+                    <input
+                      type="number"
+                      min={availableYearStart}
+                      max={availableYearEnd}
+                      value={custom.years?.[0] ?? capability.available_years[0]}
+                      onChange={(event) => {
+                        const next = clampYear(Number(event.target.value));
+                        setCustom({ ...custom, years: [next, custom.years?.[1] ?? next] });
+                      }}
+                    />
+                  </label>
+                  <label className="postprocess-year-end-field">
+                    End year
+                    <input
+                      type="number"
+                      min={availableYearStart}
+                      max={availableYearEnd}
+                      value={custom.years?.[1] ?? capability.available_years[1]}
+                      onChange={(event) => {
+                        const next = clampYear(Number(event.target.value));
+                        setCustom({ ...custom, years: [custom.years?.[0] ?? next, next] });
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+              <label className="postprocess-month-start-field">
+                Start month
+                <input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={custom.months?.[0] ?? 1}
+                  onChange={(event) =>
+                    setCustom({
+                      ...custom,
+                      months: [clampMonth(Number(event.target.value)), custom.months?.[1] ?? 12]
+                    })
+                  }
+                />
+              </label>
+              <label className="postprocess-month-end-field">
+                End month
+                <input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={custom.months?.[1] ?? 12}
+                  onChange={(event) =>
+                    setCustom({
+                      ...custom,
+                      months: [custom.months?.[0] ?? 1, clampMonth(Number(event.target.value))]
+                    })
+                  }
+                />
+                <small className="field-hint">Use 12 to 3 for a wrapped winter range.</small>
+              </label>
+              <label className="postprocess-date-start-field">
+                Exact start date
+                <input
+                  type="date"
+                  min={dateMin}
+                  max={dateMax}
+                  value={custom.start_date ?? ""}
+                  onChange={(event) => setCustom({ ...custom, start_date: event.target.value || undefined })}
+                />
+                <small className="field-hint">Optional; useful for fortnight windows.</small>
+              </label>
+              <label className="postprocess-date-end-field">
+                Exact end date
+                <input
+                  type="date"
+                  min={dateMin}
+                  max={dateMax}
+                  value={custom.end_date ?? ""}
+                  onChange={(event) => setCustom({ ...custom, end_date: event.target.value || undefined })}
+                />
+              </label>
+              {custom.metric === "count_threshold" && (
+                <>
+                  <label>
+                    Threshold
+                    <input type="number" value={custom.threshold ?? 50} onChange={(event) => setCustom({ ...custom, threshold: Number(event.target.value) })} />
+                  </label>
+                  <label>
+                    Comparison
+                    <select value={custom.comparison ?? ">="} onChange={(event) => setCustom({ ...custom, comparison: event.target.value })}>
+                      <option value=">=">&gt;=</option>
+                      <option value=">">&gt;</option>
+                      <option value="<=">&lt;=</option>
+                      <option value="<">&lt;</option>
+                      <option value="==">==</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+            <h3>Base variables</h3>
+            <div className="choice-list compact custom-vars">
+              {selection.variables.map((variable) => (
+                <label key={variable} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={custom.variables.includes(variable)}
+                    onChange={() => setCustom({ ...custom, variables: toggleValue(custom.variables, variable) })}
+                  />
+                  <span>{variable}</span>
+                </label>
+              ))}
+            </div>
+            <div className="button-row custom-actions">
+              <button
+                className="primary"
+                disabled={!canAddCustom}
+                onClick={() => {
+                  if (!canAddCustom) return;
+                  const nextCustom = {
+                    ...custom,
+                    name: custom.name.trim(),
+                    variables: selectedCustomVariables
+                  };
+                  patchSelectionMut(source.id, (current) => ({
+                    ...current,
+                    temporal: {
+                      ...current.temporal,
+                      customAggregations: [...current.temporal.customAggregations, nextCustom]
+                    }
+                  }));
+                  setCustom({
+                    ...custom,
+                    name: `${custom.name.trim() || "custom_snow_metric"}_copy`
+                  });
+                }}
+              >
+                Add postprocess aggregation
+              </button>
+            </div>
+            <div className="aggregation-list">
+              {temporal.aggregationUse.map((name) => (
+                <div className="aggregation-chip preset-chip" key={name}>
+                  <span>{name}</span>
+                  <button
+                    className="ghost danger"
+                    onClick={() =>
+                      patchSelectionMut(source.id, (current) => ({
+                        ...current,
+                        temporal: {
+                          ...current.temporal,
+                          aggregationUse: current.temporal.aggregationUse.filter((item) => item !== name)
+                        }
+                      }))
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {temporal.customAggregations.map((item, index) => (
+                <div className="aggregation-chip" key={`${item.name}-${index}`}>
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>
+                      {item.metric}
+                      {item.threshold !== undefined && item.metric === "count_threshold" ? ` ${item.comparison ?? ">="} ${item.threshold}` : ""}
+                      {item.years ? ` · years ${item.years.join("-")}` : ""}
+                      {item.months ? ` · months ${item.months.join("-")}` : ""} · {item.variables.join(", ")}
+                    </small>
+                  </span>
+                  <button
+                    className="ghost danger"
+                    onClick={() =>
+                      patchSelectionMut(source.id, (current) => ({
+                        ...current,
+                        temporal: {
+                          ...current.temporal,
+                          customAggregations: current.temporal.customAggregations.filter((_, itemIndex) => itemIndex !== index)
+                        }
+                      }))
+                    }
+                  >
+                    Remove
+                  </button>
                 </div>
               ))}
             </div>
@@ -2928,6 +3326,23 @@ function buildPlannedLayers(
           }
         }
       }
+    }
+
+    for (const fraction of selection.categoryFractions) {
+      const query: DerivedInputQuery = {
+        source_id: source.id,
+        variable: fraction.name
+      };
+      layers.push({
+        id: JSON.stringify(query),
+        label: [sourceShortName(source), fraction.name].join(" · "),
+        sourceTitle: sourceDisplayName(source),
+        query,
+        variable: fraction.name,
+        baseVariable: fraction.variable,
+        unit: "fraction",
+        valueSemantics: "fraction"
+      });
     }
   }
 

@@ -198,9 +198,10 @@ Temporal selections are explicit because sources do not all behave the same:
   yearly summaries, or `raw_slices` for one output per selected year-month.
 - PDCA uses `output_mode: supplied_layers` because annual, monthly and
   seasonal layers are supplied by the source rather than computed here.
-- yearly static collections such as GHSL GHS-POP and ESA CCI Biomass expose
-  base variables in the variable picker and let the Temporal tab select years
-  or define year-range aggregations.
+- yearly static collections such as GHSL GHS-POP, GHS-BUILT-S, GHS-SMOD,
+  ESA CCI Biomass and Copernicus HR-VPP expose base variables in the variable
+  picker and let the Temporal tab select years or define year-range
+  aggregations.
 - HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
   are generated during the Copernicus download/postprocess stage.
 
@@ -234,14 +235,16 @@ submitted from a different directory.
 - `worldclim`: climate normals, bioclimatic variables, elevation, CRU-TS
   historical monthly data and CMIP6 future projections.
 - `copernicus`: CLMS static layers and temporal products downloaded through
-  WEkEO HDA.
+  WEkEO HDA, including DEM, HRLs, CLC, CLC+ Backbone, HR-VPP and HRSI snow.
 - `pdca`: Pyrenean Digital Climate Atlas topoclimate rasters.
 - `igme_brgm`: transboundary Pyrenees geology vectors rasterized to the grid.
 - `openstreetmap`: Geofabrik PBF extracts filtered into anthropic vector
   layers and rasterized as presence or distance features.
-- `ghsl`: GHSL GHS-POP population count grids with selectable native
-  resolution and temporal years.
+- `ghsl`: GHSL GHS-POP population, GHS-BUILT-S built-up surface and GHS-SMOD
+  settlement model grids with selectable native resolution and temporal years.
 - `esa_cci`: ESA CCI Biomass above-ground biomass and uncertainty rasters.
+- `esa_worldcover`: ESA WorldCover 10 m global land-cover tiles mosaicked for
+  the Pyrenees.
 
 List available providers:
 

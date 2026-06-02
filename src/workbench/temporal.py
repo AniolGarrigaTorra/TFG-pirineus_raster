@@ -72,6 +72,7 @@ def _pdca_temporal_layers(source_cfg: dict[str, Any]) -> dict[str, Any]:
 def _temporal_postprocess_outputs(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     temporal_cfg = source_cfg.get("temporal_postprocess", {}) or {}
     outputs = temporal_cfg.get("output_variables", {}) or {}
+    presets = temporal_cfg.get("aggregation_presets", []) or []
     items: list[dict[str, Any]] = []
 
     for name, cfg in outputs.items():
@@ -80,6 +81,39 @@ def _temporal_postprocess_outputs(source_cfg: dict[str, Any]) -> list[dict[str, 
                 "name": name,
                 "method": cfg.get("method"),
                 "months": cfg.get("months"),
+                "threshold": cfg.get("threshold"),
+                "comparison": cfg.get("comparison"),
+                "unit": cfg.get("unit"),
+                "description": cfg.get("description"),
+            }
+        )
+
+    if isinstance(presets, dict):
+        preset_items = [
+            {"name": name, **cfg}
+            for name, cfg in presets.items()
+            if isinstance(cfg, dict)
+        ]
+    elif isinstance(presets, list):
+        preset_items = [
+            dict(cfg)
+            for cfg in presets
+            if isinstance(cfg, dict) and cfg.get("name")
+        ]
+    else:
+        preset_items = []
+
+    existing_names = {str(item["name"]) for item in items if item.get("name")}
+    for cfg in preset_items:
+        name = str(cfg["name"])
+        if name in existing_names:
+            continue
+        items.append(
+            {
+                "name": name,
+                "method": cfg.get("method") or cfg.get("metric"),
+                "months": cfg.get("months"),
+                "years": cfg.get("years"),
                 "threshold": cfg.get("threshold"),
                 "comparison": cfg.get("comparison"),
                 "unit": cfg.get("unit"),
@@ -216,9 +250,12 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
     if layer_structure == "temporal_aggregation":
         temporal_cfg = source_cfg.get("temporal_postprocess", {}) or {}
         export_timesteps = temporal_cfg.get("export_timesteps", {}) or {}
+        available_years = temporal_cfg.get("available_years")
+        default_years = temporal_cfg.get("default_years") or available_years
+        default_months = temporal_cfg.get("default_months", [1, 12])
         return {
             "kind": "temporal_postprocess",
-            "label": "Temporal postprocess",
+            "label": "Daily temporal series",
             "temporal_axis": temporal_axis or "date",
             "aggregation_stage": "download_postprocess",
             "default_output_mode": "postprocess_aggregate",
@@ -228,8 +265,15 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
                 "threshold_count",
                 "valid_observation_count",
             ],
-            "supports_custom_aggregations": False,
+            "supports_custom_aggregations": True,
             "supports_raw_slices": bool(export_timesteps.get("enabled", False)),
+            "postprocess_metrics": temporal_cfg.get(
+                "supported_methods",
+                ["mean", "std", "min", "max", "count_threshold", "valid_observation_count"],
+            ),
+            "available_years": available_years,
+            "default_years": default_years,
+            "default_months": default_months,
             "raw_timesteps_implemented": False,
             "postprocess_outputs": _temporal_postprocess_outputs(source_cfg),
         }

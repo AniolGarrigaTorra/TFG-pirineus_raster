@@ -6,6 +6,7 @@ from pathlib import Path
 SUPPORTED_LAYER_STRUCTURES = {
     "static_single",
     "static_multi",
+    "yearly_static_collection",
     "temporal_aggregation",
 }
 
@@ -26,6 +27,13 @@ def get_file_format(source_cfg: dict) -> str:
 
 def get_source_resolution(source_cfg: dict) -> str:
     return str(source_cfg["processing"]["source_resolution"])
+
+
+def get_source_resolution_token(source_cfg: dict) -> str:
+    processing = source_cfg.get("processing", {}) or {}
+    source_resolution = get_source_resolution(source_cfg)
+    tokens = processing.get("source_resolution_tokens", {}) or {}
+    return str(tokens.get(source_resolution, source_resolution))
 
 
 def validate_copernicus_source_config(source_cfg: dict) -> None:
@@ -160,24 +168,31 @@ def get_download_file_specs(source_cfg: dict) -> list[dict]:
     # This supports older/simple source configs where each variable corresponds
     # directly to one raw input file.
     for variable, variable_cfg in get_enabled_variable_items(source_cfg):
+        context = _format_context(source_cfg, variable_cfg)
         filename = variable_cfg.get("source_filename") or f"{variable}.tif"
 
         specs.append(
             {
                 "variable": variable,
-                "filename": filename,
+                "filename": _format_template(filename, context),
 
-                "url": variable_cfg.get("url"),
-                "urls": variable_cfg.get("urls"),
-                "filenames": variable_cfg.get("filenames"),
-                "local_path": variable_cfg.get("local_path"),
+                "url": _format_template(variable_cfg.get("url"), context),
+                "urls": _format_template(variable_cfg.get("urls"), context),
+                "filenames": _format_template(variable_cfg.get("filenames"), context),
+                "local_path": _format_template(variable_cfg.get("local_path"), context),
 
-                "zip_member": variable_cfg.get("zip_member"),
-                "zip_member_pattern": variable_cfg.get("zip_member_pattern"),
-                "file_pattern": variable_cfg.get("file_pattern"),
+                "zip_member": _format_template(variable_cfg.get("zip_member"), context),
+                "zip_member_pattern": _format_template(
+                    variable_cfg.get("zip_member_pattern"),
+                    context,
+                ),
+                "file_pattern": _format_template(variable_cfg.get("file_pattern"), context),
 
-                "hda_query": variable_cfg.get("hda_query"),
-                "hda_query_path": variable_cfg.get("hda_query_path"),
+                "hda_query": _format_template(variable_cfg.get("hda_query"), context),
+                "hda_query_path": _format_template(
+                    variable_cfg.get("hda_query_path"),
+                    context,
+                ),
                 "max_results": variable_cfg.get("max_results"),
 
                 "allow_multiple": bool(variable_cfg.get("allow_multiple", False)),
@@ -195,19 +210,47 @@ def get_download_file_specs(source_cfg: dict) -> list[dict]:
     return specs
 
 
+def _format_context(source_cfg: dict, variable_cfg: dict) -> dict:
+    context = dict(variable_cfg.get("generation_context", {}) or {})
+    context.update(
+        {
+            "source_resolution": get_source_resolution(source_cfg),
+            "source_resolution_token": get_source_resolution_token(source_cfg),
+            "target_resolution_m": source_cfg.get("processing", {}).get("target_resolution_m"),
+        }
+    )
+    return context
+
+
+def _format_template(value, context: dict):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.format(**context)
+    if isinstance(value, list):
+        return [_format_template(item, context) for item in value]
+    if isinstance(value, dict):
+        return {key: _format_template(item, context) for key, item in value.items()}
+    return value
+
+
 def get_file_spec_for_variable(source_cfg: dict, variable: str) -> dict:
     for spec in get_download_file_specs(source_cfg):
         if spec["variable"] == variable:
             return spec
 
     variable_cfg = source_cfg.get("variables", {}).get(variable, {}) or {}
+    context = _format_context(source_cfg, variable_cfg)
     filename = variable_cfg.get("source_filename") or f"{variable}.tif"
 
     return {
         "variable": variable,
-        "filename": filename,
-        "zip_member": variable_cfg.get("zip_member"),
-        "zip_member_pattern": variable_cfg.get("zip_member_pattern"),
+        "filename": _format_template(filename, context),
+        "zip_member": _format_template(variable_cfg.get("zip_member"), context),
+        "zip_member_pattern": _format_template(
+            variable_cfg.get("zip_member_pattern"),
+            context,
+        ),
     }
 
 

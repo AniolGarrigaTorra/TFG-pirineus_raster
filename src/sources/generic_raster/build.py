@@ -10,10 +10,12 @@ from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     build_feature_metadata,
     build_static_feature_metadata,
+    get_resampling_method,
     get_variable_resampling_method,
     get_variable_resampling_method_name,
     load_grid_context,
     print_grid_context,
+    read_category_fraction_to_grid,
     read_raster_to_grid,
     write_feature_raster,
 )
@@ -67,6 +69,17 @@ def _reference_year(variable_cfg: dict) -> int | None:
 
 def _yearly_base_variable(variable: str, variable_cfg: dict) -> str:
     return str(variable_cfg.get("generated_from_group") or variable)
+
+
+def _category_fractions_for_variable(
+    source_cfg: dict,
+    variable: str,
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in source_cfg.get("category_fractions", []) or []
+        if item.get("variable") == variable
+    ]
 
 
 def _yearly_aggregation_applies(
@@ -314,60 +327,125 @@ def build_generic_raster_features(
             domain_name=output_aoi_name,
             target_resolution_m=target_resolution_m,
         )
-        output_path = output_dir / build_feature_name(
-            source_cfg=source_cfg,
-            variable=variable,
-            domain_name=output_aoi_name,
-            target_resolution_m=target_resolution_m,
-        )
 
         progress_log(f"[build] Variable: {variable}")
         progress_log(f"[build] Description: {variable_cfg.get('description', '')}")
         progress_log(f"[build] Clipped path: {clipped_path}")
-        progress_log(f"[build] Output path: {output_path}")
 
-        grid_array = read_raster_to_grid(
-            raster_path=clipped_path,
-            grid=grid,
-            resampling=resampling,
-            band=int(variable_cfg.get("band", 1)),
-            scale_factor=scale_factor,
-            resampling_method_name=resampling_name,
-        )
-        grid_array = _postprocess_array(grid_array, variable_cfg)
-
-        metadata = build_static_feature_metadata(
-            source_cfg=source_cfg,
-            layer_name=variable,
-            layer_cfg=variable_cfg,
-            clip_aoi_name=clip_aoi_name,
-            output_aoi_name=output_aoi_name,
-            target_resolution_m=target_resolution_m,
-            resampling_method_name=resampling_name,
-        )
-        metadata.update(
-            {
-                "data_type": variable_cfg.get("data_type")
-                or source_cfg.get("dataset", {}).get("data_type"),
-                "native_resolution_m": variable_cfg.get("native_resolution_m")
-                or source_cfg.get("dataset", {}).get("native_resolution_m"),
-                "reference_year": (
-                    variable_cfg.get("temporal", {}).get("reference_year")
-                    if isinstance(variable_cfg.get("temporal"), dict)
-                    else source.get("source_period")
-                ),
-            }
-        )
-
-        written_paths.append(
-            write_feature_raster(
-                output_path=output_path,
-                array=grid_array,
-                grid=grid,
-                metadata={key: value for key, value in metadata.items() if value is not None},
-                **output_options,
-                validate=True,
+        if bool(variable_cfg.get("build_output_enabled", True)):
+            output_path = output_dir / build_feature_name(
+                source_cfg=source_cfg,
+                variable=variable,
+                domain_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
             )
-        )
+            progress_log(f"[build] Output path: {output_path}")
+
+            grid_array = read_raster_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                resampling=resampling,
+                band=int(variable_cfg.get("band", 1)),
+                scale_factor=scale_factor,
+                resampling_method_name=resampling_name,
+            )
+            grid_array = _postprocess_array(grid_array, variable_cfg)
+
+            metadata = build_static_feature_metadata(
+                source_cfg=source_cfg,
+                layer_name=variable,
+                layer_cfg=variable_cfg,
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=resampling_name,
+            )
+            metadata.update(
+                {
+                    "data_type": variable_cfg.get("data_type")
+                    or source_cfg.get("dataset", {}).get("data_type"),
+                    "native_resolution_m": variable_cfg.get("native_resolution_m")
+                    or source_cfg.get("dataset", {}).get("native_resolution_m"),
+                    "reference_year": (
+                        variable_cfg.get("temporal", {}).get("reference_year")
+                        if isinstance(variable_cfg.get("temporal"), dict)
+                        else source.get("source_period")
+                    ),
+                }
+            )
+
+            written_paths.append(
+                write_feature_raster(
+                    output_path=output_path,
+                    array=grid_array,
+                    grid=grid,
+                    metadata={key: value for key, value in metadata.items() if value is not None},
+                    **output_options,
+                    validate=True,
+                )
+            )
+
+        for fraction_cfg in _category_fractions_for_variable(source_cfg, variable):
+            fraction_name = str(fraction_cfg["name"])
+            output_path = output_dir / build_feature_name(
+                source_cfg=source_cfg,
+                variable=fraction_name,
+                domain_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+            )
+            progress_log(f"[build] Category fraction: {fraction_name}")
+            progress_log(f"[build] Class values: {fraction_cfg.get('class_values')}")
+            progress_log(f"[build] Output path: {output_path}")
+            fraction_resampling_name = str(fraction_cfg.get("resampling", "average"))
+
+            fraction_array = read_category_fraction_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                class_values=fraction_cfg["class_values"],
+                resampling=get_resampling_method(fraction_resampling_name),
+                band=int(variable_cfg.get("band", 1)),
+            )
+            metadata = build_static_feature_metadata(
+                source_cfg=source_cfg,
+                layer_name=fraction_name,
+                layer_cfg={
+                    **variable_cfg,
+                    "unit": "fraction",
+                    "valid_range": [0, 1],
+                    "data_type": "percentage",
+                    "value_semantics": "fraction",
+                    "description": fraction_cfg.get("label") or fraction_name,
+                    "round_values": False,
+                },
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=fraction_resampling_name,
+            )
+            metadata.update(
+                {
+                    "source_variable": variable,
+                    "category_fraction": True,
+                    "category_class_values": fraction_cfg.get("class_values"),
+                    "category_label": fraction_cfg.get("label"),
+                    "resampling": fraction_resampling_name,
+                    "reference_year": (
+                        variable_cfg.get("temporal", {}).get("reference_year")
+                        if isinstance(variable_cfg.get("temporal"), dict)
+                        else source.get("source_period")
+                    ),
+                }
+            )
+
+            written_paths.append(
+                write_feature_raster(
+                    output_path=output_path,
+                    array=fraction_array,
+                    grid=grid,
+                    metadata={key: value for key, value in metadata.items() if value is not None},
+                    **output_options,
+                    validate=True,
+                )
+            )
 
     return written_paths

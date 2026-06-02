@@ -6,15 +6,21 @@ from typing import Any
 import numpy as np
 
 from src.io.paths import get_source_clipped_dir, get_feature_output_dir
+from src.pipeline.config import get_temporal_aggregations, years_from_range
+from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     load_grid_context,
     print_grid_context,
     read_raster_to_grid,
+    read_category_fraction_to_grid,
     write_feature_raster,
+    build_feature_metadata,
     build_static_feature_metadata,
+    get_resampling_method,
     get_variable_resampling_method,
     get_variable_resampling_method_name,
 )
+from src.pipeline.temporal import aggregate_stack
 from src.sources.copernicus.naming import (
     validate_copernicus_source_config,
     get_enabled_variable_items,
@@ -124,6 +130,178 @@ def _postprocess_array(
     return out.astype(np.float32)
 
 
+def _reference_year(variable_cfg: dict) -> int | None:
+    temporal = variable_cfg.get("temporal", {}) or {}
+    if not isinstance(temporal, dict) or temporal.get("reference_year") is None:
+        return None
+    return int(temporal["reference_year"])
+
+
+def _yearly_base_variable(variable: str, variable_cfg: dict) -> str:
+    return str(variable_cfg.get("generated_from_group") or variable)
+
+
+def _yearly_aggregation_applies(
+    aggregation_cfg: dict,
+    base_variable: str,
+    variable_items: list[tuple[str, dict]],
+) -> bool:
+    variables = aggregation_cfg.get("variables")
+    if variables is None:
+        return True
+    selected = {str(item) for item in variables}
+    return base_variable in selected or any(variable in selected for variable, _ in variable_items)
+
+
+def _build_yearly_static_aggregations(
+    project_cfg: dict,
+    source_cfg: dict,
+    clip_aoi_cfg: dict,
+    output_aoi_cfg: dict,
+) -> list[Path]:
+    source = source_cfg["source"]
+    clip_aoi_name = clip_aoi_cfg["name"]
+    output_aoi_name = output_aoi_cfg["name"]
+    target_resolution_m = _get_target_resolution_m(source_cfg)
+    output_options = _get_output_options(project_cfg, source_cfg)
+
+    grid = load_grid_context(
+        project_cfg=project_cfg,
+        aoi_cfg=output_aoi_cfg,
+        resolution_m=target_resolution_m,
+    )
+
+    variables_by_base: dict[str, list[tuple[str, dict]]] = {}
+    for variable, variable_cfg in get_enabled_variable_items(source_cfg):
+        if _reference_year(variable_cfg) is None:
+            continue
+        base_variable = _yearly_base_variable(variable, variable_cfg)
+        variables_by_base.setdefault(base_variable, []).append((variable, variable_cfg))
+
+    written_paths: list[Path] = []
+
+    progress_log("[build-yearly] Copernicus temporal output mode: aggregate")
+    print_grid_context(grid, prefix="[build-yearly]")
+
+    for aggregation_cfg in get_temporal_aggregations(source_cfg):
+        metric = aggregation_cfg["metric"]
+        years = years_from_range(aggregation_cfg["years"])
+        year_set = set(years)
+        aggregation_name = str(aggregation_cfg.get("name", metric))
+
+        for base_variable, variable_items in variables_by_base.items():
+            if not _yearly_aggregation_applies(aggregation_cfg, base_variable, variable_items):
+                continue
+
+            selected_items = [
+                (variable, variable_cfg)
+                for variable, variable_cfg in variable_items
+                if _reference_year(variable_cfg) in year_set
+            ]
+            selected_items.sort(key=lambda item: _reference_year(item[1]) or 0)
+
+            if not selected_items:
+                continue
+
+            arrays: list[np.ndarray] = []
+            first_variable, first_cfg = selected_items[0]
+            resampling = get_variable_resampling_method(source_cfg, first_variable)
+            resampling_name = get_variable_resampling_method_name(
+                source_cfg,
+                first_variable,
+            )
+
+            progress_log(f"[build-yearly] Variable: {base_variable}")
+            progress_log(f"[build-yearly] Aggregation: {aggregation_name}")
+            progress_log(f"[build-yearly] Years: {years[0]}-{years[-1]}")
+
+            for variable, variable_cfg in selected_items:
+                clipped_path = _get_clipped_path(
+                    project_cfg=project_cfg,
+                    source_cfg=source_cfg,
+                    clip_aoi_name=clip_aoi_name,
+                    variable=variable,
+                )
+                if not clipped_path.exists():
+                    if not bool(variable_cfg.get("required", True)):
+                        progress_log(
+                            f"[build-yearly] Optional clipped raster missing, "
+                            f"skipping: {clipped_path}"
+                        )
+                        continue
+                    raise FileNotFoundError(
+                        f"Missing clipped Copernicus raster: {clipped_path}\n"
+                        "Run the clip stage first."
+                    )
+
+                array = read_raster_to_grid(
+                    raster_path=clipped_path,
+                    grid=grid,
+                    resampling=resampling,
+                    band=int(variable_cfg.get("band", 1)),
+                    scale_factor=float(variable_cfg.get("scale_factor", 1.0)),
+                    resampling_method_name=resampling_name,
+                )
+                arrays.append(_postprocess_array(array, variable_cfg))
+
+            if not arrays:
+                continue
+
+            aggregated = aggregate_stack(
+                stack=np.stack(arrays, axis=0),
+                metric=metric,
+            ).astype(np.float32)
+
+            output_variable = f"{base_variable}_{aggregation_name}"
+            output_path = _get_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                variable=output_variable,
+            )
+
+            metadata = build_feature_metadata(
+                source_cfg=source_cfg,
+                variable=base_variable,
+                variable_cfg=first_cfg,
+                aggregation_cfg=aggregation_cfg,
+                months=[],
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=resampling_name,
+            )
+            metadata.update(
+                {
+                    "years": years,
+                    "year_start": years[0],
+                    "year_end": years[-1],
+                    "temporal_output_mode": "aggregate",
+                    "input_variables": [item[0] for item in selected_items],
+                    "provider": source.get("provider"),
+                    "product": source.get("product"),
+                }
+            )
+
+            written_paths.append(
+                write_feature_raster(
+                    output_path=output_path,
+                    array=aggregated,
+                    grid=grid,
+                    metadata={
+                        key: value
+                        for key, value in metadata.items()
+                        if value is not None
+                    },
+                    **output_options,
+                    validate=True,
+                )
+            )
+
+    return written_paths
+
+
 def _build_copernicus_static_metadata(
     source_cfg: dict,
     variable: str,
@@ -172,6 +350,17 @@ def _build_copernicus_static_metadata(
     }
 
 
+def _category_fractions_for_variable(
+    source_cfg: dict,
+    variable: str,
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in source_cfg.get("category_fractions", []) or []
+        if item.get("variable") == variable
+    ]
+
+
 def build_copernicus_features(
     project_cfg: dict,
     source_cfg: dict,
@@ -186,6 +375,17 @@ def build_copernicus_features(
       - static_multi: several enabled variables
     """
     validate_copernicus_source_config(source_cfg)
+
+    if (
+        source_cfg.get("dataset", {}).get("layer_structure") == "yearly_static_collection"
+        and source_cfg.get("temporal", {}).get("output_mode") == "aggregate"
+    ):
+        return _build_yearly_static_aggregations(
+            project_cfg=project_cfg,
+            source_cfg=source_cfg,
+            clip_aoi_cfg=clip_aoi_cfg,
+            output_aoi_cfg=output_aoi_cfg,
+        )
 
     clip_aoi_name = clip_aoi_cfg["name"]
     output_aoi_name = output_aoi_cfg["name"]
@@ -239,14 +439,6 @@ def build_copernicus_features(
                 "Run the clip stage first."
             )
 
-        output_path = _get_output_path(
-            project_cfg=project_cfg,
-            source_cfg=source_cfg,
-            output_aoi_name=output_aoi_name,
-            target_resolution_m=target_resolution_m,
-            variable=variable,
-        )
-
         print("==============================")
         print(f"[build] Variable: {variable}")
         print(f"[build] Description: {variable_cfg.get('description', '')}")
@@ -255,42 +447,111 @@ def build_copernicus_features(
         print(f"[build] Scale factor: {scale_factor}")
         print(f"[build] Resampling: {resampling_name}")
         print(f"[build] Clipped path: {clipped_path}")
-        print(f"[build] Output path: {output_path}")
 
-        grid_array = read_raster_to_grid(
-            raster_path=clipped_path,
-            grid=grid,
-            resampling=resampling,
-            band=1,
-            scale_factor=scale_factor,
-            resampling_method_name=resampling_name,
-        )
+        if bool(variable_cfg.get("build_output_enabled", True)):
+            output_path = _get_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                variable=variable,
+            )
+            print(f"[build] Output path: {output_path}")
 
-        grid_array = _postprocess_array(
-            array=grid_array,
-            variable_cfg=variable_cfg,
-        )
+            grid_array = read_raster_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                resampling=resampling,
+                band=1,
+                scale_factor=scale_factor,
+                resampling_method_name=resampling_name,
+            )
 
-        metadata = _build_copernicus_static_metadata(
-            source_cfg=source_cfg,
-            variable=variable,
-            variable_cfg=variable_cfg,
-            clip_aoi_name=clip_aoi_name,
-            output_aoi_name=output_aoi_name,
-            target_resolution_m=target_resolution_m,
-            resampling_method_name=resampling_name,
-        )
+            grid_array = _postprocess_array(
+                array=grid_array,
+                variable_cfg=variable_cfg,
+            )
 
-        written_path = write_feature_raster(
-            output_path=output_path,
-            array=grid_array,
-            grid=grid,
-            metadata=metadata,
-            **output_options,
-            validate=True,
-        )
+            metadata = _build_copernicus_static_metadata(
+                source_cfg=source_cfg,
+                variable=variable,
+                variable_cfg=variable_cfg,
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=resampling_name,
+            )
 
-        print(f"[build] Written: {written_path}")
-        written_paths.append(written_path)
+            written_path = write_feature_raster(
+                output_path=output_path,
+                array=grid_array,
+                grid=grid,
+                metadata=metadata,
+                **output_options,
+                validate=True,
+            )
+
+            print(f"[build] Written: {written_path}")
+            written_paths.append(written_path)
+
+        for fraction_cfg in _category_fractions_for_variable(source_cfg, variable):
+            fraction_name = str(fraction_cfg["name"])
+            output_path = _get_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                variable=fraction_name,
+            )
+            print(f"[build] Category fraction: {fraction_name}")
+            print(f"[build] Class values: {fraction_cfg.get('class_values')}")
+            print(f"[build] Output path: {output_path}")
+            fraction_resampling_name = str(fraction_cfg.get("resampling", "average"))
+
+            fraction_array = read_category_fraction_to_grid(
+                raster_path=clipped_path,
+                grid=grid,
+                class_values=fraction_cfg["class_values"],
+                resampling=get_resampling_method(fraction_resampling_name),
+                band=1,
+            )
+            metadata = _build_copernicus_static_metadata(
+                source_cfg=source_cfg,
+                variable=variable,
+                variable_cfg={
+                    **variable_cfg,
+                    "unit": "fraction",
+                    "valid_range": [0, 1],
+                    "data_type": "percentage",
+                    "value_semantics": "fraction",
+                    "description": fraction_cfg.get("label") or fraction_name,
+                    "round_values": False,
+                },
+                clip_aoi_name=clip_aoi_name,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                resampling_method_name=fraction_resampling_name,
+            )
+            metadata.update(
+                {
+                    "variable": fraction_name,
+                    "source_variable": variable,
+                    "category_fraction": True,
+                    "category_class_values": fraction_cfg.get("class_values"),
+                    "category_label": fraction_cfg.get("label"),
+                    "resampling": fraction_resampling_name,
+                }
+            )
+
+            written_path = write_feature_raster(
+                output_path=output_path,
+                array=fraction_array,
+                grid=grid,
+                metadata={key: value for key, value in metadata.items() if value is not None},
+                **output_options,
+                validate=True,
+            )
+            print(f"[build] Written: {written_path}")
+            written_paths.append(written_path)
 
     return written_paths

@@ -237,6 +237,117 @@ def mosaic_zip_geotiffs(
     return output_path
 
 
+def mosaic_mixed_geotiffs(
+    *,
+    input_paths: list[Path],
+    output_path: Path,
+    zip_member_pattern: str | None,
+    overwrite: bool,
+    compression: str = "LZW",
+    allow_multiple_zip_members: bool = False,
+    skip_zip_without_matching_members: bool = False,
+) -> Path:
+    output_path = Path(output_path)
+
+    if output_path.exists() and not overwrite:
+        print(f"[postprocess] Mosaic exists, skipping: {output_path}")
+        return output_path
+
+    raster_uris: list[str] = []
+    zip_count = 0
+
+    for path in input_paths:
+        path = Path(path)
+        suffix = path.suffix.lower()
+
+        if suffix in {".tif", ".tiff"}:
+            raster_uris.append(str(path))
+            continue
+
+        if suffix != ".zip":
+            continue
+
+        zip_count += 1
+        members = find_tif_members_in_zip(
+            zip_path=path,
+            zip_member_pattern=zip_member_pattern,
+        )
+
+        if len(members) == 0:
+            message = (
+                f"No GeoTIFF members found in {path} "
+                f"with zip_member_pattern={zip_member_pattern!r}"
+            )
+            if skip_zip_without_matching_members:
+                print(f"[postprocess] {message}. Skipping ZIP.")
+                continue
+            raise FileNotFoundError(message)
+
+        if len(members) > 1 and not allow_multiple_zip_members:
+            listing = "\n".join(members[:30])
+            raise RuntimeError(
+                f"More than one GeoTIFF member found in {path}.\n"
+                "Please set a more restrictive zip_member_pattern, or set:\n"
+                "  allow_multiple_zip_members: true\n"
+                "if all matching TIFFs should be mosaicked.\n"
+                f"Members:\n{listing}"
+            )
+
+        for member in members:
+            raster_uris.append(zip_member_to_rasterio_uri(path, member))
+
+    if not raster_uris:
+        raise FileNotFoundError(
+            "No GeoTIFF files or ZIP GeoTIFF members were selected for "
+            "mosaic_mixed_geotiff."
+        )
+
+    print("[postprocess] Building mixed GeoTIFF mosaic")
+    print(f"[postprocess] Input files: {len(input_paths)}")
+    print(f"[postprocess] ZIP files inspected: {zip_count}")
+    print(f"[postprocess] Raster inputs selected: {len(raster_uris)}")
+    print(f"[postprocess] Output mosaic: {output_path}")
+
+    srcs = []
+    try:
+        for uri in raster_uris:
+            print(f"  - {uri}")
+            srcs.append(rasterio.open(uri))
+
+        mosaic, transform = merge(srcs)
+
+        profile = srcs[0].profile.copy()
+        profile.update(
+            driver="GTiff",
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            count=mosaic.shape[0],
+            transform=transform,
+            compress=compression,
+            BIGTIFF="IF_SAFER",
+        )
+
+        ensure_parent(output_path)
+
+        if output_path.exists() and overwrite:
+            output_path.unlink()
+
+        with rasterio.open(output_path, "w", **profile) as dst:
+            dst.write(mosaic)
+            dst.update_tags(
+                postprocess="mosaic_mixed_geotiff",
+                input_file_count=str(len(input_paths)),
+                selected_raster_count=str(len(raster_uris)),
+            )
+
+    finally:
+        for src in srcs:
+            src.close()
+
+    print(f"[postprocess] Mosaic written: {output_path}")
+    return output_path
+
+
 def run_static_postprocess(
     *,
     postprocess: str | None,
@@ -289,6 +400,21 @@ def run_static_postprocess(
 
         return mosaic_zip_geotiffs(
             zip_paths=zip_paths,
+            output_path=output_path,
+            zip_member_pattern=spec.get("zip_member_pattern"),
+            overwrite=overwrite,
+            compression=compression,
+            allow_multiple_zip_members=bool(
+                spec.get("allow_multiple_zip_members", False)
+            ),
+            skip_zip_without_matching_members=bool(
+                spec.get("skip_zip_without_matching_members", False)
+            ),
+        )
+
+    if postprocess == "mosaic_mixed_geotiff":
+        return mosaic_mixed_geotiffs(
+            input_paths=input_paths,
             output_path=output_path,
             zip_member_pattern=spec.get("zip_member_pattern"),
             overwrite=overwrite,

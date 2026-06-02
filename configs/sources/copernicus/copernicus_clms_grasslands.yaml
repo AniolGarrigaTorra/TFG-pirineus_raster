@@ -81,6 +81,10 @@ variables:
     value_semantics: categorical
     native_resolution_m: 10
     round_values: true
+    category_classes:
+      - value: 1
+        name: grassland
+        label: "Grassland"
     temporal:
       type: static
       reference_year: 2021

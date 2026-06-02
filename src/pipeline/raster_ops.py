@@ -240,6 +240,64 @@ def read_raster_to_grid(
     return dst
 
 
+def read_category_fraction_to_grid(
+    raster_path: Path,
+    grid: GridContext,
+    class_values: list[int | float | str],
+    resampling: Resampling = Resampling.average,
+    band: int = 1,
+) -> np.ndarray:
+    """
+    Align a categorical raster to the target grid as class coverage fraction.
+
+    The source raster is first converted to a 0/1 mask in source space, then
+    resampled with average. For upscaling, each target pixel therefore stores
+    the fraction of valid source pixels belonging to the requested class/group.
+    """
+    raster_path = Path(raster_path)
+
+    if not raster_path.exists():
+        raise FileNotFoundError(f"Input raster does not exist: {raster_path}")
+
+    values = np.array([float(value) for value in class_values], dtype=np.float32)
+    if values.size == 0:
+        raise ValueError("class_values must contain at least one category value.")
+
+    dst = np.full(
+        grid.shape,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    with rasterio.open(raster_path) as src:
+        src_array = src.read(band).astype(np.float32)
+        src_nodata = src.nodata
+
+        valid = np.isfinite(src_array)
+        if src_nodata is not None:
+            valid &= src_array != float(src_nodata)
+
+        mask = np.full(src_array.shape, np.nan, dtype=np.float32)
+        mask[valid] = np.isin(src_array[valid], values).astype(np.float32)
+
+        reproject(
+            source=mask,
+            destination=dst,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=np.nan,
+            dst_transform=grid.transform,
+            dst_crs=grid.crs,
+            dst_nodata=np.nan,
+            resampling=resampling,
+        )
+
+    dst = dst.astype(np.float32)
+    dst[~np.isfinite(dst)] = np.nan
+
+    return dst
+
+
 def _source_pixel_area_m2(src) -> float | None:
     crs = src.crs
     if crs is None or not crs.is_projected:

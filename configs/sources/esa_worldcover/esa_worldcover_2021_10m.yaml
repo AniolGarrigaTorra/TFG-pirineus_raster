@@ -1,0 +1,132 @@
+source:
+  id: esa_worldcover_2021_10m
+  provider: esa_worldcover
+  product: worldcover_2021_10m
+  product_group: land_cover
+  version: "v200"
+  title: "ESA WorldCover 2021"
+  description: "ESA WorldCover global land-cover map at 10 m resolution."
+  summary: "Sentinel-1 and Sentinel-2 based global land-cover classification for 2021 at 10 m."
+  long_description: >-
+    ESA WorldCover 2021 provides a global land-cover map with eleven thematic
+    classes at 10 m spatial resolution. Pirineus Raster downloads the six
+    official 3 x 3 degree tiles that overlap the full Pyrenees AOI, mosaics
+    them, clips the mosaic and exposes both the categorical class raster and
+    optional class-fraction layers for coarser target grids.
+  page_url: "https://esa-worldcover.org/en"
+  documentation_url: "https://esa-worldcover.org/en/data-access"
+  source_crs: EPSG:4326
+  source_period: "2021"
+  citation: "ESA WorldCover 2021 v200. European Space Agency."
+
+dataset:
+  layer_structure: static_single
+  file_format: geotiff
+  native_resolution_m: 10
+  data_type: categorical
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+download:
+  enabled: true
+  mode: manual_url
+  overwrite_existing: false
+  files:
+    worldcover:
+      filename: esa_worldcover_2021_10m_pyrenees_full_mosaic.tif
+      filenames:
+        - ESA_WorldCover_10m_2021_v200_N39W003_Map.tif
+        - ESA_WorldCover_10m_2021_v200_N39E000_Map.tif
+        - ESA_WorldCover_10m_2021_v200_N39E003_Map.tif
+        - ESA_WorldCover_10m_2021_v200_N42W003_Map.tif
+        - ESA_WorldCover_10m_2021_v200_N42E000_Map.tif
+        - ESA_WorldCover_10m_2021_v200_N42E003_Map.tif
+      urls:
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N39W003_Map.tif"
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N39E000_Map.tif"
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N39E003_Map.tif"
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N42W003_Map.tif"
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N42E000_Map.tif"
+        - "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N42E003_Map.tif"
+      postprocess: mosaic_mixed_geotiff
+
+processing:
+  source_resolution: 10m
+  source_resolutions: [10m]
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+  by_variable:
+    worldcover: nearest
+
+variables:
+  worldcover:
+    enabled: true
+    description: "ESA WorldCover land-cover class"
+    unit: class
+    scale_factor: 1.0
+    valid_range: [0, 100]
+    data_type: categorical
+    value_semantics: categorical
+    native_resolution_m: 10
+    round_values: true
+    category_classes:
+      - value: 10
+        name: tree_cover
+        label: "Tree cover"
+      - value: 20
+        name: shrubland
+        label: "Shrubland"
+      - value: 30
+        name: grassland
+        label: "Grassland"
+      - value: 40
+        name: cropland
+        label: "Cropland"
+      - value: 50
+        name: built_up
+        label: "Built-up"
+      - value: 60
+        name: bare_sparse_vegetation
+        label: "Bare or sparse vegetation"
+      - value: 70
+        name: snow_and_ice
+        label: "Snow and ice"
+      - value: 80
+        name: permanent_water_bodies
+        label: "Permanent water bodies"
+      - value: 90
+        name: herbaceous_wetland
+        label: "Herbaceous wetland"
+      - value: 95
+        name: mangroves
+        label: "Mangroves"
+      - value: 100
+        name: moss_and_lichen
+        label: "Moss and lichen"
+      - values: [80, 90]
+        name: water_and_wetlands
+        label: "Water and herbaceous wetlands"
+      - values: [20, 30]
+        name: open_low_vegetation
+        label: "Shrubland and grassland"
+      - values: [60, 70, 100]
+        name: sparse_snow_moss_lichen
+        label: "Sparse vegetation, snow, moss or lichen"
+    temporal:
+      type: static
+      reference_year: 2021
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

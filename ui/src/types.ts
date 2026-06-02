@@ -35,6 +35,7 @@ export interface VariableCatalog {
   data_type?: string;
   value_semantics?: string;
   native_resolution_m?: number;
+  category_classes?: CategoryClassCatalog[];
   index?: number;
   resampling?: string;
   dataset?: string;
@@ -42,6 +43,14 @@ export interface VariableCatalog {
   geometry_type?: string;
   temporal?: Dict;
   generated_from?: string;
+}
+
+export interface CategoryClassCatalog {
+  value?: string | number;
+  values?: Array<string | number>;
+  name?: string;
+  label?: string;
+  description?: string;
 }
 
 export interface TemporalCapability {
@@ -58,6 +67,7 @@ export interface TemporalCapability {
   default_months?: [number, number];
   default_years?: [number, number];
   available_years?: [number, number];
+  postprocess_metrics?: string[];
   temporal_layers?: {
     annual?: boolean;
     annual_index?: boolean;
@@ -141,7 +151,18 @@ export interface CustomAggregation {
   within_year_metric?: string;
   across_year_metric?: string;
   output_metric_name?: string;
+  threshold?: number;
+  comparison?: string;
+  start_date?: string;
+  end_date?: string;
   variables: string[];
+}
+
+export interface CategoryFractionSelection {
+  variable: string;
+  name: string;
+  class_values: Array<string | number>;
+  label?: string;
 }
 
 export interface TemporalSelection {
@@ -168,6 +189,7 @@ export interface SourceSelection {
   keepRawAfterClip: boolean;
   variables: string[];
   layers: string[];
+  categoryFractions: CategoryFractionSelection[];
   dimensions: Record<string, string[]>;
   temporal: TemporalSelection;
   resamplingByVariable: Record<string, string>;
