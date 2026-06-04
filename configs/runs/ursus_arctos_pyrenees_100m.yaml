@@ -1,0 +1,338 @@
+run:
+  name: ursus_arctos_pyrenees_100m
+  description: 'Dataset for: ursus arctos habitability project. We include all the
+    features that can be related to the habitat variability for the female ursus arctos
+    with cubs'
+  project_config: configs/project.yaml
+  crs: EPSG:3035
+  aoi_config: configs/aoi/ursus_arctos_pyrenees.yaml
+  resolution_m: 100
+  stages:
+  - all
+sources:
+- id: copernicus_clms_clcplus_backbone
+  config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
+  select:
+    variables: []
+    category_fractions:
+    - variable: clcplus_backbone
+      name: clcplus_backbone_fraction_low_growing_woody_plants
+      class_values:
+      - 5
+      label: Low-growing woody plants
+    - variable: clcplus_backbone
+      name: clcplus_backbone_fraction_herbaceous_all
+      class_values:
+      - 6
+      - 7
+      label: Permanent and periodically herbaceous
+    - variable: clcplus_backbone
+      name: clcplus_backbone_fraction_sparse_open_surfaces
+      class_values:
+      - 8
+      - 9
+      label: Lichens, mosses and sparse vegetation
+    temporal:
+      output_mode: supplied_layers
+      layers:
+        annual: false
+        annual_index: false
+        months: []
+        seasons: []
+        years:
+        - 2018
+- id: copernicus_clms_forest
+  config: configs/sources/copernicus/copernicus_clms_forest.yaml
+  select:
+    variables:
+    - tree_cover_density
+    category_fractions:
+    - variable: dominant_leaf_type
+      name: dominant_leaf_type_fraction_broadleaved_forest
+      class_values:
+      - 1
+      label: Broadleaved forest
+    - variable: dominant_leaf_type
+      name: dominant_leaf_type_fraction_coniferous_forest
+      class_values:
+      - 2
+      label: Coniferous forest
+- id: copernicus_clms_hrvpp_vpp_laea
+  config: configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml
+  select:
+    variables:
+    - total_productivity
+    dimensions:
+      growth_season: []
+    temporal:
+      output_mode: aggregate
+      aggregations:
+        use: []
+        custom:
+        - name: total_productivity_mean
+          form: year_range_metric
+          variables:
+          - total_productivity
+          years:
+          - 2017
+          - 2024
+          metric: mean
+          threshold: 50
+          comparison: '>='
+- id: copernicus_dem_glo30
+  config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+  select:
+    variables:
+    - elevation
+- id: copernicus_hrsi_snow
+  config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+  select:
+    variables:
+    - snow_fraction
+    temporal:
+      output_mode: postprocess_aggregate
+      aggregations:
+        use:
+        - snow_cover_days_winter
+        - snow_fraction_mean_spring
+        - snow_fraction_mean_winter
+        - snow_cover_days_spring
+        custom: []
+- id: esa_cci_biomass_agb_100m
+  config: configs/sources/esa_cci/esa_cci_biomass_agb_100m.yaml
+  select:
+    variables:
+    - agb
+    temporal:
+      output_mode: aggregate
+      aggregations:
+        use: []
+        custom:
+        - name: agb_mean
+          form: year_range_metric
+          variables:
+          - agb
+          years:
+          - 2005
+          - 2024
+          metric: mean
+          threshold: 50
+          comparison: '>='
+- id: ghsl_ghs_built_s_r2023a
+  config: configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml
+  select:
+    variables:
+    - built_surface
+    - built_surface_non_residential
+    temporal:
+      output_mode: aggregate
+      aggregations:
+        use: []
+        custom:
+        - name: built_surface_mean
+          form: year_range_metric
+          variables:
+          - built_surface
+          years:
+          - 2010
+          - 2020
+          metric: mean
+          threshold: 50
+          comparison: '>='
+- id: ghsl_ghs_pop_r2023a
+  config: configs/sources/ghsl/ghsl_ghs_pop_r2023a.yaml
+  select:
+    variables:
+    - population_count
+    temporal:
+      output_mode: aggregate
+      aggregations:
+        use: []
+        custom:
+        - name: population_count_mean
+          form: year_range_metric
+          variables:
+          - population_count
+          years:
+          - 2010
+          - 2020
+          metric: mean
+          threshold: 50
+          comparison: '>='
+- id: openstreetmap_geofabrik_pyrenees
+  config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+  select:
+    layers:
+    - transport.secondary_roads_distance
+    - transport.forest_tracks_distance
+    - settlements.settlements_distance
+    - built_environment.buildings_presence
+    - built_environment.anthropic_landuse_presence
+- id: pdca_topoclimate_1950_2012
+  config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+  select:
+    variables:
+    - tmin
+    - tmax
+    - tmean
+    - prec
+    - pet
+    - water_availability
+    - gdd
+    - psr
+    temporal:
+      output_mode: supplied_layers
+      layers:
+        annual: false
+        annual_index: false
+        months: []
+        seasons:
+        - winter
+        - spring
+        - summer
+        - autumn
+        years: []
+  overrides:
+    resampling:
+      by_variable:
+        tmean: average
+        tmax: average
+        tmin: average
+derived_features:
+- name: slope
+  operation: terrain
+  method: slope
+  description: Slope derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters: {}
+  inputs:
+    dem:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: aspect
+  operation: terrain
+  method: aspect
+  description: Aspect derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters: {}
+  inputs:
+    dem:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: slope_std_focal_r3
+  operation: focal
+  method: std
+  description: Std derived from Derived · slope.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters:
+    radius: 3
+  inputs:
+    x:
+      source_id: derived
+      variable: slope
+- name: ruggedness
+  operation: terrain
+  method: ruggedness
+  description: Ruggedness derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters:
+    radius: 3
+  inputs:
+    dem:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: roughness
+  operation: terrain
+  method: roughness
+  description: Roughness derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters:
+    radius: 3
+  inputs:
+    dem:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: tpi
+  operation: terrain
+  method: tpi
+  description: Tpi derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters:
+    radius: 3
+  inputs:
+    dem:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: mean_elevation_focal_r50
+  operation: focal
+  method: mean
+  description: Mean derived from CLMS dem glo30 · elevation.
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  parameters:
+    radius: 50
+  inputs:
+    x:
+      source_id: copernicus_dem_glo30
+      variable: elevation
+- name: log_secondary_roads_distance
+  operation: expression
+  expression: log(x+1)
+  description: 'logaritmic distance from yhe pixel to the nearest secondary road. '
+  unit: log(meters)
+  value_semantics: intensive
+  output_dtype: float32
+  inputs:
+    x:
+      source_id: openstreetmap_geofabrik_pyrenees
+      variable: transport.secondary_roads_distance
+    y:
+      source_id: copernicus_clms_clcplus_backbone
+      variable: clcplus_backbone_fraction_herbaceous_all
+- name: log_forest_tracks_distance
+  operation: expression
+  expression: log(x+1)
+  description: logaritmic distance from pixel to nearest forest track
+  unit: log(meters)
+  value_semantics: intensive
+  output_dtype: float32
+  inputs:
+    x:
+      source_id: openstreetmap_geofabrik_pyrenees
+      variable: transport.forest_tracks_distance
+    y:
+      source_id: copernicus_clms_clcplus_backbone
+      variable: clcplus_backbone_fraction_herbaceous_all
+- name: log_settlements_distance
+  operation: expression
+  expression: log(x+1)
+  description: logaritmic distance from pixel to nearest settlement
+  unit: log(meters)
+  value_semantics: intensive
+  output_dtype: float32
+  inputs:
+    x:
+      source_id: openstreetmap_geofabrik_pyrenees
+      variable: settlements.settlements_distance
+    y:
+      source_id: copernicus_clms_clcplus_backbone
+      variable: clcplus_backbone_fraction_herbaceous_all
+outputs:
+  dataset_dir: data_processed/datasets/ursus_arctos_pyrenees_100m
+  copy_rasters: true
+  overwrite_existing: true
+  write_run_summary: true
+  write_manifest: true
