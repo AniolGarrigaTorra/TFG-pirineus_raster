@@ -860,6 +860,7 @@ def run_temporal_zip_geotiff_aggregation(
 
         print("==============================")
         print(f"[temporal] Variable: {variable_name}")
+        print(f"[temporal] Source variable: {metric_cfg.get('source_variable')}")
         print(f"[temporal] Method: {metric_cfg.get('method')}")
         print(f"[temporal] Months: {months}")
         print(f"[temporal] Dates selected: {len(selected_by_date)}")
@@ -882,6 +883,7 @@ def run_temporal_zip_geotiff_aggregation(
             overwrite=overwrite,
             metadata={
                 "variable": variable_name,
+                "source_variable": metric_cfg.get("source_variable"),
                 "method": metric_cfg.get("method"),
                 "months": months,
                 "threshold": metric_cfg.get("threshold"),
@@ -896,6 +898,7 @@ def run_temporal_zip_geotiff_aggregation(
         generated_manifest["generated_variables"][variable_name] = {
             "path": str(written),
             "filename": filename,
+            "source_variable": metric_cfg.get("source_variable"),
             "method": metric_cfg.get("method"),
             "months": months,
             "n_dates": len(selected_by_date),

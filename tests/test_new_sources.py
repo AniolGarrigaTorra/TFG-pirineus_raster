@@ -17,8 +17,10 @@ from src.sources.copernicus.naming import (
     get_download_file_specs as get_copernicus_download_file_specs,
 )
 from src.sources.worldclim.naming import (
+    build_worldclim_cmip6_download_url,
     build_worldclim_download_url,
     build_worldclim_zip_name,
+    get_file_specs,
     get_zip_specs,
 )
 from src.sources.registry import list_source_connectors
@@ -51,6 +53,10 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(
             [item["name"] for item in catalogs["ghsl_ghs_pop_r2023a"]["variables"]],
             ["population_count"],
+        )
+        self.assertEqual(
+            catalogs["ghsl_ghs_pop_r2023a"]["variables"][0]["description"],
+            "Resident population count",
         )
         self.assertIn(
             "aggregate",
@@ -89,21 +95,56 @@ class NewSourceIntegrationTests(unittest.TestCase):
             ["settlement_model"],
         )
         self.assertEqual(
-            [item["name"] for item in catalogs["esa_worldcover_2021_10m"]["variables"]],
+            catalogs["ghsl_ghs_smod_r2023a"]["variables"][0]["description"],
+            "GHSL settlement model class",
+        )
+        self.assertEqual(
+            [item["name"] for item in catalogs["esa_worldcover_land_cover_10m"]["variables"]],
             ["worldcover"],
         )
         worldcover_classes = {
             item["name"]
-            for item in catalogs["esa_worldcover_2021_10m"]["variables"][0]["category_classes"]
+            for item in catalogs["esa_worldcover_land_cover_10m"]["variables"][0]["category_classes"]
         }
         self.assertIn("tree_cover", worldcover_classes)
         self.assertIn("open_low_vegetation", worldcover_classes)
+        self.assertEqual(
+            catalogs["esa_worldcover_land_cover_10m"]["temporal"]["temporal_layers"]["years"],
+            [2020, 2021],
+        )
+        self.assertEqual(
+            catalogs["esa_worldcover_land_cover_10m"]["temporal"]["output_modes"],
+            ["supplied_layers"],
+        )
+        self.assertEqual(
+            catalogs["copernicus_clms_clcplus_backbone"]["temporal"]["temporal_layers"]["years"],
+            [2018, 2021, 2023],
+        )
+        self.assertEqual(
+            catalogs["copernicus_clms_clcplus_backbone"]["temporal"]["output_modes"],
+            ["supplied_layers"],
+        )
+        self.assertEqual(
+            catalogs["ghsl_ghs_smod_r2023a"]["temporal"]["output_modes"],
+            ["supplied_layers"],
+        )
         hrvpp_variables = {
             item["name"]
             for item in catalogs["copernicus_clms_hrvpp_vpp_laea"]["variables"]
         }
-        self.assertIn("s1_total_productivity", hrvpp_variables)
-        self.assertIn("s2_start_of_season_day", hrvpp_variables)
+        self.assertIn("total_productivity", hrvpp_variables)
+        self.assertIn("start_of_season_day", hrvpp_variables)
+        hrvpp_descriptions = {
+            item["name"]: item["description"]
+            for item in catalogs["copernicus_clms_hrvpp_vpp_laea"]["variables"]
+        }
+        self.assertEqual(hrvpp_descriptions["amplitude"], "Seasonal amplitude")
+        self.assertNotIn("season 1", hrvpp_descriptions["amplitude"])
+        self.assertNotIn("2017", hrvpp_descriptions["amplitude"])
+        self.assertEqual(
+            catalogs["copernicus_clms_hrvpp_vpp_laea"]["dimensions"],
+            {"growth_season": ["s1", "s2"]},
+        )
         self.assertIn(
             "aggregate",
             catalogs["copernicus_clms_hrvpp_vpp_laea"]["temporal"]["output_modes"],
@@ -122,6 +163,16 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(
             catalogs["copernicus_hrsi_snow"]["temporal"]["aggregation_stage"],
             "download_postprocess",
+        )
+        worldclim_cmip6_dimensions = catalogs["worldclim_cmip6_future"]["dimensions"]
+        self.assertEqual(len(worldclim_cmip6_dimensions["gcms"]), 25)
+        self.assertEqual(
+            worldclim_cmip6_dimensions["ssps"],
+            ["ssp126", "ssp245", "ssp370", "ssp585"],
+        )
+        self.assertEqual(
+            worldclim_cmip6_dimensions["periods"],
+            ["2021-2040", "2041-2060", "2061-2080", "2081-2100"],
         )
 
     def test_workbench_compiler_accepts_new_source_selections(self):
@@ -179,13 +230,17 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_worldcover_category_fraction_selection(self):
         source_cfg = expand_source_config(
-            load_yaml("configs/sources/esa_worldcover/esa_worldcover_2021_10m.yaml")
+            load_yaml("configs/sources/esa_worldcover/esa_worldcover_land_cover_10m.yaml")
         )
         compiled = compile_source_config_for_run(
             source_cfg,
             {
                 "select": {
                     "variables": [],
+                    "temporal": {
+                        "output_mode": "supplied_layers",
+                        "layers": {"years": [2021]},
+                    },
                     "category_fractions": [
                         {
                             "variable": "worldcover",
@@ -202,7 +257,8 @@ class NewSourceIntegrationTests(unittest.TestCase):
             },
         )
 
-        self.assertFalse(compiled["variables"]["worldcover"]["build_output_enabled"])
+        self.assertFalse(compiled["variables"]["worldcover_2021"]["build_output_enabled"])
+        self.assertTrue(compiled["variables"]["worldcover_2021"]["enabled"])
         self.assertEqual(
             [item["name"] for item in compiled["category_fractions"]],
             [
@@ -215,6 +271,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(len(specs[0]["urls"]), 6)
         self.assertEqual(specs[0]["postprocess"], "mosaic_mixed_geotiff")
+        self.assertIn("v200", specs[0]["urls"][0])
 
     def test_hrvpp_yearly_templates_and_aggregations(self):
         source_cfg = expand_source_config(
@@ -224,7 +281,8 @@ class NewSourceIntegrationTests(unittest.TestCase):
             source_cfg,
             {
                 "select": {
-                    "variables": ["s1_total_productivity"],
+                    "variables": ["total_productivity"],
+                    "dimensions": {"growth_season": ["s1"]},
                     "temporal": {
                         "output_mode": "supplied_layers",
                         "layers": {"years": [2020]},
@@ -237,10 +295,10 @@ class NewSourceIntegrationTests(unittest.TestCase):
             for name, item in compiled["variables"].items()
             if item.get("enabled")
         ]
-        self.assertEqual(enabled, ["s1_total_productivity_2020"])
+        self.assertEqual(enabled, ["total_productivity_s1_2020"])
 
         spec = get_copernicus_download_file_specs(compiled)[0]
-        self.assertIn("s1_total_productivity_2020_10m", spec["filename"])
+        self.assertIn("total_productivity_s1_2020_10m", spec["filename"])
         self.assertEqual(spec["file_pattern"], "*_s1_TPROD.tif")
         self.assertEqual(spec["hda_query"]["productType"], "TPROD")
         self.assertEqual(spec["hda_query"]["resolution"], "10")
@@ -261,7 +319,8 @@ class NewSourceIntegrationTests(unittest.TestCase):
                     "config": "configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml",
                     "stages": ["build"],
                     "select": {
-                        "variables": ["s1_total_productivity"],
+                        "variables": ["total_productivity"],
+                        "dimensions": {"growth_season": ["s1", "s2"]},
                         "temporal": {
                             "output_mode": "aggregate",
                             "aggregations": {
@@ -271,7 +330,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
                                         "form": "year_range_metric",
                                         "years": [2020, 2022],
                                         "metric": "mean",
-                                        "variables": ["s1_total_productivity"],
+                                        "variables": ["total_productivity"],
                                     }
                                 ]
                             },
@@ -282,7 +341,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
         }
         report = validate_researcher_run_config(cfg)
         self.assertTrue(report["ok"], report["errors"])
-        self.assertEqual(report["estimated_layers"], 1)
+        self.assertEqual(report["estimated_layers"], 2)
 
     def test_yearly_category_fractions_follow_temporal_years(self):
         source_cfg = expand_source_config(
@@ -320,6 +379,45 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertFalse(
             compiled["variables"]["settlement_model_2020"]["build_output_enabled"]
         )
+
+    def test_categorical_yearly_collections_reject_numeric_aggregations(self):
+        cfg = {
+            "run": {
+                "name": "bad_smod_aggregation",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "sources": [
+                {
+                    "id": "smod",
+                    "config": "configs/sources/ghsl/ghsl_ghs_smod_r2023a.yaml",
+                    "stages": ["build"],
+                    "select": {
+                        "variables": ["settlement_model"],
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "mean_2020_2025",
+                                        "form": "year_range_metric",
+                                        "years": [2020, 2025],
+                                        "metric": "mean",
+                                        "variables": ["settlement_model"],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        report = validate_researcher_run_config(cfg)
+        self.assertFalse(report["ok"])
+        self.assertIn("Temporal output_mode 'aggregate'", report["errors"][0])
 
     def test_ghsl_built_surface_resolution_labels_are_mapped_to_provider_tokens(self):
         cfg = expand_source_config(
@@ -394,6 +492,46 @@ class NewSourceIntegrationTests(unittest.TestCase):
         ]
         self.assertEqual(enabled, [f"agb_{year}" for year in range(2015, 2025)])
 
+    def test_yearly_static_aggregations_reject_unavailable_endpoint_years(self):
+        cfg = {
+            "run": {
+                "name": "bad_yearly_endpoint",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "sources": [
+                {
+                    "id": "population",
+                    "config": "configs/sources/ghsl/ghsl_ghs_pop_r2023a.yaml",
+                    "stages": ["build"],
+                    "select": {
+                        "variables": ["population_count"],
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "mean_2006_2009",
+                                        "form": "year_range_metric",
+                                        "years": [2006, 2009],
+                                        "metric": "mean",
+                                        "variables": ["population_count"],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+
+        report = validate_researcher_run_config(cfg)
+        self.assertFalse(report["ok"])
+        self.assertIn("available source years", report["errors"][0])
+
     def test_copernicus_snow_postprocess_aggregations_are_run_configured(self):
         source_cfg = expand_source_config(
             load_yaml("configs/sources/copernicus/copernicus_hrsi_snow.yaml")
@@ -432,6 +570,8 @@ class NewSourceIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(output_variables["snow_days_jan_mar"]["method"], "count_threshold")
         self.assertEqual(output_variables["snow_days_jan_mar"]["months"], [1, 2, 3])
+        self.assertEqual(output_variables["snow_days_jan_mar"]["source_variable"], "snow_fraction")
+        self.assertEqual(output_variables["snow_days_jan_mar"]["variables"], ["snow_fraction"])
 
         enabled = [
             name
@@ -479,6 +619,35 @@ class NewSourceIntegrationTests(unittest.TestCase):
         exact_query = exact_only["download"]["files"]["snow_scenes"]["hda_query"]
         self.assertEqual(exact_query["startdate"], "2022-02-01T00:00:00.000Z")
         self.assertEqual(exact_query["enddate"], "2022-02-15T23:59:59.999Z")
+
+    def test_copernicus_snow_postprocess_rejects_unknown_source_variable(self):
+        source_cfg = expand_source_config(
+            load_yaml("configs/sources/copernicus/copernicus_hrsi_snow.yaml")
+        )
+
+        with self.assertRaisesRegex(ValueError, "Unknown postprocess source variable"):
+            compile_source_config_for_run(
+                source_cfg,
+                {
+                    "select": {
+                        "variables": ["snow_fraction"],
+                        "temporal": {
+                            "output_mode": "postprocess_aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "bad_source_variable",
+                                        "metric": "mean",
+                                        "months": [1, 3],
+                                        "years": [2022, 2022],
+                                        "variables": ["not_snow_fraction"],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                },
+            )
 
     def test_categorical_category_fractions_can_replace_source_variable(self):
         source_cfg = expand_source_config(
@@ -624,6 +793,69 @@ class NewSourceIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(metadata["source_resolution"], "10arcmin")
         self.assertEqual(metadata["source_resolution_unit"], "arcmin")
+
+    def test_worldclim_cmip6_availability_filters_partial_combinations(self):
+        cfg = load_yaml("configs/sources/worldclim/worldclim_cmip6_future.yaml")
+        specs = get_file_specs(cfg)
+
+        self.assertEqual(len(specs), 1156)
+        self.assertFalse(
+            any(
+                item["gcm"] == "FIO-ESM-2-0" and item["ssp"] == "ssp585"
+                for item in specs
+            )
+        )
+        self.assertFalse(
+            any(
+                item["gcm"] == "HadGEM3-GC31-LL" and item["ssp"] == "ssp585"
+                for item in specs
+            )
+        )
+        self.assertFalse(
+            any(
+                item["gcm"] == "GFDL-ESM4" and item["ssp"] == "ssp585"
+                for item in specs
+            )
+        )
+        self.assertFalse(
+            any(
+                item["gcm"] == "GFDL-ESM4"
+                and item["ssp"] == "ssp370"
+                and item["variable"] in {"tmin", "tmax"}
+                for item in specs
+            )
+        )
+        gfdl_prec = [
+            item
+            for item in specs
+            if item["gcm"] == "GFDL-ESM4"
+            and item["ssp"] == "ssp370"
+            and item["variable"] == "prec"
+        ]
+        self.assertEqual(len(gfdl_prec), 4)
+        self.assertIn(
+            "/GFDL-ESM4/ssp370/wc2.1_10m_prec_GFDL-ESM4_ssp370_2021-2040.tif",
+            build_worldclim_cmip6_download_url(cfg, gfdl_prec[0]),
+        )
+
+    def test_worldclim_cmip6_unavailable_selection_fails_before_download(self):
+        cfg = load_yaml("configs/sources/worldclim/worldclim_cmip6_future.yaml")
+        compiled = compile_source_config_for_run(
+            cfg,
+            {
+                "select": {
+                    "variables": ["tmin"],
+                    "dimensions": {
+                        "gcms": ["GFDL-ESM4"],
+                        "ssps": ["ssp585"],
+                        "periods": ["2021-2040"],
+                    },
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "No available WorldClim CMIP6 files"):
+            get_file_specs(compiled)
 
     def test_osm_domains_follow_runner_contract(self):
         cfg = load_yaml("configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml")

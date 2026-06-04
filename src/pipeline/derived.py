@@ -66,6 +66,10 @@ ALLOWED_FUNCTIONS = {
     "isfinite": np.isfinite,
 }
 
+ALLOWED_CONSTANTS = {
+    "nan": np.nan,
+}
+
 NUMERIC_VALUE_SEMANTICS = {
     "intensive",
     "intensive_depth",
@@ -162,7 +166,11 @@ def _validate_expression_node(
         return
 
     if isinstance(node, ast.Name):
-        if node.id not in allowed_names and node.id not in ALLOWED_FUNCTIONS:
+        if (
+            node.id not in allowed_names
+            and node.id not in ALLOWED_FUNCTIONS
+            and node.id not in ALLOWED_CONSTANTS
+        ):
             raise ValueError(f"Unknown name in expression: {node.id}")
         return
 
@@ -278,6 +286,7 @@ def evaluate_raster_expression(
 
     env: dict[str, Any] = dict(variables)
     env.update(ALLOWED_FUNCTIONS)
+    env.update(ALLOWED_CONSTANTS)
 
     result = _eval_expression_node(tree, env)
 

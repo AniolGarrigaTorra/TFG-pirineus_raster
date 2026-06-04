@@ -1,0 +1,163 @@
+source:
+  id: copernicus_clms_clcplus_backbone
+  provider: copernicus
+  product: clms_clcplus_backbone
+  product_group: land_cover
+  version: "2018/2021/2023"
+  title: "CLC+ Backbone"
+  description: "Copernicus Land Monitoring Service CLC+ Backbone raster land-cover product."
+  summary: "Pan-European 10 m CLC+ Backbone raster product with eleven land-cover classes for selected reference years."
+  long_description: >-
+    CLC+ Backbone is a Copernicus Land Monitoring Service raster land-cover
+    product designed as a spatially detailed 10 m backbone for European land
+    monitoring. It provides eleven land-cover classes, including sealed areas,
+    tree classes, low-growing woody plants, herbaceous classes, sparse or
+    non-vegetated surfaces, water, snow and ice. Pirineus Raster downloads the
+    WEkEO tiles intersecting the Pyrenees, mosaics them and exposes the class
+    raster as reference-year layers plus optional class-fraction variables for
+    coarser grids.
+  page_url: "https://land.copernicus.eu/en/products/clc-backbone"
+  documentation_url: "https://land.copernicus.eu/en/products/clc-backbone"
+  source_crs: EPSG:3035
+  source_period: "2018, 2021, 2023"
+  citation: "Copernicus Land Monitoring Service. CLCplus Backbone raster 10 m."
+
+dataset:
+  layer_structure: yearly_static_collection
+  temporal_axis: reference_year
+  file_format: geotiff
+  native_resolution_m: 10
+  data_type: categorical
+  supports_temporal_aggregation: false
+
+domains:
+  clip_aoi_config: configs/aoi/pyrenees_full.yaml
+  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+
+years: [2018, 2021, 2023]
+
+download:
+  enabled: true
+  mode: wekeo_hda
+  overwrite_existing: false
+  hda:
+    max_workers: 2
+    max_results: 200
+    temporary_dir: data_raw/copernicus/_hda_downloads
+    move_downloaded_to_raw: false
+    mosaic_compression: LZW
+    sleep_after_download_seconds: 2
+
+processing:
+  source_resolution: 10m
+  source_resolutions: [10m]
+  target_resolution_m: 100
+  grid_from_project: true
+
+resampling:
+  default: nearest
+  by_variable:
+    clcplus_backbone: nearest
+
+variable_groups:
+  clcplus_backbone:
+    template:
+      name: "clcplus_backbone_{year}"
+      enabled: true
+      description: "CLC+ Backbone land-cover class"
+      unit: class
+      scale_factor: 1.0
+      valid_range: [1, 255]
+      data_type: categorical
+      value_semantics: categorical
+      native_resolution_m: 10
+      round_values: true
+      source_filename: "clcplus_backbone_{year}_10m_pyrenees_full_mosaic.tif"
+      max_results: 200
+      file_pattern: "*.tif"
+      zip_member_pattern: ".*\\.tif$"
+      allow_multiple: true
+      allow_multiple_zip_members: true
+      postprocess: mosaic_mixed_geotiff
+      hda_query:
+        dataset_id: "EO:EEA:DAT:CLC-PLUS"
+        bbox:
+          - -2.28618323
+          - 41.9550235
+          - 3.18030846
+          - 43.47467682
+        productType: "CLCplus Backbone {year} (raster 10 m), Europe, {cycle}"
+        itemsPerPage: 200
+        startIndex: 0
+      category_classes:
+        - value: 1
+          name: sealed
+          label: "Sealed"
+        - value: 2
+          name: woody_needle_leaved_trees
+          label: "Woody needle-leaved trees"
+        - value: 3
+          name: woody_broadleaved_deciduous_trees
+          label: "Woody broadleaved deciduous trees"
+        - value: 4
+          name: woody_broadleaved_evergreen_trees
+          label: "Woody broadleaved evergreen trees"
+        - value: 5
+          name: low_growing_woody_plants
+          label: "Low-growing woody plants"
+        - value: 6
+          name: permanent_herbaceous
+          label: "Permanent herbaceous"
+        - value: 7
+          name: periodically_herbaceous
+          label: "Periodically herbaceous"
+        - value: 8
+          name: lichens_and_mosses
+          label: "Lichens and mosses"
+        - value: 9
+          name: non_and_sparsely_vegetated
+          label: "Non and sparsely vegetated"
+        - value: 10
+          name: water
+          label: "Water"
+        - value: 11
+          name: snow_and_ice
+          label: "Snow and ice"
+        - value: 253
+          name: coastal_seawater_buffer
+          label: "Coastal seawater buffer"
+        - value: 254
+          name: outside_area
+          label: "Outside area"
+        - value: 255
+          name: no_data
+          label: "No data"
+        - values: [2, 3, 4]
+          name: tree_cover_all
+          label: "All tree-cover classes"
+        - values: [3, 4]
+          name: woody_broadleaved_trees
+          label: "Woody broadleaved trees"
+        - values: [6, 7]
+          name: herbaceous_all
+          label: "Permanent and periodically herbaceous"
+        - values: [8, 9]
+          name: sparse_open_surfaces
+          label: "Lichens, mosses and sparse vegetation"
+      temporal:
+        type: static
+        reference_year: "{year}"
+    foreach:
+      - {year: 2018, cycle: "3-yearly"}
+      - {year: 2021, cycle: "3-yearly"}
+      - {year: 2023, cycle: "2-yearly"}
+
+output:
+  write_geotiff: true
+  write_sidecar_json: true
+  compression: LZW
+  dtype: float32
+
+validation:
+  fail_on_out_of_range: false
+  max_out_of_range_fraction: 0.001

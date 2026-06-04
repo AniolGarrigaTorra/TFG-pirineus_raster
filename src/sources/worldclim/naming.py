@@ -26,6 +26,91 @@ MONTHLY_VARIABLES = {
 }
 
 
+def _as_string_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _cmip6_file_spec_is_available(source_cfg: dict, file_spec: dict) -> bool:
+    """
+    Return whether a CMIP6 file is advertised by the configured availability table.
+
+    WorldClim exposes most GCM/SSP/period combinations, but a few GCMs are
+    partial. Keeping the matrix in the source config lets the UI expose the full
+    model list while avoiding URLs that are known not to exist.
+    """
+    availability = source_cfg.get("cmip6_availability") or {}
+    if not availability:
+        return True
+
+    variables_cfg = source_cfg.get("variables", {}) or {}
+    default_variables = set(
+        _as_string_list(availability.get("default_variables"))
+        or [str(variable) for variable in variables_cfg]
+    )
+    default_ssps = set(
+        _as_string_list(availability.get("default_ssps"))
+        or [str(ssp) for ssp in source_cfg.get("ssps", [])]
+    )
+    default_periods = set(
+        _as_string_list(availability.get("periods"))
+        or [str(period) for period in source_cfg.get("periods", [])]
+    )
+
+    variable = str(file_spec["variable"])
+    gcm = str(file_spec["gcm"])
+    ssp = str(file_spec["ssp"])
+    period = str(file_spec["period"])
+
+    allowed_variables = default_variables
+    allowed_periods = default_periods
+
+    by_gcm = availability.get("by_gcm") or {}
+    gcm_cfg = by_gcm.get(gcm)
+
+    if not gcm_cfg:
+        return (
+            variable in allowed_variables
+            and ssp in default_ssps
+            and period in allowed_periods
+        )
+
+    if isinstance(gcm_cfg, dict) and gcm_cfg.get("periods") is not None:
+        allowed_periods = set(_as_string_list(gcm_cfg.get("periods")))
+
+    ssps_cfg = gcm_cfg.get("ssps") if isinstance(gcm_cfg, dict) else gcm_cfg
+
+    if isinstance(ssps_cfg, list):
+        if ssp not in {str(item) for item in ssps_cfg}:
+            return False
+    elif isinstance(ssps_cfg, dict):
+        if ssp not in ssps_cfg:
+            return False
+        ssp_cfg = ssps_cfg[ssp]
+        if ssp_cfg is False:
+            return False
+        if isinstance(ssp_cfg, list):
+            allowed_variables = {str(item) for item in ssp_cfg}
+        elif isinstance(ssp_cfg, dict):
+            if ssp_cfg.get("variables") is not None:
+                allowed_variables = set(_as_string_list(ssp_cfg.get("variables")))
+            if ssp_cfg.get("periods") is not None:
+                allowed_periods = set(_as_string_list(ssp_cfg.get("periods")))
+        elif ssp_cfg not in [True, None]:
+            allowed_variables = set(_as_string_list(ssp_cfg))
+    elif ssps_cfg is None:
+        if ssp not in default_ssps:
+            return False
+    else:
+        if ssp not in set(_as_string_list(ssps_cfg)):
+            return False
+
+    return variable in allowed_variables and period in allowed_periods
+
+
 def validate_worldclim_resolution(source_resolution: str) -> None:
     if source_resolution not in SUPPORTED_WORLDCLIM_RESOLUTIONS:
         raise ValueError(
@@ -174,6 +259,7 @@ def get_file_specs(source_cfg: dict) -> list[dict]:
         raise ValueError("No periods found in CMIP6 source config.")
 
     specs = []
+    skipped_specs = []
 
     for variable in enabled_variables:
         variable_cfg = variables_cfg[variable]
@@ -182,15 +268,28 @@ def get_file_specs(source_cfg: dict) -> list[dict]:
         for gcm in gcms:
             for ssp in ssps:
                 for period in periods:
-                    specs.append(
-                        {
-                            "variable": variable,
-                            "worldclim_code": worldclim_code,
-                            "gcm": gcm,
-                            "ssp": ssp,
-                            "period": period,
-                        }
-                    )
+                    spec = {
+                        "variable": variable,
+                        "worldclim_code": worldclim_code,
+                        "gcm": gcm,
+                        "ssp": ssp,
+                        "period": period,
+                    }
+                    if _cmip6_file_spec_is_available(source_cfg, spec):
+                        specs.append(spec)
+                    else:
+                        skipped_specs.append(spec)
+
+    if not specs:
+        examples = ", ".join(
+            f"{item['variable']} {item['gcm']} {item['ssp']} {item['period']}"
+            for item in skipped_specs[:8]
+        )
+        raise ValueError(
+            "No available WorldClim CMIP6 files match the selected "
+            "variables/GCMs/SSPs/periods. "
+            f"Skipped unavailable combinations: {examples or 'none'}"
+        )
 
     return specs
 

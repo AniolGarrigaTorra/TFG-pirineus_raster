@@ -1,0 +1,16 @@
+name: ursus_arctos_pyrenees
+description: 'This AOI aims to englobe all the pyrenees wher ursus arctos can potentially
+  habite. The coordinates are taken from the: "Modelitació de l''hàbitat de l''ós
+  brú segons grups d''edat al Pirineu" by CTCF, CREAF and Servei de Flora i Fauna
+  (Departament de Territori i Sostenibilitat).  '
+crs: EPSG:3035
+bounds:
+  xmin: 3375000.0
+  xmax: 3716000.0
+  ymin: 2140000.0
+  ymax: 2300000.0
+bounds_epsg4326:
+  xmin: -1.6492524654239513
+  xmax: 2.6992097855188883
+  ymin: 41.71964363731289
+  ymax: 43.53703315499002

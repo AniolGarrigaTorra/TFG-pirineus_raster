@@ -140,6 +140,27 @@ def _static_year_layers(source_cfg: dict[str, Any]) -> list[int]:
     return sorted(years)
 
 
+def _yearly_collection_supports_aggregation(source_cfg: dict[str, Any]) -> bool:
+    dataset = source_cfg.get("dataset", {}) or {}
+    if dataset.get("supports_temporal_aggregation") is not None:
+        return bool(dataset["supports_temporal_aggregation"])
+
+    variables = source_cfg.get("variables", {}) or {}
+    semantics: set[str] = set()
+    for cfg in variables.values():
+        if not isinstance(cfg, dict):
+            continue
+        value = cfg.get("value_semantics") or cfg.get("data_type")
+        if value is not None:
+            semantics.add(str(value))
+
+    if not semantics and dataset.get("data_type"):
+        semantics.add(str(dataset["data_type"]))
+
+    categorical = {"categorical", "ordinal"}
+    return not semantics or not semantics.issubset(categorical)
+
+
 def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
     dataset = source_cfg.get("dataset", {}) or {}
     layer_structure = dataset.get("layer_structure")
@@ -167,21 +188,37 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
     if layer_structure == "yearly_static_collection":
         years = _static_year_layers(source_cfg)
         year_bounds = [min(years), max(years)] if years else None
+        supports_aggregation = _yearly_collection_supports_aggregation(source_cfg)
+        axis = temporal_axis or "year"
         return {
             "kind": "yearly_static_collection",
-            "label": "Yearly static layers",
-            "temporal_axis": temporal_axis or "year",
+            "label": (
+                "Reference-year layers"
+                if axis == "reference_year"
+                else "Yearly static layers"
+            ),
+            "temporal_axis": axis,
             "aggregation_stage": "build",
             "default_output_mode": "supplied_layers",
-            "output_modes": ["supplied_layers", "aggregate"],
-            "aggregation_forms": ["year_range_metric"],
-            "supports_custom_aggregations": True,
+            "output_modes": (
+                ["supplied_layers", "aggregate"]
+                if supports_aggregation
+                else ["supplied_layers"]
+            ),
+            "aggregation_forms": ["year_range_metric"] if supports_aggregation else [],
+            "supports_custom_aggregations": supports_aggregation,
             "supports_raw_slices": False,
             "available_years": year_bounds,
             "default_years": year_bounds,
             "temporal_layers": {
                 "years": years,
             },
+            "note": (
+                "Categorical yearly layers are exposed as supplied reference-year "
+                "layers only; numeric temporal aggregation of class codes is disabled."
+                if not supports_aggregation
+                else None
+            ),
         }
 
     if layer_structure == "monthly_climatology":
@@ -211,6 +248,12 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
             "supports_raw_slices": True,
             "default_months": [1, 12],
             "dimensioned_by": ["gcms", "ssps", "periods"],
+            "note": (
+                "WorldClim CMIP6 future files are 20-year monthly climatologies. "
+                "Choose GCM, SSP and period in Dimensions, then choose months or "
+                "month aggregations here; individual future years are not present "
+                "in the source files."
+            ),
         }
 
     if layer_structure == "monthly_time_series":
@@ -245,6 +288,12 @@ def infer_temporal_capability(source_cfg: dict[str, Any]) -> dict[str, Any]:
             "supports_custom_aggregations": False,
             "supports_raw_slices": False,
             "temporal_layers": _pdca_temporal_layers(source_cfg),
+            "note": (
+                "PDCA is distributed as supplied long-term climatological layers "
+                "for 1950-2012: monthly, seasonal, annual and year-level index "
+                "rasters. It is not a raw year-month time series, so arbitrary "
+                "year-range temporal aggregation is not available."
+            ),
         }
 
     if layer_structure == "temporal_aggregation":

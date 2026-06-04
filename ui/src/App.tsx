@@ -26,6 +26,8 @@ const temporalDimensionKeys = new Set(["year", "years", "month", "months", "seas
 const pyreneesWgs84Envelope = { xmin: -2.8, xmax: 3.9, ymin: 41.0, ymax: 43.9 };
 const aoiInitialMapZoom = 8;
 const aoiMapViewport = { width: 1180, height: 690 };
+type LonLatPoint = { lon: number; lat: number };
+type ProjectedPoint = { x: number; y: number };
 
 function normalizeBackgroundUrls(value: unknown) {
   if (!Array.isArray(value)) return [defaultBackgroundUrl];
@@ -107,6 +109,53 @@ function canProjectToMap(crs: string) {
   return ["EPSG:4326", "EPSG:3035"].includes(normalizeCrsCode(crs));
 }
 
+function densifiedBoundsEdgePoints(bounds: AoiBounds, segments = 32): ProjectedPoint[] {
+  const safeBounds = orderedBounds(bounds);
+  const points: ProjectedPoint[] = [];
+  const steps = Math.max(1, Math.round(segments));
+
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    points.push({
+      x: safeBounds.xmin + (safeBounds.xmax - safeBounds.xmin) * t,
+      y: safeBounds.ymin
+    });
+  }
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    points.push({
+      x: safeBounds.xmax,
+      y: safeBounds.ymin + (safeBounds.ymax - safeBounds.ymin) * t
+    });
+  }
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    points.push({
+      x: safeBounds.xmax - (safeBounds.xmax - safeBounds.xmin) * t,
+      y: safeBounds.ymax
+    });
+  }
+  for (let i = 1; i < steps; i += 1) {
+    const t = i / steps;
+    points.push({
+      x: safeBounds.xmin,
+      y: safeBounds.ymax - (safeBounds.ymax - safeBounds.ymin) * t
+    });
+  }
+
+  return points;
+}
+
+function envelopeFromLonLatPoints(points: LonLatPoint[]): AoiBounds | null {
+  if (points.length === 0) return null;
+  return orderedBounds({
+    xmin: Math.min(...points.map((point) => point.lon)),
+    xmax: Math.max(...points.map((point) => point.lon)),
+    ymin: Math.min(...points.map((point) => point.lat)),
+    ymax: Math.max(...points.map((point) => point.lat))
+  });
+}
+
 const laea3035 = (() => {
   const a = 6378137;
   const invF = 298.257222101;
@@ -179,44 +228,37 @@ const laea3035 = (() => {
   };
 })();
 
-function pointToWgs84(x: number, y: number, crs: string) {
+function pointToWgs84(x: number, y: number, crs: string): LonLatPoint | null {
   const normalized = normalizeCrsCode(crs);
   if (normalized === "EPSG:4326") return { lon: x, lat: y };
   if (normalized === "EPSG:3035") return laea3035.inverse(x, y);
   return null;
 }
 
-function pointFromWgs84(lon: number, lat: number, crs: string) {
+function pointFromWgs84(lon: number, lat: number, crs: string): ProjectedPoint | null {
   const normalized = normalizeCrsCode(crs);
   if (normalized === "EPSG:4326") return { x: lon, y: lat };
   if (normalized === "EPSG:3035") return laea3035.forward(lon, lat);
   return null;
 }
 
+function boundsFootprintToWgs84(bounds: AoiBounds, crs: string, segments = 48) {
+  const points = densifiedBoundsEdgePoints(bounds, segments)
+    .map((point) => pointToWgs84(point.x, point.y, crs))
+    .filter((point): point is LonLatPoint => Boolean(point));
+  return points.length > 0 ? points : null;
+}
+
 function boundsToWgs84(bounds: AoiBounds, crs: string) {
-  const corners = [
-    pointToWgs84(bounds.xmin, bounds.ymin, crs),
-    pointToWgs84(bounds.xmin, bounds.ymax, crs),
-    pointToWgs84(bounds.xmax, bounds.ymin, crs),
-    pointToWgs84(bounds.xmax, bounds.ymax, crs)
-  ].filter((point): point is { lon: number; lat: number } => Boolean(point));
-  if (corners.length !== 4) return null;
-  return orderedBounds({
-    xmin: Math.min(...corners.map((point) => point.lon)),
-    xmax: Math.max(...corners.map((point) => point.lon)),
-    ymin: Math.min(...corners.map((point) => point.lat)),
-    ymax: Math.max(...corners.map((point) => point.lat))
-  });
+  const footprint = boundsFootprintToWgs84(bounds, crs);
+  return footprint ? envelopeFromLonLatPoints(footprint) : null;
 }
 
 function boundsFromWgs84(bounds: AoiBounds, crs: string) {
-  const corners = [
-    pointFromWgs84(bounds.xmin, bounds.ymin, crs),
-    pointFromWgs84(bounds.xmin, bounds.ymax, crs),
-    pointFromWgs84(bounds.xmax, bounds.ymin, crs),
-    pointFromWgs84(bounds.xmax, bounds.ymax, crs)
-  ].filter((point): point is { x: number; y: number } => Boolean(point));
-  if (corners.length !== 4) return null;
+  const corners = densifiedBoundsEdgePoints(bounds, 48)
+    .map((point) => pointFromWgs84(point.x, point.y, crs))
+    .filter((point): point is ProjectedPoint => Boolean(point));
+  if (corners.length === 0) return null;
   return orderedBounds({
     xmin: Math.min(...corners.map((point) => point.x)),
     xmax: Math.max(...corners.map((point) => point.x)),
@@ -464,6 +506,31 @@ function sourceTemporalSelection(source: SourceCatalog): TemporalSelection {
     aggregationUse: [],
     customAggregations: []
   };
+}
+
+function dimensionPatternContexts(source: SourceCatalog, selection: SourceSelection) {
+  const entries = Object.entries(source.dimension_context_keys ?? {});
+  if (entries.length === 0) return [{} as Record<string, string>];
+
+  let contexts: Array<Record<string, string>> = [{}];
+  for (const [dimensionKey, contextKey] of entries) {
+    const values = selection.dimensions[dimensionKey] ?? [];
+    if (values.length === 0) return [];
+    contexts = contexts.flatMap((context) =>
+      values.map((value) => ({
+        ...context,
+        [contextKey]: value
+      }))
+    );
+  }
+  return contexts;
+}
+
+function applyVariablePattern(pattern: string, replacements: Record<string, string | number>) {
+  return Object.entries(replacements).reduce(
+    (text, [key, value]) => text.split(`{${key}}`).join(String(value)),
+    pattern
+  );
 }
 
 function toggleValue(values: string[], value: string) {
@@ -1090,11 +1157,6 @@ function App() {
           setStages={setStages}
           datasetDir={datasetDir}
           setDatasetDir={setDatasetDir}
-          showAoiTools={false}
-          onAoiCreated={(aoi) => {
-            setCreatedAois((current) => [...current.filter((item) => item.path !== aoi.path), aoi]);
-            setAoiPath(aoi.path);
-          }}
         />
       )}
 
@@ -1194,9 +1256,13 @@ function StartModePanel({ setStartMode }: { setStartMode: (mode: StartMode) => v
 
 function MapBboxPicker({
   bounds,
+  footprint,
+  displayCrs,
   onChange
 }: {
   bounds: AoiBounds | null;
+  footprint?: LonLatPoint[] | null;
+  displayCrs?: string;
   onChange: (bounds: AoiBounds) => void;
 }) {
   const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
@@ -1269,16 +1335,25 @@ function MapBboxPicker({
     };
   }
 
-  function overlayStyle(nextBounds: AoiBounds) {
+  function rectangleFootprint(nextBounds: AoiBounds): LonLatPoint[] {
     const safeBounds = orderedBounds(nextBounds);
-    const nw = lonLatToPixel(safeBounds.xmin, safeBounds.ymax, zoom);
-    const se = lonLatToPixel(safeBounds.xmax, safeBounds.ymin, zoom);
-    return {
-      left: `${((nw.x - mapPixels.left) / mapPixels.width) * 100}%`,
-      top: `${((nw.y - mapPixels.top) / mapPixels.height) * 100}%`,
-      width: `${((se.x - nw.x) / mapPixels.width) * 100}%`,
-      height: `${((se.y - nw.y) / mapPixels.height) * 100}%`
-    };
+    return [
+      { lon: safeBounds.xmin, lat: safeBounds.ymin },
+      { lon: safeBounds.xmax, lat: safeBounds.ymin },
+      { lon: safeBounds.xmax, lat: safeBounds.ymax },
+      { lon: safeBounds.xmin, lat: safeBounds.ymax }
+    ];
+  }
+
+  function overlayPath(points: LonLatPoint[]) {
+    if (points.length < 3) return "";
+    const commands = points.map((point, index) => {
+      const pixel = lonLatToPixel(point.lon, point.lat, zoom);
+      const x = pixel.x - mapPixels.left;
+      const y = pixel.y - mapPixels.top;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    });
+    return `${commands.join(" ")} Z`;
   }
 
   const draftBounds = dragStart && dragEnd
@@ -1290,9 +1365,13 @@ function MapBboxPicker({
       })
     : null;
   const shownBounds = draftBounds ?? bounds;
+  const shownFootprint = draftBounds
+    ? rectangleFootprint(draftBounds)
+    : (footprint && footprint.length > 0 ? footprint : shownBounds ? rectangleFootprint(shownBounds) : null);
   const tileBase = mapStyle === "street"
     ? "https://tile.openstreetmap.org"
     : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile";
+  const path = shownFootprint ? overlayPath(shownFootprint) : "";
 
   return (
     <div className="bbox-map-panel">
@@ -1404,7 +1483,16 @@ function MapBboxPicker({
             }}
           />
         ))}
-        {shownBounds && <div className="bbox-selection" style={overlayStyle(shownBounds)} />}
+        {path && (
+          <svg
+            className="bbox-overlay"
+            viewBox={`0 0 ${mapPixels.width} ${mapPixels.height}`}
+            preserveAspectRatio="none"
+            aria-label={`Projected AOI footprint${displayCrs ? ` ${displayCrs}` : ""}`}
+          >
+            <path className="bbox-selection" d={path} />
+          </svg>
+        )}
         <div className="map-attribution">
           {mapStyle === "street" ? "© OpenStreetMap contributors" : "Esri World Imagery"}
         </div>
@@ -1464,6 +1552,7 @@ function AoiBuilderPanel({
   const boundsAreOrdered = boundsAreNumeric && bounds.xmin < bounds.xmax && bounds.ymin < bounds.ymax;
   const mapProjectionSupported = canProjectToMap(aoiForm.crs);
   const mapBounds = boundsAreOrdered && mapProjectionSupported ? boundsToWgs84(bounds, aoiForm.crs) : null;
+  const mapFootprint = boundsAreOrdered && mapProjectionSupported ? boundsFootprintToWgs84(bounds, aoiForm.crs) : null;
   const insidePyreneesBuffer = !boundsAreOrdered || !mapProjectionSupported || !mapBounds || (
     mapBounds.xmin >= pyreneesWgs84Envelope.xmin &&
     mapBounds.xmax <= pyreneesWgs84Envelope.xmax &&
@@ -1596,6 +1685,8 @@ function AoiBuilderPanel({
         <h2>Map Preview</h2>
         <MapBboxPicker
           bounds={mapBounds}
+          footprint={mapFootprint}
+          displayCrs={normalizedAoiCrs}
           onChange={(nextBounds) => {
             const targetBounds = boundsFromWgs84(nextBounds, normalizedAoiCrs);
             if (!targetBounds) return;
@@ -1743,70 +1834,12 @@ interface ProjectPanelProps {
   setStages: (value: string[]) => void;
   datasetDir: string;
   setDatasetDir: (value: string) => void;
-  showAoiTools?: boolean;
-  onAoiCreated: (aoi: AoiCatalog) => void;
 }
 
 function ProjectPanel(props: ProjectPanelProps) {
   const aois = props.aois;
   const resolutions = props.catalog?.project.available_resolutions_m ?? [100];
   const supportedStages = props.catalog?.supported_stages ?? ["download", "clip", "build", "all"];
-  const [aoiForm, setAoiForm] = useState({
-    name: "custom_aoi",
-    description: "Workbench-created AOI.",
-    crs: props.targetCrs,
-    xmin: "",
-    xmax: "",
-    ymin: "",
-    ymax: ""
-  });
-  const [aoiStatus, setAoiStatus] = useState<string | null>(null);
-  const [gridStatus, setGridStatus] = useState<string | null>(null);
-  const canCreateAoi =
-    aoiForm.name.trim().length > 0 &&
-    aoiForm.crs.trim().length > 0 &&
-    [aoiForm.xmin, aoiForm.xmax, aoiForm.ymin, aoiForm.ymax].every((value) =>
-      value.trim().length > 0 && Number.isFinite(Number(value))
-    );
-
-  async function submitAoi() {
-    if (!canCreateAoi) return;
-    setAoiStatus(null);
-    try {
-      const result = await createAoiConfig({
-        name: aoiForm.name,
-        description: aoiForm.description,
-        crs: aoiForm.crs,
-        bounds: {
-          xmin: Number(aoiForm.xmin),
-          xmax: Number(aoiForm.xmax),
-          ymin: Number(aoiForm.ymin),
-          ymax: Number(aoiForm.ymax)
-        }
-      });
-      props.onAoiCreated(result.aoi);
-      props.setTargetCrs(result.aoi.crs ?? props.targetCrs);
-      setAoiStatus(`Created ${result.aoi.path}`);
-    } catch (error) {
-      setAoiStatus(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function submitGrid() {
-    setGridStatus(null);
-    try {
-      const result = await createProjectGrid({
-        project_config: props.projectConfig,
-        aoi_config: props.aoiPath,
-        crs: props.targetCrs,
-        resolution_m: props.resolution,
-        overwrite: false
-      });
-      setGridStatus(`Grid ready at ${result.grid_path}`);
-    } catch (error) {
-      setGridStatus(error instanceof Error ? error.message : String(error));
-    }
-  }
 
   return (
     <main className="workspace two-col">
@@ -1854,48 +1887,6 @@ function ProjectPanel(props: ProjectPanelProps) {
           </label>
         </div>
       </section>
-
-      {props.showAoiTools !== false && (
-      <section className="panel">
-        <h2>Create AOI</h2>
-        <div className="form-grid">
-          <label>
-            AOI name
-            <input value={aoiForm.name} onChange={(event) => setAoiForm({ ...aoiForm, name: event.target.value })} />
-          </label>
-          <label>
-            AOI CRS
-            <input value={aoiForm.crs} onChange={(event) => setAoiForm({ ...aoiForm, crs: event.target.value })} />
-          </label>
-          <label className="span-2">
-            Description
-            <input value={aoiForm.description} onChange={(event) => setAoiForm({ ...aoiForm, description: event.target.value })} />
-          </label>
-          <label>
-            xmin
-            <input type="number" value={aoiForm.xmin} onChange={(event) => setAoiForm({ ...aoiForm, xmin: event.target.value })} />
-          </label>
-          <label>
-            xmax
-            <input type="number" value={aoiForm.xmax} onChange={(event) => setAoiForm({ ...aoiForm, xmax: event.target.value })} />
-          </label>
-          <label>
-            ymin
-            <input type="number" value={aoiForm.ymin} onChange={(event) => setAoiForm({ ...aoiForm, ymin: event.target.value })} />
-          </label>
-          <label>
-            ymax
-            <input type="number" value={aoiForm.ymax} onChange={(event) => setAoiForm({ ...aoiForm, ymax: event.target.value })} />
-          </label>
-        </div>
-        <div className="button-row aoi-actions">
-          <button className="primary" disabled={!canCreateAoi} onClick={submitAoi}>Create AOI config</button>
-          <button className="ghost" onClick={submitGrid}>Create target grid</button>
-        </div>
-        {aoiStatus && <div className="notice info">{aoiStatus}</div>}
-        {gridStatus && <div className="notice info">{gridStatus}</div>}
-      </section>
-      )}
 
       <section className="panel">
         <h2>Stages</h2>
@@ -2483,7 +2474,10 @@ function TemporalPanel({
     });
   }, [source.id]);
 
-  const selectedCustomVariables = custom.variables.filter((variable) => selection.variables.includes(variable));
+  const selectedPostprocessVariable = custom.variables.find((variable) => selection.variables.includes(variable)) ?? selection.variables[0] ?? "";
+  const selectedCustomVariables = isPostprocess
+    ? (selectedPostprocessVariable ? [selectedPostprocessVariable] : [])
+    : custom.variables.filter((variable) => selection.variables.includes(variable));
   const canAddCustom = custom.name.trim().length > 0 && selectedCustomVariables.length > 0;
   const supportsAggregate = capability?.output_modes.includes("aggregate") ?? false;
   const supportsRaw = capability?.output_modes.includes("raw_slices") ?? false;
@@ -2491,6 +2485,12 @@ function TemporalPanel({
   const supportsPostprocess = capability?.output_modes.includes("postprocess_aggregate") ?? false;
   const availableYearStart = capability?.available_years?.[0] ?? capability?.default_years?.[0];
   const availableYearEnd = capability?.available_years?.[1] ?? capability?.default_years?.[1];
+  const yearlyAggregationYears = isYearlyCollection ? capability?.temporal_layers?.years ?? [] : [];
+  const useDiscreteYearSelect = yearlyAggregationYears.length > 0;
+  const firstDiscreteYear = yearlyAggregationYears[0];
+  const lastDiscreteYear = yearlyAggregationYears[yearlyAggregationYears.length - 1];
+  const customStartYear = custom.years?.[0] ?? firstDiscreteYear ?? "";
+  const customEndYear = custom.years?.[1] ?? lastDiscreteYear ?? "";
   const dateMin = availableYearStart ? `${availableYearStart}-01-01` : undefined;
   const dateMax = availableYearEnd ? `${availableYearEnd}-12-31` : undefined;
   const clampMonth = (value: number) => clamp(Number.isFinite(value) ? value : 1, 1, 12);
@@ -2499,6 +2499,16 @@ function TemporalPanel({
     if (availableYearStart !== undefined) next = Math.max(availableYearStart, next);
     if (availableYearEnd !== undefined) next = Math.min(availableYearEnd, next);
     return next;
+  };
+  const setCustomYearStart = (value: number) => {
+    const next = useDiscreteYearSelect ? value : clampYear(value);
+    const currentEnd = typeof custom.years?.[1] === "number" ? custom.years[1] : next;
+    setCustom({ ...custom, years: [next, currentEnd < next ? next : currentEnd] });
+  };
+  const setCustomYearEnd = (value: number) => {
+    const next = useDiscreteYearSelect ? value : clampYear(value);
+    const currentStart = typeof custom.years?.[0] === "number" ? custom.years[0] : next;
+    setCustom({ ...custom, years: [currentStart > next ? next : currentStart, next] });
   };
 
   function patchTemporal(patch: Partial<TemporalSelection>) {
@@ -2600,6 +2610,11 @@ function TemporalPanel({
           <strong>{capability?.label ?? source.layer_structure ?? "Source temporal model"}</strong>
           <span>{capability?.kind ?? "unknown"}</span>
         </div>
+        {capability?.note && (
+          <div className="notice info compact-notice">
+            {capability.note}
+          </div>
+        )}
 
         <div className="form-grid temporal-mode-grid">
           <label>
@@ -2646,7 +2661,7 @@ function TemporalPanel({
         {temporal.outputMode === "supplied_layers" && supportsSupplied && (
           <div className="temporal-layer-editor">
             <div className="notice info compact-notice">
-              Select only the supplied temporal layers you want to build.
+              Select the supplied temporal layers you want to build. Leaving every option empty builds no temporal layer for this source.
             </div>
             <div className="choice-list compact">
               {capability?.temporal_layers?.annual && (
@@ -2938,19 +2953,30 @@ function TemporalPanel({
                 </>
               )}
             </div>
-            <h3>Base variables</h3>
-            <div className="choice-list compact custom-vars">
-              {selection.variables.map((variable) => (
-                <label key={variable} className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={custom.variables.includes(variable)}
-                    onChange={() => setCustom({ ...custom, variables: toggleValue(custom.variables, variable) })}
-                  />
-                  <span>{variable}</span>
+            <h3>Input variable</h3>
+            {selection.variables.length > 1 ? (
+              <div className="form-grid compact-grid">
+                <label>
+                  Source variable
+                  <select
+                    value={selectedPostprocessVariable}
+                    onChange={(event) => setCustom({ ...custom, variables: event.target.value ? [event.target.value] : [] })}
+                  >
+                    {selection.variables.map((variable) => (
+                      <option key={variable} value={variable}>{variable}</option>
+                    ))}
+                  </select>
                 </label>
-              ))}
-            </div>
+              </div>
+            ) : selection.variables.length === 1 ? (
+              <div className="notice info compact-notice">
+                Input variable: {selection.variables[0]}
+              </div>
+            ) : (
+              <div className="notice error compact-notice">
+                Select at least one source variable before defining a postprocess aggregation.
+              </div>
+            )}
             <div className="button-row custom-actions">
               <button
                 className="primary"
@@ -3050,11 +3076,45 @@ function TemporalPanel({
                 <>
                   <label>
                     Start year
-                    <input type="number" value={custom.years?.[0] ?? ""} onChange={(event) => setCustom({ ...custom, years: [Number(event.target.value), custom.years?.[1] ?? Number(event.target.value)] })} />
+                    {useDiscreteYearSelect ? (
+                      <select
+                        value={customStartYear}
+                        onChange={(event) => setCustomYearStart(Number(event.target.value))}
+                      >
+                        {yearlyAggregationYears.map((year) => (
+                          <option key={year} value={year}>{year}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        min={availableYearStart}
+                        max={availableYearEnd}
+                        value={custom.years?.[0] ?? ""}
+                        onChange={(event) => setCustomYearStart(Number(event.target.value))}
+                      />
+                    )}
                   </label>
                   <label>
                     End year
-                    <input type="number" value={custom.years?.[1] ?? ""} onChange={(event) => setCustom({ ...custom, years: [custom.years?.[0] ?? Number(event.target.value), Number(event.target.value)] })} />
+                    {useDiscreteYearSelect ? (
+                      <select
+                        value={customEndYear}
+                        onChange={(event) => setCustomYearEnd(Number(event.target.value))}
+                      >
+                        {yearlyAggregationYears.map((year) => (
+                          <option key={year} value={year}>{year}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        min={availableYearStart}
+                        max={availableYearEnd}
+                        value={custom.years?.[1] ?? ""}
+                        onChange={(event) => setCustomYearEnd(Number(event.target.value))}
+                      />
+                    )}
                   </label>
                 </>
               )}
@@ -3104,7 +3164,7 @@ function TemporalPanel({
                       onChange={(event) =>
                         setCustom({
                           ...custom,
-                          months: [Number(event.target.value), custom.months?.[1] ?? 12]
+                          months: [clampMonth(Number(event.target.value)), custom.months?.[1] ?? 12]
                         })
                       }
                     />
@@ -3119,7 +3179,7 @@ function TemporalPanel({
                       onChange={(event) =>
                         setCustom({
                           ...custom,
-                          months: [custom.months?.[0] ?? 1, Number(event.target.value)]
+                          months: [custom.months?.[0] ?? 1, clampMonth(Number(event.target.value))]
                         })
                       }
                     />
@@ -3271,24 +3331,27 @@ function buildPlannedLayers(
         selection.temporal.outputMode === "supplied_layers"
         ? selection.temporal.layers.years
         : [];
+      const patternContexts = dimensionPatternContexts(source, selection);
 
       if (variablePattern && yearlySuppliedYears.length > 0) {
         for (const year of yearlySuppliedYears) {
-          const expandedVariable = variablePattern.replace("{year}", String(year));
-          const query: DerivedInputQuery = {
-            source_id: source.id,
-            variable: expandedVariable
-          };
-          layers.push({
-            id: JSON.stringify(query),
-            label: [sourceShortName(source), variable.name, year].join(" · "),
-            sourceTitle: sourceDisplayName(source),
-            query,
-            variable: expandedVariable,
-            baseVariable: variable.name,
-            unit: variable.unit,
-            valueSemantics: variable.value_semantics ?? variable.data_type
-          });
+          for (const context of patternContexts) {
+            const expandedVariable = applyVariablePattern(variablePattern, { ...context, year });
+            const query: DerivedInputQuery = {
+              source_id: source.id,
+              variable: expandedVariable
+            };
+            layers.push({
+              id: JSON.stringify(query),
+              label: [sourceShortName(source), variable.name, ...Object.values(context), year].join(" · "),
+              sourceTitle: sourceDisplayName(source),
+              query,
+              variable: expandedVariable,
+              baseVariable: variable.name,
+              unit: variable.unit,
+              valueSemantics: variable.value_semantics ?? variable.data_type
+            });
+          }
         }
         continue;
       }

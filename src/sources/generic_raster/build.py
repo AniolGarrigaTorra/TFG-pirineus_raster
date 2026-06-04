@@ -67,8 +67,14 @@ def _reference_year(variable_cfg: dict) -> int | None:
     return int(temporal["reference_year"])
 
 
-def _yearly_base_variable(variable: str, variable_cfg: dict) -> str:
-    return str(variable_cfg.get("generated_from_group") or variable)
+def _yearly_base_variable(source_cfg: dict, variable: str, variable_cfg: dict) -> str:
+    base = str(variable_cfg.get("generated_from_group") or variable)
+    context = variable_cfg.get("generation_context", {}) or {}
+    for context_key in (source_cfg.get("dimension_context_keys", {}) or {}).values():
+        value = context.get(context_key)
+        if value is not None:
+            base = f"{base}_{value}"
+    return base
 
 
 def _category_fractions_for_variable(
@@ -91,7 +97,16 @@ def _yearly_aggregation_applies(
     if variables is None:
         return True
     selected = {str(item) for item in variables}
-    return base_variable in selected or any(variable in selected for variable, _ in variable_items)
+    groups = {
+        str(variable_cfg.get("generated_from_group"))
+        for _, variable_cfg in variable_items
+        if variable_cfg.get("generated_from_group")
+    }
+    return (
+        base_variable in selected
+        or bool(groups & selected)
+        or any(variable in selected for variable, _ in variable_items)
+    )
 
 
 def _yearly_clipped_path(
@@ -135,7 +150,7 @@ def _build_yearly_static_aggregations(
     for variable, variable_cfg in get_enabled_variable_items(source_cfg):
         if _reference_year(variable_cfg) is None:
             continue
-        base_variable = _yearly_base_variable(variable, variable_cfg)
+        base_variable = _yearly_base_variable(source_cfg, variable, variable_cfg)
         variables_by_base.setdefault(base_variable, []).append((variable, variable_cfg))
 
     output_dir = get_feature_output_dir(

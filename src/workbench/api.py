@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+from pyproj import Transformer
 
 from src.io.config import get_repo_root, load_yaml, resolve_path
 from src.make_grid import create_grid
@@ -53,6 +54,31 @@ def _sanitize_config_name(value: Any) -> str:
     if not name:
         raise ValueError("Config name cannot be empty.")
     return name
+
+
+def _bounds_epsg4326(crs: str, bounds: dict[str, float]) -> dict[str, float]:
+    if normalize_crs(crs) == "EPSG:4326":
+        return {
+            "xmin": bounds["xmin"],
+            "xmax": bounds["xmax"],
+            "ymin": bounds["ymin"],
+            "ymax": bounds["ymax"],
+        }
+
+    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    xmin, ymin, xmax, ymax = transformer.transform_bounds(
+        bounds["xmin"],
+        bounds["ymin"],
+        bounds["xmax"],
+        bounds["ymax"],
+        densify_pts=21,
+    )
+    return {
+        "xmin": float(xmin),
+        "xmax": float(xmax),
+        "ymin": float(ymin),
+        "ymax": float(ymax),
+    }
 
 
 def _save_run_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -103,6 +129,7 @@ def _create_aoi_config(payload: dict[str, Any]) -> dict[str, Any]:
         "description": payload.get("description") or "Workbench-created AOI.",
         "crs": crs,
         "bounds": bounds,
+        "bounds_epsg4326": _bounds_epsg4326(crs, bounds),
     }
 
     aoi_path.parent.mkdir(parents=True, exist_ok=True)

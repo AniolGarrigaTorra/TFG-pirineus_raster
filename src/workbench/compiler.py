@@ -201,11 +201,13 @@ def _compile_dimensions(
     select_cfg: dict[str, Any],
 ) -> None:
     dimensions_cfg = select_cfg.get("dimensions", {}) or {}
+    configured_dimensions = cfg.get("dimensions", {}) or {}
+    context_key_by_dimension = cfg.get("dimension_context_keys", {}) or {}
 
     for key, selected_values in dimensions_cfg.items():
         selected = [str(item) for item in _as_list(selected_values)]
 
-        available = cfg.get(key)
+        available = configured_dimensions.get(key, cfg.get(key))
         if available is None:
             raise ConfigValidationError(
                 f"Source does not expose dimension {key!r}."
@@ -223,7 +225,21 @@ def _compile_dimensions(
                 f"Available: {available_values}"
             )
 
-        cfg[key] = selected
+        if key in configured_dimensions:
+            cfg.setdefault("dimensions", {})[key] = selected
+        else:
+            cfg[key] = selected
+
+        context_key = context_key_by_dimension.get(key)
+        if context_key:
+            variables = cfg.get("variables", {}) or {}
+            selected_set = set(selected)
+            for variable_cfg in variables.values():
+                if not isinstance(variable_cfg, dict):
+                    continue
+                context = variable_cfg.get("generation_context", {}) or {}
+                if str(context.get(context_key)) not in selected_set:
+                    variable_cfg["enabled"] = False
 
 
 def _configured_category_values(variable_cfg: dict[str, Any]) -> set[str]:
@@ -425,6 +441,43 @@ def _aggregation_variable_names(cfg: dict[str, Any]) -> set[str]:
     return names
 
 
+def _variable_semantics(cfg: dict[str, Any], variable: str) -> set[str]:
+    variables = cfg.get("variables", {}) or {}
+    targets: list[dict[str, Any]] = []
+
+    if variable in variables and isinstance(variables[variable], dict):
+        targets.append(variables[variable])
+    elif _is_yearly_static_collection(cfg) and variable in _yearly_group_names(cfg):
+        targets.extend(
+            variable_cfg
+            for variable_cfg in variables.values()
+            if isinstance(variable_cfg, dict)
+            and str(variable_cfg.get("generated_from_group")) == variable
+        )
+
+    semantics = {
+        str(item.get("value_semantics") or item.get("data_type"))
+        for item in targets
+        if item.get("value_semantics") or item.get("data_type")
+    }
+    if not semantics and cfg.get("dataset", {}).get("data_type"):
+        semantics.add(str(cfg["dataset"]["data_type"]))
+    return semantics
+
+
+def _categorical_aggregation_variables(
+    cfg: dict[str, Any],
+    selected_variables: list[str],
+) -> set[str]:
+    categorical = {"categorical", "ordinal"}
+    result: set[str] = set()
+    for variable in selected_variables:
+        semantics = _variable_semantics(cfg, variable)
+        if semantics and semantics.issubset(categorical):
+            result.add(variable)
+    return result
+
+
 def _validate_range_pair(
     value: Any,
     *,
@@ -447,6 +500,42 @@ def _validate_range_pair(
         raise ConfigValidationError(f"{name} ends after {maximum}: {values}")
 
     return [start, end]
+
+
+def _available_yearly_static_years(cfg: dict[str, Any]) -> list[int]:
+    configured = cfg.get("years")
+    if isinstance(configured, list) and configured:
+        return sorted({int(item) for item in configured})
+
+    years: set[int] = set()
+    for variable_cfg in (cfg.get("variables", {}) or {}).values():
+        if not isinstance(variable_cfg, dict):
+            continue
+        temporal = variable_cfg.get("temporal", {}) or {}
+        if isinstance(temporal, dict) and temporal.get("reference_year") is not None:
+            years.add(int(temporal["reference_year"]))
+    return sorted(years)
+
+
+def _validate_yearly_static_year_range(
+    value: Any,
+    *,
+    name: str,
+    cfg: dict[str, Any],
+) -> list[int]:
+    years = _validate_range_pair(value, name=name)
+    available = _available_yearly_static_years(cfg)
+    if not available:
+        return years
+
+    available_set = set(available)
+    missing = [year for year in years if year not in available_set]
+    if missing:
+        raise ConfigValidationError(
+            f"{name} endpoints must be available source years. "
+            f"Got {years}; available years: {available}"
+        )
+    return years
 
 
 def _validate_aggregation(
@@ -532,9 +621,10 @@ def _validate_aggregation(
             raise ConfigValidationError(
                 f"Aggregation {aggregation['name']!r} must define years."
             )
-        _validate_range_pair(
+        _validate_yearly_static_year_range(
             aggregation["years"],
             name=f"Aggregation {aggregation['name']!r} years",
+            cfg=cfg,
         )
 
     elif layer_structure in {
@@ -553,10 +643,20 @@ def _validate_aggregation(
 
     known_variables = _aggregation_variable_names(cfg)
     selected_variables = [str(item) for item in aggregation.get("variables", [])]
+    if not selected_variables and _is_yearly_static_collection(cfg):
+        selected_variables = sorted(_yearly_group_names(cfg))
     unknown = sorted(set(selected_variables) - known_variables)
     if unknown:
         raise ConfigValidationError(
             f"Aggregation {aggregation['name']!r} references unknown variables: {unknown}"
+        )
+
+    disallowed = _categorical_aggregation_variables(cfg, selected_variables)
+    if disallowed:
+        raise ConfigValidationError(
+            f"Aggregation {aggregation['name']!r} cannot be applied directly to "
+            f"categorical/ordinal variables: {sorted(disallowed)}. Select supplied "
+            "layers or derive numeric category fractions first."
         )
 
 
@@ -726,6 +826,48 @@ def _postprocess_metric_defaults(method: str) -> dict[str, Any]:
     return {}
 
 
+def _postprocess_source_variable(
+    aggregation: dict[str, Any],
+    cfg: dict[str, Any],
+) -> str:
+    variables = cfg.get("variables", {}) or {}
+    available = sorted(str(name) for name in variables)
+    selected = [
+        str(item)
+        for item in _as_list(
+            aggregation.get("source_variable")
+            or aggregation.get("variable")
+            or aggregation.get("variables")
+        )
+        if str(item).strip()
+    ]
+
+    if not selected:
+        selected = [
+            str(name)
+            for name, variable_cfg in variables.items()
+            if isinstance(variable_cfg, dict) and bool(variable_cfg.get("enabled", False))
+        ]
+
+    if not selected and len(available) == 1:
+        selected = available
+
+    if len(selected) != 1:
+        raise ConfigValidationError(
+            "Postprocess aggregations require exactly one source variable. "
+            f"Got {selected or 'none'}; available: {available}"
+        )
+
+    source_variable = selected[0]
+    if source_variable not in variables:
+        raise ConfigValidationError(
+            f"Unknown postprocess source variable {source_variable!r}. "
+            f"Available: {available}"
+        )
+
+    return source_variable
+
+
 def _normalise_postprocess_aggregation(
     aggregation: dict[str, Any],
     cfg: dict[str, Any],
@@ -782,9 +924,12 @@ def _normalise_postprocess_aggregation(
             aggregation.get("months") or temporal_cfg.get("default_months", [1, 12])
         )
         years = _postprocess_years({"name": name, **aggregation}, temporal_cfg)
+    source_variable = _postprocess_source_variable(aggregation, cfg)
     base = {
         "filename": f"{name}.tif",
         "method": method,
+        "source_variable": source_variable,
+        "variables": [source_variable],
         "months": months,
         "description": aggregation.get("description") or f"{method} temporal postprocess aggregation.",
         "native_resolution_m": aggregation.get(
@@ -1062,9 +1207,10 @@ def _enable_yearly_aggregation_variables(cfg: dict[str, Any]) -> None:
                 aggregation.get("variables") or default_groups
             )
         ]
-        years = _validate_range_pair(
+        years = _validate_yearly_static_year_range(
             aggregation["years"],
             name=f"Aggregation {aggregation['name']!r} years",
+            cfg=cfg,
         )
         selected_years.update(range(years[0], years[1] + 1))
         selected_names.update(_expanded_variables_for_yearly_groups(cfg, aggregation_variables))
@@ -1776,6 +1922,52 @@ def _estimate_pdca_layers(
     return total
 
 
+def _yearly_summary_base_name(source_cfg: dict[str, Any], variable_cfg: dict[str, Any], variable: str) -> str:
+    base = str(variable_cfg.get("generated_from_group", variable))
+    context = variable_cfg.get("generation_context", {}) or {}
+    for context_key in (source_cfg.get("dimension_context_keys", {}) or {}).values():
+        value = context.get(context_key)
+        if value is not None:
+            base = f"{base}_{value}"
+    return base
+
+
+def _yearly_summary_output_names(
+    source_cfg: dict[str, Any],
+    variables: list[str],
+) -> set[str]:
+    all_variables = source_cfg.get("variables", {}) or {}
+    return {
+        _yearly_summary_base_name(source_cfg, all_variables[variable], variable)
+        for variable in variables
+        if variable in all_variables and isinstance(all_variables[variable], dict)
+    }
+
+
+def _yearly_summary_applicable_names(
+    source_cfg: dict[str, Any],
+    enabled_names: set[str],
+    aggregation_variables: list[str],
+) -> set[str]:
+    if not aggregation_variables:
+        return enabled_names
+
+    selected = set(aggregation_variables)
+    if selected & enabled_names:
+        return selected & enabled_names
+
+    all_variables = source_cfg.get("variables", {}) or {}
+    matched: set[str] = set()
+    for variable, variable_cfg in all_variables.items():
+        if not isinstance(variable_cfg, dict):
+            continue
+        group = str(variable_cfg.get("generated_from_group", variable))
+        base = _yearly_summary_base_name(source_cfg, variable_cfg, variable)
+        if group in selected or variable in selected:
+            matched.add(base)
+    return matched & enabled_names
+
+
 def _source_summary(
     source_entry: dict[str, Any],
     source_cfg: dict[str, Any],
@@ -1825,25 +2017,17 @@ def _source_summary(
         layer_count = 0
         enabled_names = set(variables) | set(indices)
         if layer_structure == "yearly_static_collection":
-            enabled_names = {
-                str(source_cfg["variables"][variable].get("generated_from_group", variable))
-                for variable in variables
-                if variable in source_cfg.get("variables", {})
-            }
+            enabled_names = _yearly_summary_output_names(source_cfg, variables)
         for aggregation in aggregations:
             aggregation_variables = aggregation.get("variables") or sorted(enabled_names)
             if layer_structure == "yearly_static_collection":
-                aggregation_names = {
-                    str(
-                        source_cfg.get("variables", {})
-                        .get(str(variable), {})
-                        .get("generated_from_group", variable)
-                    )
-                    for variable in aggregation_variables
-                }
+                applicable = _yearly_summary_applicable_names(
+                    source_cfg,
+                    enabled_names,
+                    [str(item) for item in aggregation_variables],
+                )
             else:
-                aggregation_names = set(aggregation_variables)
-            applicable = aggregation_names & enabled_names
+                applicable = set(aggregation_variables) & enabled_names
             n = max(0, len(applicable))
             for key in output_dimension_keys:
                 values = dimensions.get(key, [])

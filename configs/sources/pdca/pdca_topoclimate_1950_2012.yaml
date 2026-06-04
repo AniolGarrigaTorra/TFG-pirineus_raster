@@ -13,7 +13,10 @@ source:
     observations, terrain information and geostatistical modelling to produce
     monthly, seasonal and annual climatological layers for the 1950-2012
     period, making it one of the most regionally relevant sources in the
-    project.
+    project. These are supplied long-term climatological layers, not raw
+    year-by-year or daily observations, so Pirineus Raster exposes temporal
+    selection over the available annual, monthly, seasonal and annual-index
+    layers rather than arbitrary temporal aggregations.
   doi: "10.5281/zenodo.1186639"
   article_url: "https://doi.org/10.1002/gdj3.52"
   source_crs: EPSG:25830

@@ -11,9 +11,14 @@ source:
     WorldClim CMIP6 provides bias-corrected, downscaled future climate layers
     derived with WorldClim v2.1 as the baseline climate. The source is
     dimensioned by climate model, SSP scenario, 20-year future period and
-    variable. Monthly minimum temperature, maximum temperature and precipitation
-    should be interpreted as future monthly climatological summaries, not daily
-    weather observations.
+    variable. Pirineus Raster exposes the GCMs, SSPs and periods listed in the
+    official WorldClim CMIP6 download tables, including the four SSPs
+    ssp126, ssp245, ssp370 and ssp585 and the four standard 20-year periods.
+    A small number of GCM/SSP/variable combinations are partial in the official
+    tables; the cmip6_availability matrix below prevents Pirineus Raster from
+    generating known-missing download URLs. Monthly minimum temperature, maximum
+    temperature and precipitation should be interpreted as future monthly
+    climatological summaries, not daily weather observations.
   base_url: "https://geodata.ucdavis.edu/cmip6"
   page_url: "https://www.worldclim.org/data/cmip6/cmip6climate.html"
   source_crs: EPSG:4326
@@ -51,12 +56,57 @@ resampling:
 
 gcms:
   - ACCESS-CM2
+  - ACCESS-ESM1-5
+  - BCC-CSM2-MR
+  - CanESM5
+  - CanESM5-CanOE
+  - CMCC-ESM2
+  - CNRM-CM6-1
+  - CNRM-CM6-1-HR
+  - CNRM-ESM2-1
+  - EC-Earth3-Veg
+  - EC-Earth3-Veg-LR
+  - FIO-ESM-2-0
+  - GFDL-ESM4
+  - GISS-E2-1-G
+  - GISS-E2-1-H
+  - HadGEM3-GC31-LL
+  - INM-CM4-8
+  - INM-CM5-0
+  - IPSL-CM6A-LR
+  - MIROC-ES2L
+  - MIROC6
+  - MPI-ESM1-2-HR
+  - MPI-ESM1-2-LR
+  - MRI-ESM2-0
+  - UKESM1-0-LL
 
 ssps:
   - ssp126
+  - ssp245
+  - ssp370
+  - ssp585
 
 periods:
   - "2021-2040"
+  - "2041-2060"
+  - "2061-2080"
+  - "2081-2100"
+
+cmip6_availability:
+  default_variables: [tmin, tmax, prec]
+  default_ssps: [ssp126, ssp245, ssp370, ssp585]
+  periods: ["2021-2040", "2041-2060", "2061-2080", "2081-2100"]
+  by_gcm:
+    FIO-ESM-2-0:
+      ssps: [ssp126, ssp245, ssp370]
+    GFDL-ESM4:
+      ssps:
+        ssp126: [tmin, tmax, prec]
+        ssp245: [tmin, tmax, prec]
+        ssp370: [prec]
+    HadGEM3-GC31-LL:
+      ssps: [ssp126, ssp245, ssp370]
 
 variables:
   tmin:

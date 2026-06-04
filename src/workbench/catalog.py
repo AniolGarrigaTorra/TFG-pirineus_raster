@@ -94,7 +94,10 @@ SOURCE_GROUPS: dict[str, dict[str, Any]] = {
             "based on long-term topoclimate modelling over the Pyrenees for "
             "1950-2012 and provides fine-resolution surfaces for temperature, "
             "precipitation and derived bioclimatic variables such as PET, water "
-            "availability, growing degree-days and potential solar radiation."
+            "availability, growing degree-days and potential solar radiation. "
+            "The integrated PDCA product is exposed as supplied long-term annual, "
+            "monthly, seasonal and annual-index climatological layers rather "
+            "than as raw observations for arbitrary temporal aggregation."
         ),
         "references": [
             {"label": "PDCA Zenodo DOI", "url": "https://doi.org/10.5281/zenodo.1186639"},
@@ -347,6 +350,66 @@ def _strip_year_template(value: Any) -> Any:
     )
 
 
+def _strip_trailing_description_token(value: str, token: Any) -> str:
+    text = value
+    token_text = str(token).strip()
+    if not token_text:
+        return text
+
+    for suffix in [f", {token_text}", f" {token_text}"]:
+        if text.endswith(suffix):
+            return text[: -len(suffix)].rstrip(" ,")
+    return text
+
+
+def _yearly_group_description(
+    source_cfg: dict[str, Any],
+    variable_cfg: dict[str, Any],
+    group_name: str,
+) -> str | None:
+    description = _strip_year_template(variable_cfg.get("description"))
+    if not isinstance(description, str) or not description:
+        return VARIABLE_DESCRIPTION_FALLBACKS.get(group_name)
+
+    temporal = variable_cfg.get("temporal", {}) or {}
+    if temporal.get("reference_year") is not None:
+        description = _strip_trailing_description_token(
+            description,
+            temporal["reference_year"],
+        )
+
+    context = variable_cfg.get("generation_context", {}) or {}
+    for context_key in (source_cfg.get("dimension_context_keys", {}) or {}).values():
+        for token_key in [context_key, f"{context_key}_label"]:
+            if token_key in context:
+                description = _strip_trailing_description_token(
+                    description,
+                    context[token_key],
+                )
+
+    return description or VARIABLE_DESCRIPTION_FALLBACKS.get(group_name)
+
+
+def _yearly_variable_pattern(
+    variable_name: str,
+    variable_cfg: dict[str, Any],
+    source_cfg: dict[str, Any],
+) -> str:
+    pattern = str(variable_name)
+    year = (variable_cfg.get("temporal", {}) or {}).get("reference_year")
+    if year is not None:
+        pattern = pattern.replace(str(year), "{year}")
+
+    context = variable_cfg.get("generation_context", {}) or {}
+    context_key_by_dimension = source_cfg.get("dimension_context_keys", {}) or {}
+    for dimension_key, context_key in context_key_by_dimension.items():
+        value = context.get(context_key)
+        if value is not None:
+            pattern = pattern.replace(str(value), "{" + str(context_key) + "}")
+
+    return pattern
+
+
 def _yearly_group_items(
     source_cfg: dict[str, Any],
     expanded_cfg: dict[str, Any],
@@ -387,18 +450,13 @@ def _yearly_group_items(
             for _, cfg in group_variables
             if (cfg.get("temporal", {}) or {}).get("reference_year") is not None
         ]
-        template_pattern = (
-            first_cfg.get("source_variable_pattern")
-            or first_cfg.get("source_filename")
-            or first_name
-        )
+        template_pattern = _yearly_variable_pattern(first_name, first_cfg, source_cfg)
 
         item = {
             "name": group_name,
             "kind": "variable",
             "enabled_default": any(bool(cfg.get("enabled", True)) for _, cfg in group_variables),
-            "description": _strip_year_template(first_cfg.get("description"))
-            or VARIABLE_DESCRIPTION_FALLBACKS.get(group_name),
+            "description": _yearly_group_description(source_cfg, first_cfg, group_name),
             "unit": first_cfg.get("unit"),
             "scale_factor": first_cfg.get("scale_factor", 1.0),
             "valid_range": first_cfg.get("valid_range"),
@@ -448,6 +506,12 @@ def _vector_layer_items(source_cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _dimensions(source_cfg: dict[str, Any]) -> dict[str, Any]:
     dimensions: dict[str, Any] = {}
+    configured = source_cfg.get("dimensions", {}) or {}
+    if isinstance(configured, dict):
+        for key, value in configured.items():
+            if isinstance(value, list):
+                dimensions[key] = [str(item) for item in value]
+
     for key in ["gcms", "ssps", "periods"]:
         value = source_cfg.get(key)
         if value is not None:
@@ -562,6 +626,7 @@ def source_catalog_from_config(
         "variables": catalog_variables,
         "layers": _vector_layer_items(expanded_cfg),
         "dimensions": _dimensions(expanded_cfg),
+        "dimension_context_keys": expanded_cfg.get("dimension_context_keys"),
         "aggregations": expanded_cfg.get("temporal_aggregations", []) or [],
         "temporal": infer_temporal_capability(expanded_cfg),
         "resampling": expanded_cfg.get("resampling", {}) or {},

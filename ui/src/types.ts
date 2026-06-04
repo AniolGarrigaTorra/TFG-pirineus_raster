@@ -77,6 +77,7 @@ export interface TemporalCapability {
   };
   postprocess_outputs?: Dict[];
   dimensioned_by?: string[];
+  note?: string;
 }
 
 export interface SourceCatalog {
@@ -113,6 +114,7 @@ export interface SourceCatalog {
   variables?: VariableCatalog[];
   layers?: VariableCatalog[];
   dimensions?: Record<string, string[]>;
+  dimension_context_keys?: Record<string, string>;
   aggregations?: Dict[];
   temporal?: TemporalCapability;
   resampling?: Dict;

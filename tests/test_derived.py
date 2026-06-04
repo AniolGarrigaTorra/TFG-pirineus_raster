@@ -27,6 +27,19 @@ class DerivedExpressionTests(unittest.TestCase):
             np.array([[0, 1], [1, 0]], dtype=np.float32),
         )
 
+    def test_expression_engine_supports_nan_constant(self):
+        result = evaluate_raster_expression(
+            "where(x > 0, x, nan)",
+            {"x": np.array([[1, -1], [0, 2]], dtype=np.float32)},
+        )
+
+        self.assertTrue(np.isnan(result[0, 1]))
+        self.assertTrue(np.isnan(result[1, 0]))
+        np.testing.assert_array_equal(
+            result[[0, 1], [0, 1]],
+            np.array([1, 2], dtype=np.float32),
+        )
+
     def test_recipe_thermal_range(self):
         result, operation, expression = evaluate_derived_operation(
             {

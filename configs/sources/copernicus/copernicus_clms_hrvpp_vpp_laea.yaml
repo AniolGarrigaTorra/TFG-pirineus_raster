@@ -10,11 +10,18 @@ source:
   long_description: >-
     The Copernicus High Resolution Vegetation Phenology and Productivity
     product provides annual seasonal metrics derived from Sentinel-2 vegetation
-    trajectories. Pirineus Raster exposes each metric and season as a yearly
-    static collection so the user can select individual years or compute
-    build-time temporal aggregations across years.
-  page_url: "https://land.copernicus.eu/en/products/vegetation"
-  documentation_url: "https://land.copernicus.eu/en/products/vegetation"
+    trajectories. The official VPP parameters are yearly products extracted
+    from seasonal trajectories and can describe up to two growing seasons per
+    pixel and year. Season s1 is the first detected growing season; s2 is the
+    second detected growing season where the annual vegetation trajectory is
+    bimodal or otherwise supports a second season. Growing seasons may cross
+    calendar-year boundaries, and pixels without a valid second season can have
+    missing or invalid s2 values. Pirineus Raster exposes the season as a
+    selectable dimension and each metric as a yearly static collection, so the
+    user can select years or compute year-range summaries without mixing the
+    two seasons.
+  page_url: "https://land.copernicus.eu/en/products/vegetation?tab=vegetation_phenology_and_productivity_parameters"
+  documentation_url: "https://land.copernicus.eu/en/products/vegetation?tab=vegetation_phenology_and_productivity_parameters"
   source_crs: EPSG:3035
   source_period: "2017-2024"
   citation: "Copernicus Land Monitoring Service. High Resolution Vegetation Phenology and Productivity."
@@ -31,6 +38,12 @@ domains:
   output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+
+dimensions:
+  growth_season: [s1, s2]
+
+dimension_context_keys:
+  growth_season: season
 
 download:
   enabled: true
@@ -69,8 +82,8 @@ variable_groups:
   phenology_productivity:
     overwrite_existing: true
     template:
-      name: "{season}_{metric_name}_{year}"
-      generated_from_group: "{season}_{metric_name}"
+      name: "{metric_name}_{season}_{year}"
+      generated_from_group: "{metric_name}"
       enabled: true
       description: "{metric_label}, {season_label}, {year}"
       unit: "{unit}"
@@ -79,8 +92,8 @@ variable_groups:
       data_type: continuous
       value_semantics: intensive
       native_resolution_m: "{native_resolution_m}"
-      source_variable_pattern: "{season}_{metric_name}_{year}"
-      source_filename: "hrvpp_vpp_laea_{season}_{metric_name}_{year}_{source_resolution}.tif"
+      source_variable_pattern: "{metric_name}_{season}_{year}"
+      source_filename: "hrvpp_vpp_laea_{metric_name}_{season}_{year}_{source_resolution}.tif"
       file_pattern: "*_{season}_{product_type}.tif"
       zip_member_pattern: ".*_{season}_{product_type}\\.tif$"
       allow_multiple: true
