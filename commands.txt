@@ -44,18 +44,19 @@ squeue -u $USER
 
 squeue -j <JOB_ID>
 
+Control the job:
+scontrol show job <JOB_ID>
+
 See log:
-ls -lh /home/usuaris/csl/aniol.garriga.torra/logs/jobs/*<JOB_ID>*
-tail -f /home/usuaris/csl/aniol.garriga.torra/logs/jobs/NOM_DEL_FITXER.out
+tail -f logs/*2611545*.out
 
 See errors:
-cat /home/usuaris/csl/aniol.garriga.torra/logs/jobs/*<JOB_ID>*.err
+cat logs/pirineus_raster_<JOB_ID>.err
 
 See final state:
-sacct -j <JOB_ID> --format=JobID,JobName,Partition,Account,State,ExitCode,Elapsed,MaxRSS
-
+sacct -j <JOB_ID> --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS,AllocCPUS,NodeList
 Cancel:
-scancel 2539999
+scancel <JOB_ID>
 
 Sizes of files:
 du -sh data_processed/datasets/pyrenees_full_copernicus_worldclim_100m

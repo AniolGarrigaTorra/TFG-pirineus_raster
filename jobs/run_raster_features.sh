@@ -9,7 +9,7 @@
 #SBATCH --mem=8G
 
 set -euo pipefail
-
+export PS1="${PS1:-}"   
 source jobs/common.sh
 
 RUN_CONFIG="${1:-configs/runs/pallars_worldclim_100m.yaml}"

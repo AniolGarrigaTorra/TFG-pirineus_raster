@@ -75,10 +75,10 @@ variable_groups:
       source_filename: "clcplus_backbone_{year}_10m_pyrenees_full_mosaic.tif"
       max_results: 200
       file_pattern: "*.tif"
-      zip_member_pattern: ".*\\.tif$"
+      zip_member_pattern: "(?i)(^|/)CLMS_(CLCplus_RASTER_[0-9][0-9][0-9][0-9]_010m_eu_03035|CLCPLUS_RAS_S[0-9][0-9][0-9][0-9]_R10m_E[0-9][0-9]N[0-9][0-9]_03035)_[^/]*\\.tif$"
       allow_multiple: true
       allow_multiple_zip_members: true
-      postprocess: mosaic_mixed_geotiff
+      postprocess: mosaic_mixed_geotiff_to_clip_aoi
       hda_query:
         dataset_id: "EO:EEA:DAT:CLC-PLUS"
         bbox:
@@ -86,7 +86,11 @@ variable_groups:
           - 41.9550235
           - 3.18030846
           - 43.47467682
-        productType: "CLCplus Backbone {year} (raster 10 m), Europe, {cycle}"
+        # WEkEO queryable vocabulary for EO:EEA:DAT:CLC-PLUS.
+        # The long CLMS dataset title is not a valid HDA productType.
+        productType: "Raster Layer"
+        resolution: "10m"
+        year: "{year}"
         itemsPerPage: 200
         startIndex: 0
       category_classes:
@@ -148,9 +152,9 @@ variable_groups:
         type: static
         reference_year: "{year}"
     foreach:
-      - {year: 2018, cycle: "3-yearly"}
-      - {year: 2021, cycle: "3-yearly"}
-      - {year: 2023, cycle: "2-yearly"}
+      - {year: "2018"}
+      - {year: "2021"}
+      - {year: "2023"}
 
 output:
   write_geotiff: true

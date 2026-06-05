@@ -11,6 +11,7 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
 mkdir -p logs
+export PS1="${PS1:-}" 
 
 echo "=============================="
 echo "Pirineus Raster job environment"
