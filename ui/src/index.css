@@ -30,10 +30,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    linear-gradient(rgba(247, 242, 234, 0.66), rgba(247, 242, 234, 0.76)),
-    var(--pirineus-background-image, url("/backgrounds/pirineus-background.png")) center / cover fixed,
-    #ede6dc;
+  background: #ede6dc;
 }
 
 button,

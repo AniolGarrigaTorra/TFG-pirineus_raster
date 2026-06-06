@@ -42,8 +42,17 @@ def validate_run_config(
     if "run" not in cfg:
         raise ValueError(f"Missing required top-level key 'run'{location}.")
 
-    if "sources" not in cfg:
-        raise ValueError(f"Missing required top-level key 'sources'{location}.")
+    is_compiled_feature_run = bool(cfg.get("_compiled_from_features"))
+    has_features = "features" in cfg
+    has_sources = "sources" in cfg
+
+    if not has_features and not is_compiled_feature_run:
+        if has_sources:
+            raise ValueError(
+                "Legacy run configs with top-level 'sources' are no longer "
+                f"supported{location}. Use the feature-oriented 'features' format."
+            )
+        raise ValueError(f"Missing required top-level key 'features'{location}.")
 
     run_cfg = cfg["run"]
 
@@ -63,6 +72,36 @@ def validate_run_config(
                 normalize_crs(run_cfg[crs_key])
             except Exception as exc:
                 raise ValueError(f"Invalid run.{crs_key}: {run_cfg[crs_key]!r}") from exc
+
+    if has_features:
+        features = cfg["features"]
+        if not isinstance(features, list) or not features:
+            raise ValueError(f"'features' must be a non-empty list{location}.")
+
+        seen_feature_names: set[str] = set()
+        for idx, feature in enumerate(features):
+            if not isinstance(feature, dict):
+                raise ValueError(
+                    f"Each feature entry must be a dictionary. "
+                    f"Invalid entry at features[{idx}]{location}."
+                )
+            if not str(feature.get("name", "")).strip():
+                raise ValueError(f"Missing required key 'name' in features[{idx}]{location}.")
+            if not str(feature.get("build_type") or feature.get("kind") or "").strip():
+                raise ValueError(
+                    f"Missing required key 'build_type' in features[{idx}]{location}."
+                )
+            name = str(feature["name"])
+            if name in seen_feature_names:
+                raise ValueError(f"Duplicate feature name {name!r}{location}.")
+            seen_feature_names.add(name)
+
+    if not has_sources:
+        validate_outputs_config(
+            cfg.get("outputs", {}),
+            location=location,
+        )
+        return
 
     sources = cfg["sources"]
     if not isinstance(sources, list) or not sources:

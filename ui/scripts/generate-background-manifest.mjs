@@ -7,6 +7,7 @@ const uiDir = dirname(scriptDir);
 const backgroundsDir = join(uiDir, "public", "backgrounds");
 const manifestPath = join(backgroundsDir, "manifest.json");
 const imageExtensions = new Set([".avif", ".jpeg", ".jpg", ".png", ".webp"]);
+const excludedBackgrounds = new Set(["pirineus-background.png"]);
 
 function extensionOf(filename) {
   const dot = filename.lastIndexOf(".");
@@ -18,6 +19,7 @@ const images = entries
   .filter((entry) => entry.isFile())
   .map((entry) => entry.name)
   .filter((filename) => imageExtensions.has(extensionOf(filename)))
+  .filter((filename) => !excludedBackgrounds.has(filename))
   .sort((a, b) => a.localeCompare(b))
   .map((filename) => `/backgrounds/${filename}`);
 

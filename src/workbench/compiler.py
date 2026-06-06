@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from calendar import monthrange
 from copy import deepcopy
 from datetime import date
@@ -1641,13 +1642,441 @@ def expand_derived_feature_groups(
     return cfg
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _feature_build_type(feature: dict[str, Any]) -> str:
+    value = str(feature.get("build_type") or feature.get("kind") or "").strip()
+    if not value:
+        raise ConfigValidationError(f"Feature is missing build_type: {feature}")
+    return value
+
+
+def _feature_outputs(feature: dict[str, Any]) -> list[dict[str, Any]]:
+    outputs = feature.get("outputs")
+    if outputs is None:
+        output = {
+            key: deepcopy(value)
+            for key, value in feature.items()
+            if key
+            not in {
+                "outputs",
+            }
+        }
+        return [output]
+    if not isinstance(outputs, list) or not outputs:
+        raise ConfigValidationError(
+            f"Feature {feature.get('name')!r} outputs must be a non-empty list."
+        )
+    return [deepcopy(output) for output in outputs]
+
+
+def _feature_output_name(feature: dict[str, Any], output: dict[str, Any]) -> str:
+    name = str(output.get("name") or feature.get("name") or "").strip()
+    suffix = str(output.get("suffix") or "").strip()
+    if suffix and name == str(feature.get("name") or "").strip():
+        name = f"{name}_{_sanitize_token(suffix)}"
+    if not name:
+        raise ConfigValidationError(f"Feature output is missing name: {feature}")
+    return _sanitize_token(name)
+
+
+def _source_input_select(input_cfg: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(input_cfg.get("select"), dict):
+        return deepcopy(input_cfg["select"])
+
+    select: dict[str, Any] = {}
+
+    category_fraction = input_cfg.get("category_fraction")
+    if isinstance(category_fraction, dict):
+        select["variables"] = [
+            str(
+                category_fraction.get("source_variable")
+                or category_fraction.get("variable")
+                or input_cfg.get("variable")
+                or ""
+            )
+        ]
+        select["category_fractions"] = [deepcopy(category_fraction)]
+    elif input_cfg.get("layer") is not None:
+        select["layers"] = [str(input_cfg["layer"])]
+    elif input_cfg.get("variable") is not None:
+        select["variables"] = [str(input_cfg["variable"])]
+
+    if isinstance(input_cfg.get("dimensions"), dict):
+        select["dimensions"] = deepcopy(input_cfg["dimensions"])
+
+    if isinstance(input_cfg.get("temporal"), dict):
+        select["temporal"] = deepcopy(input_cfg["temporal"])
+
+    if not select:
+        raise ConfigValidationError(f"Source input is missing select information: {input_cfg}")
+
+    return select
+
+
+def _source_input_overrides(input_cfg: dict[str, Any]) -> dict[str, Any] | None:
+    overrides = deepcopy(input_cfg.get("overrides") or {})
+    processing: dict[str, Any] = deepcopy(overrides.get("processing") or {})
+    resampling: dict[str, Any] = deepcopy(overrides.get("resampling") or {})
+    download: dict[str, Any] = deepcopy(overrides.get("download") or {})
+
+    if input_cfg.get("source_resolution") is not None:
+        processing["source_resolution"] = str(input_cfg["source_resolution"])
+    if input_cfg.get("target_resolution_m") is not None:
+        processing["target_resolution_m"] = int(input_cfg["target_resolution_m"])
+    if input_cfg.get("resampling") is not None:
+        category_fraction = input_cfg.get("category_fraction")
+        variable = (
+            category_fraction.get("name")
+            if isinstance(category_fraction, dict) and category_fraction.get("name")
+            else input_cfg.get("variable") or input_cfg.get("output_variable") or input_cfg.get("layer")
+        )
+        if variable is None and isinstance(input_cfg.get("query"), dict):
+            variable = input_cfg.get("query", {}).get("variable")
+        if variable:
+            resampling.setdefault("by_variable", {})[str(variable)] = str(input_cfg["resampling"])
+    if input_cfg.get("keep_raw_after_clip") is not None:
+        download["keep_raw_after_clip"] = bool(input_cfg["keep_raw_after_clip"])
+
+    compiled = {
+        "processing": processing or None,
+        "resampling": resampling or None,
+        "download": download or None,
+    }
+    compact = {key: value for key, value in compiled.items() if value is not None}
+    return compact or None
+
+
+def _mergeable_select_key(select: dict[str, Any]) -> dict[str, Any]:
+    key_select = deepcopy(select)
+    for key in ["variables", "indices", "layers", "category_fractions"]:
+        key_select.pop(key, None)
+    return key_select
+
+
+def _merge_unique_list(existing: list[Any], incoming: list[Any]) -> list[Any]:
+    result = list(existing)
+    seen = {_canonical_json(item) for item in result}
+    for item in incoming:
+        key = _canonical_json(item)
+        if key not in seen:
+            result.append(deepcopy(item))
+            seen.add(key)
+    return result
+
+
+def _merge_source_select(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for key, value in incoming.items():
+        if key in {"variables", "indices", "layers", "category_fractions"}:
+            existing[key] = _merge_unique_list(_as_list(existing.get(key)), _as_list(value))
+            continue
+        existing.setdefault(key, deepcopy(value))
+
+
+def _source_requirement_alias(
+    *,
+    input_cfg: dict[str, Any],
+    source_entries: list[dict[str, Any]],
+    source_key_to_alias: dict[str, str],
+    source_alias_to_entry: dict[str, dict[str, Any]],
+    alias_counts: dict[str, int],
+) -> str:
+    config = input_cfg.get("config")
+    source_id = str(input_cfg.get("source_id") or input_cfg.get("id") or "").strip()
+    if not config:
+        raise ConfigValidationError(
+            f"Source input {source_id or input_cfg!r} is missing config path."
+        )
+    if not source_id:
+        source_id = Path(str(config)).stem
+
+    select = _source_input_select(input_cfg)
+    overrides = _source_input_overrides(input_cfg)
+    stages = input_cfg.get("stages")
+    key_payload = {
+        "config": str(config),
+        "select": _mergeable_select_key(select),
+        "overrides": overrides,
+        "stages": stages,
+    }
+    key = _canonical_json(key_payload)
+    if key in source_key_to_alias:
+        alias = source_key_to_alias[key]
+        _merge_source_select(source_alias_to_entry[alias]["select"], select)
+        return alias
+
+    base_alias = _sanitize_token(source_id)
+    alias_counts[base_alias] = alias_counts.get(base_alias, 0) + 1
+    alias = base_alias if alias_counts[base_alias] == 1 else f"{base_alias}_req{alias_counts[base_alias]}"
+
+    entry = {
+        "id": alias,
+        "config": str(config),
+        "select": select,
+    }
+    if stages:
+        entry["stages"] = stages
+    if overrides:
+        entry["overrides"] = overrides
+
+    source_entries.append(entry)
+    source_key_to_alias[key] = alias
+    source_alias_to_entry[alias] = entry
+    return alias
+
+
+def _source_query_from_input(
+    input_cfg: dict[str, Any],
+    *,
+    source_alias: str,
+) -> dict[str, Any]:
+    query = deepcopy(input_cfg.get("query") or {})
+    if not isinstance(query, dict):
+        raise ConfigValidationError(f"Source input query must be a dictionary: {input_cfg}")
+
+    if not query.get("variable"):
+        category_fraction = input_cfg.get("category_fraction")
+        if isinstance(category_fraction, dict) and category_fraction.get("name"):
+            query["variable"] = str(category_fraction["name"])
+        elif input_cfg.get("output_variable") is not None:
+            query["variable"] = str(input_cfg["output_variable"])
+        elif input_cfg.get("variable") is not None:
+            query["variable"] = str(input_cfg["variable"])
+        elif input_cfg.get("layer") is not None:
+            layer_name = str(input_cfg["layer"])
+            query["variable"] = layer_name.split(".")[-1]
+        else:
+            raise ConfigValidationError(f"Source input is missing output query variable: {input_cfg}")
+
+    query["source_id"] = source_alias
+    return query
+
+
+def _compile_feature_input(
+    input_cfg: dict[str, Any],
+    *,
+    source_entries: list[dict[str, Any]],
+    source_key_to_alias: dict[str, str],
+    source_alias_to_entry: dict[str, dict[str, Any]],
+    alias_counts: dict[str, int],
+    known_feature_outputs: set[str],
+) -> dict[str, Any]:
+    input_kind = str(input_cfg.get("kind") or input_cfg.get("type") or "source")
+
+    if input_kind == "feature":
+        variable = str(input_cfg.get("output") or input_cfg.get("feature") or "").strip()
+        if not variable:
+            raise ConfigValidationError(f"Feature input is missing feature/output: {input_cfg}")
+        if variable not in known_feature_outputs:
+            raise ConfigValidationError(
+                f"Feature input references unknown or later output {variable!r}."
+            )
+        return {"source_id": "derived", "variable": variable}
+
+    if input_kind != "source":
+        raise ConfigValidationError(f"Unsupported feature input kind {input_kind!r}.")
+
+    source_alias = _source_requirement_alias(
+        input_cfg=input_cfg,
+        source_entries=source_entries,
+        source_key_to_alias=source_key_to_alias,
+        source_alias_to_entry=source_alias_to_entry,
+        alias_counts=alias_counts,
+    )
+    return _source_query_from_input(input_cfg, source_alias=source_alias)
+
+
+def _normalise_feature_inputs(
+    feature: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    source_entries: list[dict[str, Any]],
+    source_key_to_alias: dict[str, str],
+    source_alias_to_entry: dict[str, dict[str, Any]],
+    alias_counts: dict[str, int],
+    known_feature_outputs: set[str],
+) -> dict[str, Any]:
+    inputs = deepcopy(output.get("inputs") or feature.get("inputs") or {})
+    build_type = _feature_build_type(feature)
+
+    if build_type == "source_layer" and not inputs:
+        source_input = output.get("source") or feature.get("source")
+        if not isinstance(source_input, dict):
+            raise ConfigValidationError(
+                f"Source-layer feature {feature.get('name')!r} is missing source."
+            )
+        inputs = {"x": source_input}
+
+    if not isinstance(inputs, dict) or not inputs:
+        raise ConfigValidationError(f"Feature {feature.get('name')!r} has no inputs.")
+
+    compiled_inputs: dict[str, dict[str, Any]] = {}
+    for alias, input_cfg in inputs.items():
+        if not isinstance(input_cfg, dict):
+            raise ConfigValidationError(
+                f"Feature {feature.get('name')!r} input {alias!r} must be a dictionary."
+            )
+        compiled_inputs[str(alias)] = _compile_feature_input(
+            input_cfg=input_cfg,
+            source_entries=source_entries,
+            source_key_to_alias=source_key_to_alias,
+            source_alias_to_entry=source_alias_to_entry,
+            alias_counts=alias_counts,
+            known_feature_outputs=known_feature_outputs,
+        )
+    return compiled_inputs
+
+
+def _derived_feature_from_feature_output(
+    feature: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    source_entries: list[dict[str, Any]],
+    source_key_to_alias: dict[str, str],
+    source_alias_to_entry: dict[str, dict[str, Any]],
+    alias_counts: dict[str, int],
+    known_feature_outputs: set[str],
+) -> dict[str, Any]:
+    build_type = _feature_build_type(feature)
+    output_name = _feature_output_name(feature, output)
+    inputs = _normalise_feature_inputs(
+        feature,
+        output,
+        source_entries=source_entries,
+        source_key_to_alias=source_key_to_alias,
+        source_alias_to_entry=source_alias_to_entry,
+        alias_counts=alias_counts,
+        known_feature_outputs=known_feature_outputs,
+    )
+
+    derived: dict[str, Any] = {
+        "name": output_name,
+        "description": output.get("description") or feature.get("description"),
+        "unit": output.get("unit") or feature.get("unit"),
+        "value_semantics": output.get("value_semantics") or feature.get("value_semantics"),
+        "output_dtype": output.get("output_dtype") or feature.get("output_dtype") or "float32",
+        "inputs": inputs,
+    }
+
+    for key in ["title", "valid_range", "temporal_meaning"]:
+        if output.get(key) is not None or feature.get(key) is not None:
+            derived[key] = output.get(key, feature.get(key))
+
+    if build_type == "source_layer":
+        derived.update({"operation": "expression", "expression": "x"})
+    elif build_type == "expression":
+        expression = output.get("expression") or feature.get("expression")
+        if not expression:
+            raise ConfigValidationError(f"Expression feature {output_name!r} is missing expression.")
+        derived.update({"operation": "expression", "expression": str(expression)})
+    elif build_type in {"recipe", "masking"}:
+        recipe = output.get("recipe") or feature.get("recipe")
+        if not recipe:
+            raise ConfigValidationError(f"Recipe feature {output_name!r} is missing recipe.")
+        derived.update(
+            {
+                "operation": "recipe",
+                "recipe": str(recipe),
+                "parameters": deepcopy(output.get("parameters") or feature.get("parameters") or {}),
+            }
+        )
+    elif build_type in {"terrain", "focal", "distance", "spatial"}:
+        operation = str(output.get("operation") or feature.get("operation") or "")
+        if build_type != "spatial":
+            operation = build_type
+        if operation not in {"terrain", "focal", "distance"}:
+            raise ConfigValidationError(
+                f"Spatial feature {output_name!r} must use terrain, focal or distance."
+            )
+        method = output.get("method") or feature.get("method")
+        derived.update(
+            {
+                "operation": operation,
+                "parameters": deepcopy(output.get("parameters") or feature.get("parameters") or {}),
+            }
+        )
+        if method:
+            derived["method"] = str(method)
+    else:
+        raise ConfigValidationError(f"Unsupported feature build_type: {build_type}")
+
+    return {key: value for key, value in derived.items() if value is not None}
+
+
+def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
+    if "sources" in run_cfg or "derived_features" in run_cfg:
+        raise ConfigValidationError(
+            "Feature-oriented run configs must not include top-level 'sources' "
+            "or 'derived_features'. Define final outputs under 'features'."
+        )
+
+    features = run_cfg.get("features")
+    if not isinstance(features, list) or not features:
+        raise ConfigValidationError("Feature-oriented run config requires non-empty 'features'.")
+
+    compiled = deepcopy(run_cfg)
+    compiled["_compiled_from_features"] = True
+    compiled_sources: list[dict[str, Any]] = []
+    compiled_derived: list[dict[str, Any]] = []
+    source_key_to_alias: dict[str, str] = {}
+    source_alias_to_entry: dict[str, dict[str, Any]] = {}
+    alias_counts: dict[str, int] = {}
+    known_outputs: set[str] = set()
+    warnings: list[str] = []
+
+    for feature in features:
+        if not isinstance(feature, dict):
+            raise ConfigValidationError("Each feature must be a dictionary.")
+
+        for output in _feature_outputs(feature):
+            derived = _derived_feature_from_feature_output(
+                feature,
+                output,
+                source_entries=compiled_sources,
+                source_key_to_alias=source_key_to_alias,
+                source_alias_to_entry=source_alias_to_entry,
+                alias_counts=alias_counts,
+                known_feature_outputs=known_outputs,
+            )
+            if derived["name"] in known_outputs:
+                raise ConfigValidationError(
+                    f"Duplicate final feature output name: {derived['name']}"
+                )
+            if len(compiled_derived) >= 500:
+                warnings.append(
+                    "This run expands to more than 500 final features; it may be slow "
+                    "and storage-heavy."
+                )
+            compiled_derived.append(derived)
+            known_outputs.add(str(derived["name"]))
+
+    if not compiled_sources:
+        raise ConfigValidationError("At least one final feature must depend on a source input.")
+
+    compiled["sources"] = compiled_sources
+    compiled["derived_features"] = compiled_derived
+    compiled["_feature_compile_warnings"] = sorted(set(warnings))
+    return compiled
+
+
 def compile_run_config(
     run_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     """
     Compile run-level convenience blocks that are independent of source loading.
     """
-    return expand_derived_feature_groups(run_cfg)
+    if run_cfg.get("_compiled_from_features"):
+        return deepcopy(run_cfg)
+
+    if "features" not in run_cfg:
+        raise ConfigValidationError(
+            "Feature-oriented run config requires top-level 'features'. Legacy "
+            "'sources'/'derived_features' configs are no longer supported."
+        )
+
+    return _compile_feature_run_config(run_cfg)
 
 
 def _source_stages(
@@ -1755,7 +2184,7 @@ def validate_researcher_run_config(
     run_config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
-    Validate old and simplified run configs without touching raster data.
+    Validate feature-oriented run configs without touching raster data.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -1763,6 +2192,7 @@ def validate_researcher_run_config(
 
     try:
         compiled_run = compile_run_config(run_cfg)
+        warnings.extend(compiled_run.get("_feature_compile_warnings", []) or [])
         validate_run_config(compiled_run, run_config_path=run_config_path)
     except Exception as exc:
         return {
@@ -2068,7 +2498,15 @@ def render_run_config_yaml(
     run_cfg: dict[str, Any],
     compile_groups: bool = True,
 ) -> str:
-    cfg = compile_run_config(run_cfg) if compile_groups else deepcopy(run_cfg)
+    cfg = deepcopy(run_cfg)
+    for key in [
+        "_compiled_from_features",
+        "_feature_compile_warnings",
+        "sources",
+        "derived_features",
+    ]:
+        if key.startswith("_") or "features" in cfg:
+            cfg.pop(key, None)
     return yaml.safe_dump(
         cfg,
         sort_keys=False,

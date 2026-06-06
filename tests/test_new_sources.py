@@ -26,12 +26,140 @@ from src.sources.worldclim.naming import (
 from src.sources.registry import list_source_connectors
 from src.workbench.catalog import list_source_catalogs
 from src.workbench.compiler import (
+    compile_run_config,
     compile_source_config_for_run,
     validate_researcher_run_config,
 )
+from src.pipeline.config import validate_run_config
 
 
 class NewSourceIntegrationTests(unittest.TestCase):
+    def test_feature_oriented_source_layer_compiles_to_identity_output(self):
+        cfg = {
+            "run": {
+                "name": "feature_contract_smoke",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "bio1",
+                    "title": "Annual mean temperature",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "worldclim",
+                        "config": "configs/sources/worldclim/worldclim_v2_1_bioclim.yaml",
+                        "variable": "bio1",
+                    },
+                },
+                {
+                    "name": "bio2",
+                    "title": "Mean diurnal range",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "worldclim",
+                        "config": "configs/sources/worldclim/worldclim_v2_1_bioclim.yaml",
+                        "variable": "bio2",
+                    },
+                },
+            ],
+            "outputs": {"dataset_dir": "data/processed/feature_contract_smoke"},
+        }
+
+        report = validate_researcher_run_config(cfg)
+        self.assertTrue(report["ok"], report["errors"])
+        compiled = compile_run_config(cfg)
+        self.assertTrue(compiled["_compiled_from_features"])
+        self.assertEqual(len(compiled["sources"]), 1)
+        self.assertEqual(
+            sorted(compiled["sources"][0]["select"]["variables"]),
+            ["bio1", "bio2"],
+        )
+        self.assertEqual(len(compiled["derived_features"]), 2)
+        self.assertEqual(compiled["derived_features"][0]["operation"], "expression")
+        self.assertEqual(compiled["derived_features"][0]["expression"], "x")
+
+    def test_feature_oriented_yearly_dimension_source_layer_keeps_temporal_query(self):
+        cfg = {
+            "run": {
+                "name": "hrvpp_feature_source_layer",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "amplitude_s1_2020",
+                    "title": "Seasonal amplitude",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "copernicus_clms_hrvpp_vpp_laea",
+                        "config": "configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml",
+                        "variable": "amplitude",
+                        "dimensions": {"growth_season": ["s1"]},
+                        "temporal": {
+                            "output_mode": "supplied_layers",
+                            "layers": {"years": [2020]},
+                        },
+                        "query": {
+                            "source_id": "copernicus_clms_hrvpp_vpp_laea",
+                            "variable": "amplitude_s1_2020",
+                            "season": "s1",
+                        },
+                    },
+                },
+            ],
+            "outputs": {"dataset_dir": "data/processed/hrvpp_feature_source_layer"},
+        }
+
+        report = validate_researcher_run_config(cfg)
+        self.assertTrue(report["ok"], report["errors"])
+        compiled = compile_run_config(cfg)
+        self.assertEqual(
+            compiled["sources"][0]["select"]["temporal"]["output_mode"],
+            "supplied_layers",
+        )
+        self.assertEqual(
+            compiled["sources"][0]["select"]["dimensions"],
+            {"growth_season": ["s1"]},
+        )
+        self.assertEqual(
+            compiled["derived_features"][0]["inputs"]["x"]["variable"],
+            "amplitude_s1_2020",
+        )
+        self.assertNotEqual(
+            compiled["sources"][0]["select"]["temporal"]["output_mode"],
+            "static",
+        )
+
+    def test_legacy_run_configs_without_features_fail_clearly(self):
+        cfg = {
+            "run": {
+                "name": "legacy_sources",
+                "project_config": "configs/project.yaml",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+            },
+            "sources": [
+                {
+                    "id": "dem",
+                    "config": "configs/sources/copernicus/copernicus_dem_glo30.yaml",
+                    "select": {"variables": ["elevation"]},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "top-level 'sources'.*feature-oriented 'features'"):
+            validate_run_config(cfg)
+
     def test_new_connectors_are_registered(self):
         connectors = set(list_source_connectors())
         self.assertIn("openstreetmap", connectors)
@@ -177,6 +305,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_workbench_compiler_accepts_new_source_selections(self):
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "new_sources_smoke",
                 "project_config": "configs/project.yaml",
@@ -305,6 +434,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(spec["hda_query"]["start"], "2020-01-01T00:00:00.000Z")
 
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "hrvpp_aggregation_smoke",
                 "project_config": "configs/project.yaml",
@@ -382,6 +512,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_categorical_yearly_collections_reject_numeric_aggregations(self):
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "bad_smod_aggregation",
                 "project_config": "configs/project.yaml",
@@ -443,6 +574,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_yearly_static_collections_support_base_variable_aggregations(self):
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "annual_aggregation_smoke",
                 "project_config": "configs/project.yaml",
@@ -494,6 +626,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_yearly_static_aggregations_reject_unavailable_endpoint_years(self):
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "bad_yearly_endpoint",
                 "project_config": "configs/project.yaml",
@@ -695,6 +828,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(compiled["category_fractions"][0]["resampling"], "nearest")
 
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "category_fraction_smoke",
                 "project_config": "configs/project.yaml",
@@ -910,6 +1044,7 @@ class NewSourceIntegrationTests(unittest.TestCase):
 
     def test_derived_features_require_packaged_manifest_outputs(self):
         cfg = {
+            "_compiled_from_features": True,
             "run": {
                 "name": "bad_derived_contract",
                 "project_config": "configs/project.yaml",

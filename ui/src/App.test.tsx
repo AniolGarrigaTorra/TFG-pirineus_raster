@@ -45,6 +45,45 @@ const catalog: WorkbenchCatalog = {
         default_months: [1, 12],
         dimensioned_by: ["gcms", "ssps", "periods"]
       }
+    },
+    {
+      id: "copernicus_clms_hrvpp_vpp_laea",
+      title: "CLMS HR-VPP vegetation phenology and productivity",
+      provider: "copernicus_clms",
+      product: "hrvpp_vpp_laea",
+      config_path: "configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml",
+      variables: [
+        {
+          name: "amplitude",
+          kind: "variable",
+          enabled_default: true,
+          description: "Seasonal amplitude",
+          temporal: {
+            type: "yearly_static_collection",
+            variable_pattern: "amplitude_{season}_{year}"
+          }
+        }
+      ],
+      dimensions: {
+        growth_season: ["s1", "s2"]
+      },
+      dimension_context_keys: {
+        growth_season: "season"
+      },
+      temporal: {
+        kind: "yearly_static_collection",
+        label: "Yearly static layers",
+        default_output_mode: "supplied_layers",
+        output_modes: ["supplied_layers", "aggregate"],
+        aggregation_forms: ["year_range_metric"],
+        supports_custom_aggregations: true,
+        supports_raw_slices: false,
+        default_years: [2017, 2024],
+        available_years: [2017, 2024],
+        temporal_layers: {
+          years: [2020, 2021]
+        }
+      }
     }
   ],
   supported_metrics: ["mean", "sum"],
@@ -53,13 +92,21 @@ const catalog: WorkbenchCatalog = {
 };
 
 function mockApi(nextCatalog: WorkbenchCatalog) {
+  class MockImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    set src(_value: string) {
+      window.setTimeout(() => this.onload?.(), 0);
+    }
+  }
+  vi.stubGlobal("Image", MockImage);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/backgrounds/manifest.json")) {
       return {
-        ok: false,
-        text: async () => "",
-        json: async () => ({})
+        ok: true,
+        text: async () => JSON.stringify({ images: ["/backgrounds/test.jpg"] }),
+        json: async () => ({ images: ["/backgrounds/test.jpg"] })
       } as Response;
     }
     if (url.includes("/api/validate-run")) {
@@ -89,18 +136,18 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders the workbench with catalog sources", async () => {
+  it("opens the feature-oriented project setup", async () => {
     mockApi(catalog);
 
-    const { container } = render(<App />);
+    render(<App />);
 
-    expect(screen.getByText("Welcome to Pirineus Raster")).toBeTruthy();
+    expect(await screen.findByText("Welcome to Pirineus Raster")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
 
     expect(screen.getByText("Start new project")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Start new project/i }));
 
-    expect(screen.getByText("Pirineus Raster Workbench")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Project Setup" })).toBeTruthy();
 
     await waitFor(() => {
       expect(screen.getByText("API ready")).toBeTruthy();
@@ -109,20 +156,17 @@ describe("App", () => {
     expect((screen.getByLabelText("all") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText("build") as HTMLInputElement).checked).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
-
-    const sourceGroup = container.querySelector(".source-group");
-    expect(sourceGroup?.hasAttribute("open")).toBe(false);
-    fireEvent.click(screen.getByText("Worldclim"));
-
-    expect(screen.getByText("worldclim_cmip6_future")).toBeTruthy();
-    expect((screen.getByRole("checkbox", { name: /worldclim_cmip6_future/i }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Start creating features" }));
+    expect(screen.getByRole("heading", { name: "Feature Builder" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Build custom feature/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Add official source layers/i })).toBeTruthy();
   });
 
   it("keeps AOI creation in the dedicated AOI workflow", async () => {
     mockApi(catalog);
 
     render(<App />);
+    await screen.findByText("Welcome to Pirineus Raster");
     fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
     fireEvent.click(screen.getByRole("button", { name: /Start new project/i }));
 
@@ -142,6 +186,7 @@ describe("App", () => {
     mockApi(catalog);
 
     const { container } = render(<App />);
+    await screen.findByText("Welcome to Pirineus Raster");
     fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
     fireEvent.click(screen.getByRole("button", { name: /New AOI/i }));
 
@@ -155,43 +200,11 @@ describe("App", () => {
     expect(overlayPath?.getAttribute("d")).toContain("L");
   });
 
-  it("shows a single explicit input variable for snow postprocess aggregations", async () => {
-    mockApi({
-      ...catalog,
-      sources: [
-        {
-          id: "copernicus_hrsi_snow",
-          title: "Copernicus HRSI Fractional Snow Cover",
-          provider: "copernicus",
-          product: "hrsi_snow",
-          config_path: "configs/sources/copernicus/copernicus_hrsi_snow.yaml",
-          variables: [
-            {
-              name: "snow_fraction",
-              kind: "variable",
-              enabled_default: true,
-              description: "Daily fractional snow cover on ground."
-            }
-          ],
-          temporal: {
-            kind: "temporal_postprocess",
-            label: "Download-time temporal postprocess",
-            default_output_mode: "postprocess_aggregate",
-            output_modes: ["postprocess_aggregate"],
-            aggregation_forms: ["explicit_month_list_metric"],
-            supports_custom_aggregations: true,
-            supports_raw_slices: false,
-            available_years: [2022, 2022],
-            default_years: [2022, 2022],
-            default_months: [1, 3],
-            postprocess_metrics: ["mean", "count_threshold"],
-            postprocess_outputs: []
-          }
-        }
-      ]
-    });
+  it("adds official source layers as final features and renders feature YAML", async () => {
+    mockApi(catalog);
 
     render(<App />);
+    await screen.findByText("Welcome to Pirineus Raster");
     fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
     fireEvent.click(screen.getByRole("button", { name: /Start new project/i }));
 
@@ -199,12 +212,55 @@ describe("App", () => {
       expect(screen.getByText("API ready")).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
-    fireEvent.click(screen.getByText("Copernicus"));
-    fireEvent.click(screen.getByRole("checkbox", { name: /copernicus_hrsi_snow/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Temporal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start creating features" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add official source layers/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /tmin/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "ACCESS-CM2" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "ssp126" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "2021-2040" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add aggregation" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add 1 feature/i }));
 
-    expect(screen.getByText("Input variable: snow_fraction")).toBeTruthy();
-    expect(screen.queryByText("Base variables")).toBeNull();
+    expect(screen.getByText(/1 cards/i)).toBeTruthy();
+    expect(screen.getByText(/tmin · source_layer/i)).toBeTruthy();
+
+    const reviewButtons = screen.getAllByRole("button", { name: "Review" });
+    fireEvent.click(reviewButtons[reviewButtons.length - 1]);
+
+    const yaml = screen.getByText((content) => content.includes("features:"));
+    expect(yaml.textContent).toContain("build_type: source_layer");
+    expect(yaml.textContent).not.toContain("\nsources:");
+  });
+
+  it("requires yearly dimensions and temporal layers before adding HR-VPP outputs", async () => {
+    mockApi(catalog);
+
+    render(<App />);
+    await screen.findByText("Welcome to Pirineus Raster");
+    fireEvent.click(screen.getByRole("button", { name: "Start building my personalized dataset" }));
+    fireEvent.click(screen.getByRole("button", { name: /Start new project/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("API ready")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start creating features" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add official source layers/i }));
+    fireEvent.click(screen.getByRole("button", { name: /copernicus_clms_hrvpp_vpp_laea/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Seasonal amplitude/i }));
+
+    expect(screen.getByRole("button", { name: /Add 1 feature/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "s1" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "2020" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add 1 feature/i }));
+
+    const reviewButtons = screen.getAllByRole("button", { name: "Review" });
+    fireEvent.click(reviewButtons[reviewButtons.length - 1]);
+
+    const yaml = screen.getByText((content) => content.includes("features:"));
+    expect(yaml.textContent).toContain("amplitude_s1_2020");
+    expect(yaml.textContent).toContain("output_mode: supplied_layers");
+    expect(yaml.textContent).not.toContain("output_mode: static");
   });
 });

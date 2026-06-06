@@ -270,6 +270,66 @@ def build_manifest(
     return base_manifest
 
 
+def _resolve_dataset_entry_path(dataset_dir: Path, value: Any) -> Path | None:
+    if value in [None, ""]:
+        return None
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    return dataset_dir / path
+
+
+def prune_manifest_to_final_features(dataset_dir: Path) -> dict[str, Any]:
+    """
+    Keep only final derived feature rasters in the dataset manifest and folder.
+
+    Feature-oriented runs build source rasters as internal inputs first. Those
+    inputs are useful while derived/final features are evaluated, but they should
+    not remain visible as dataset outputs.
+    """
+    manifest_path = dataset_dir / "metadata" / "manifest.json"
+    if not manifest_path.exists():
+        return {}
+
+    with manifest_path.open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    kept_rasters: list[dict[str, Any]] = []
+    for raster in manifest.get("rasters", []) or []:
+        if raster.get("source_id") == "derived":
+            kept_rasters.append(raster)
+            continue
+
+        for key in ["dataset_path", "sidecar_json_dataset_path"]:
+            path = _resolve_dataset_entry_path(dataset_dir, raster.get(key))
+            if path and path.exists():
+                path.unlink()
+
+    manifest["rasters"] = kept_rasters
+    manifest["n_rasters"] = len(kept_rasters)
+    manifest["internal_sources"] = manifest.get("sources", []) or []
+    manifest["sources"] = [
+        {
+            "id": "derived",
+            "kind": "final_features",
+            "n_copied_rasters": len(kept_rasters),
+        }
+    ]
+    manifest["n_sources"] = 1 if kept_rasters else 0
+    manifest["layer_catalog"] = [
+        layer
+        for layer in manifest.get("layer_catalog", []) or []
+        if layer.get("source_id") == "derived"
+    ]
+    manifest["layer_summary"] = summarize_layer_catalog(
+        build_layer_catalog_from_manifest(manifest)
+    )
+    manifest["feature_oriented_outputs_only"] = True
+
+    write_json(manifest_path, manifest)
+    return manifest
+
+
 # =============================================================================
 # Dataset run orchestration
 # =============================================================================
@@ -594,6 +654,16 @@ def run_dataset_pipeline(
                     dirs["metadata"] / "run_summary.json",
                     summary,
                 )
+
+            if run_cfg.get("_compiled_from_features"):
+                final_manifest = prune_manifest_to_final_features(dataset_dir)
+                summary["n_copied_rasters"] = len(final_manifest.get("rasters", []))
+                summary["feature_oriented_outputs_only"] = True
+                if write_run_summary:
+                    write_json(
+                        dirs["metadata"] / "run_summary.json",
+                        summary,
+                    )
 
         reporter.finish()
 

@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import type { ReactNode } from "react";
 import { createAoiConfig, createProjectGrid, fetchCatalog, renderRunConfig, saveRunConfig, validateRunConfig } from "./api";
 import type {
   AoiCatalog,
   AoiBounds,
+  CategoryFractionSelection,
   CustomAggregation,
+  DatasetFeatureConfig,
+  DatasetFeatureInput,
+  DatasetFeatureOutput,
   DerivedFeatureConfig,
   DerivedInputQuery,
+  FeatureSourceInput,
   SourceCatalog,
   SourceSelection,
   TemporalSelection,
@@ -18,8 +24,22 @@ import { renderYaml } from "./yaml";
 import "./App.css";
 
 const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"];
-type StartMode = "menu" | "project" | "aoi" | "sources";
-const defaultBackgroundUrl = "/backgrounds/pirineus-background.png";
+type StartMode = "menu" | "project" | "aoi" | "sources" | "tutorial";
+type FeatureTemporalMode = "static" | "supplied_layers" | "aggregate" | "raw_slices" | "postprocess_aggregate";
+type FeaturePickerStep = "origin" | "provider" | "source" | "variable" | "category" | "dimensions" | "temporal" | "resampling";
+type InputOutputOption = {
+  name: string;
+  label: string;
+  input: DatasetFeatureInput;
+  suffix?: string;
+  temporalKey?: string;
+  dimensionKey?: string;
+  variable?: VariableCatalog;
+};
+type InputBundle = {
+  label: string;
+  outputs: InputOutputOption[];
+};
 const backgroundManifestUrl = "/backgrounds/manifest.json";
 const backgroundRotationMs = 5 * 60 * 1000;
 const temporalDimensionKeys = new Set(["year", "years", "month", "months", "season", "seasons"]);
@@ -30,17 +50,17 @@ type LonLatPoint = { lon: number; lat: number };
 type ProjectedPoint = { x: number; y: number };
 
 function normalizeBackgroundUrls(value: unknown) {
-  if (!Array.isArray(value)) return [defaultBackgroundUrl];
+  if (!Array.isArray(value)) return [];
 
   const urls = value
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .map((item) => item.trim());
 
-  return urls.length > 0 ? [...new Set(urls)] : [defaultBackgroundUrl];
+  return [...new Set(urls)];
 }
 
 function pickRandomBackground(urls: string[], currentUrl?: string) {
-  if (urls.length === 0) return defaultBackgroundUrl;
+  if (urls.length === 0) return null;
   if (urls.length === 1) return urls[0];
 
   let nextUrl = currentUrl;
@@ -50,12 +70,38 @@ function pickRandomBackground(urls: string[], currentUrl?: string) {
   return nextUrl ?? urls[0];
 }
 
-function cssBackgroundImage(url: string) {
-  return `url("${url.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")`;
+function preloadBackground(url: string) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(url);
+    image.onerror = () => reject(new Error(`Could not load background image: ${url}`));
+    image.src = url;
+  });
 }
 
 function BackgroundCredit() {
   return <div className="photo-credit">Photo: Felipe Valladares</div>;
+}
+
+function BackgroundImage({ src, variant }: { src: string; variant: "welcome" | "workbench" }) {
+  return (
+    <img
+      className={`background-image background-image-${variant}`}
+      src={src}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+    />
+  );
+}
+
+function WorkbenchShell({ backgroundUrl, children }: { backgroundUrl: string; children: ReactNode }) {
+  return (
+    <div className="app-shell workbench-shell">
+      <BackgroundImage src={backgroundUrl} variant="workbench" />
+      {children}
+    </div>
+  );
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -485,6 +531,275 @@ function sourceDimensionEntries(source: SourceCatalog) {
   );
 }
 
+function sourceResolutionChoices(source: SourceCatalog | undefined) {
+  if (!source) return [];
+  const values = source.source_resolution_options && source.source_resolution_options.length > 0
+    ? source.source_resolution_options
+    : source.source_resolution
+      ? [source.source_resolution]
+      : [];
+  return [...new Set(values.filter(Boolean))];
+}
+
+function parseYearBoundsFromToken(value: string | number) {
+  const text = String(value);
+  const years = [...text.matchAll(/\b(19|20)\d{2}\b/g)].map((match) => Number(match[0]));
+  if (years.length === 0) return undefined;
+  return [Math.min(...years), Math.max(...years)] as [number, number];
+}
+
+function selectedDimensionYearBounds(
+  source: SourceCatalog | undefined,
+  dimensions: Record<string, string[]>
+) {
+  if (!source) return undefined;
+  const bounds = sourceDimensionEntries(source).flatMap(([key]) =>
+    (dimensions[key] ?? [])
+      .map(parseYearBoundsFromToken)
+      .filter((item): item is [number, number] => Boolean(item))
+  );
+  if (bounds.length === 0) return undefined;
+  return [
+    Math.min(...bounds.map((item) => item[0])),
+    Math.max(...bounds.map((item) => item[1]))
+  ] as [number, number];
+}
+
+function sourceTemporalYearBounds(source: SourceCatalog | undefined) {
+  const temporal = source?.temporal;
+  if (!temporal) return undefined;
+  const explicitYears = temporal.temporal_layers?.years ?? [];
+  if (explicitYears.length > 0) {
+    return [Math.min(...explicitYears), Math.max(...explicitYears)] as [number, number];
+  }
+  return temporal.available_years ?? temporal.default_years;
+}
+
+function effectiveAggregationYearBounds(
+  source: SourceCatalog | undefined,
+  dimensions: Record<string, string[]>
+) {
+  const sourceBounds = sourceTemporalYearBounds(source);
+  const dimensionBounds = selectedDimensionYearBounds(source, dimensions);
+  if (sourceBounds && dimensionBounds) {
+    const start = Math.max(sourceBounds[0], dimensionBounds[0]);
+    const end = Math.min(sourceBounds[1], dimensionBounds[1]);
+    return start <= end ? [start, end] as [number, number] : undefined;
+  }
+  return dimensionBounds ?? sourceBounds;
+}
+
+function clampYearRangeToBounds(
+  years: [number, number] | undefined,
+  bounds?: [number, number]
+): [number, number] | undefined {
+  if (!years || !bounds) return years;
+  const start = clamp(years[0], bounds[0], bounds[1]);
+  const end = clamp(years[1], bounds[0], bounds[1]);
+  return start <= end ? [start, end] : [end, start];
+}
+
+function dimensionsAreComplete(source: SourceCatalog | undefined, dimensions: Record<string, string[]>) {
+  if (!source) return false;
+  return sourceDimensionEntries(source).every(([key]) => (dimensions[key] ?? []).length > 0);
+}
+
+function sourceProviderGroups(catalog: WorkbenchCatalog) {
+  const groupMeta = new Map((catalog.source_groups ?? []).map((group) => [group.id, group]));
+  const groupOrder = new Map((catalog.source_groups ?? []).map((group, index) => [group.id, index]));
+  const groups = new Map<string, SourceCatalog[]>();
+  for (const source of catalog.sources) {
+    const key = source.provider ?? "other";
+    groups.set(key, [...(groups.get(key) ?? []), source]);
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => {
+      const leftOrder = groupOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = groupOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder || left.localeCompare(right);
+    })
+    .map(([provider, sources]) => ({
+      provider,
+      meta: groupMeta.get(provider),
+      sources: sources.sort((a, b) => sourceDisplayName(a).localeCompare(sourceDisplayName(b)))
+    }));
+}
+
+function supportedTemporalModes(source: SourceCatalog | undefined): FeatureTemporalMode[] {
+  const modes = (source?.temporal?.output_modes ?? []) as FeatureTemporalMode[];
+  if (!source?.temporal) return ["static"];
+  return modes.length > 0 ? modes : ["static"];
+}
+
+function defaultTemporalModeForSource(source: SourceCatalog | undefined): FeatureTemporalMode {
+  if (!source?.temporal) return "static";
+  const modes = supportedTemporalModes(source);
+  const preferred = source.temporal.default_output_mode as FeatureTemporalMode | undefined;
+  if (preferred && modes.includes(preferred)) return preferred;
+  for (const mode of ["supplied_layers", "aggregate", "postprocess_aggregate", "raw_slices", "static"] as FeatureTemporalMode[]) {
+    if (modes.includes(mode)) return mode;
+  }
+  return "static";
+}
+
+function initialTemporalLayers(source: SourceCatalog | undefined): TemporalSelection["layers"] {
+  const layers = source?.temporal?.temporal_layers;
+  return {
+    annual: false,
+    annual_index: false,
+    months: [],
+    seasons: [],
+    years: layers?.years?.length === 1 ? [layers.years[0]] : []
+  };
+}
+
+function selectedTemporalLayerTokens(layers: TemporalSelection["layers"]) {
+  const tokens: Array<{ key: string; label: string; query: Record<string, unknown> }> = [];
+  if (layers.annual) tokens.push({ key: "annual", label: "annual", query: { period: "annual" } });
+  if (layers.annual_index) tokens.push({ key: "annual_index", label: "annual index", query: {} });
+  for (const month of layers.months) tokens.push({ key: month, label: month, query: { period: month } });
+  for (const season of layers.seasons) tokens.push({ key: season, label: season, query: { period: season } });
+  return tokens;
+}
+
+function temporalSelectionIsComplete(
+  source: SourceCatalog | undefined,
+  mode: FeatureTemporalMode,
+  layers: TemporalSelection["layers"],
+  aggregationName: string,
+  aggregation?: CustomAggregation,
+  aggregations: CustomAggregation[] = [],
+  dimensions: Record<string, string[]> = {}
+) {
+  if (!source?.temporal || mode === "static") {
+    return !source?.temporal || supportedTemporalModes(source).includes("static");
+  }
+  if (mode === "supplied_layers") {
+    const hasYear = (layers.years ?? []).length > 0;
+    const hasLayerToken = selectedTemporalLayerTokens(layers).length > 0;
+    return hasYear || hasLayerToken;
+  }
+  if (mode === "aggregate" || mode === "postprocess_aggregate") {
+    return aggregations.length > 0
+      && aggregations.every((item) => aggregationDraftIsComplete(source, dimensions, item));
+  }
+  if (mode === "raw_slices") {
+    const months = aggregation?.months;
+    const hasMonths = Array.isArray(months) && months.length === 2
+      && months[0] >= 1
+      && months[1] <= 12
+      && months[0] <= months[1];
+    if (!hasMonths) return false;
+    if (source.temporal.kind === "year_month_series") {
+      const years = aggregation?.years;
+      return Array.isArray(years) && years.length === 2 && years[0] <= years[1];
+    }
+    return true;
+  }
+  return true;
+}
+
+function aggregationDraftIsComplete(
+  source: SourceCatalog | undefined,
+  dimensions: Record<string, string[]>,
+  aggregation: CustomAggregation
+) {
+  if (aggregation.name.trim().length === 0) return false;
+  const months = aggregation.months;
+  if (months && (months[0] < 1 || months[1] > 12 || months[0] > months[1])) return false;
+  const years = aggregation.years;
+  if (years) {
+    if (years[0] > years[1]) return false;
+    const bounds = effectiveAggregationYearBounds(source, dimensions);
+    if (bounds && (years[0] < bounds[0] || years[1] > bounds[1])) return false;
+  }
+  return true;
+}
+
+function categoryFractionConfig(variable: VariableCatalog, classItem: { value?: string | number; values?: Array<string | number>; name?: string; label?: string }) {
+  const classValues = categoryClassValues(classItem);
+  const classToken = categoryClassToken(classItem);
+  return {
+    variable: variable.generated_from || variable.name.replace(/_\d{4}$/, ""),
+    name: `${sanitizeToken(variable.generated_from || variable.name.replace(/_\d{4}$/, ""))}_${classToken}_fraction`,
+    class_values: classValues,
+    label: classItem.label || classItem.name || classToken
+  };
+}
+
+function defaultResamplingForOutput(variable: VariableCatalog | undefined, isCategoryFraction = false) {
+  if (isCategoryFraction) return "average";
+  return variable?.resampling ?? "nearest";
+}
+
+function resamplingDescription(method: string, isCategoryFraction = false) {
+  if (isCategoryFraction) {
+    return method === "average"
+      ? "Recommended: converts native 0/1 class membership into target-cell coverage fractions."
+      : "Advanced: changes how the native category mask is transferred to the target grid.";
+  }
+  const descriptions: Record<string, string> = {
+    nearest: "Keeps original codes/classes; safest for categorical rasters.",
+    mode: "Uses the most frequent native class in each target cell.",
+    average: "Averages source values; good for continuous data and binary/fraction coverage.",
+    bilinear: "Smooth interpolation for continuous rasters.",
+    cubic: "Smooth interpolation for continuous rasters, with more local smoothing.",
+    sum: "Adds source values; use only for extensive quantities."
+  };
+  return descriptions[method] ?? "Advanced resampling method supported by Rasterio/GDAL.";
+}
+
+function ResamplingMethodControl({
+  catalog,
+  value,
+  onChange,
+  variable,
+  isCategoryFraction = false
+}: {
+  catalog: WorkbenchCatalog;
+  value: string;
+  onChange: (value: string) => void;
+  variable?: VariableCatalog;
+  isCategoryFraction?: boolean;
+}) {
+  const methods = catalog.supported_resampling.length > 0
+    ? catalog.supported_resampling
+    : ["nearest", "average", "bilinear", "mode"];
+  const effectiveValue = methods.includes(value) ? value : methods[0];
+
+  return (
+    <label className="resampling-control">
+      Output resampling
+      <select value={effectiveValue} onChange={(event) => onChange(event.target.value)}>
+        {methods.map((method) => (
+          <option key={method} value={method}>{method}</option>
+        ))}
+      </select>
+      <small className="field-hint">
+        {resamplingDescription(effectiveValue, isCategoryFraction)}
+        {variable?.resampling && !isCategoryFraction ? ` Source default: ${variable.resampling}.` : ""}
+      </small>
+    </label>
+  );
+}
+
+function aggregationDefaults(source: SourceCatalog | undefined, variables: string[], metric = "mean"): CustomAggregation {
+  const temporal = source?.temporal;
+  const availableYears = temporal?.temporal_layers?.years ?? [];
+  const years = temporal?.default_years
+    ?? temporal?.available_years
+    ?? (availableYears.length > 0 ? [availableYears[0], availableYears[availableYears.length - 1]] as [number, number] : undefined);
+  const form = temporal?.aggregation_forms?.[0] ?? (years ? "year_range_metric" : "month_range_metric");
+  return {
+    name: "period_mean",
+    form,
+    metric,
+    months: form.includes("month") || temporal?.default_months ? defaultRange(temporal?.default_months) : undefined,
+    years,
+    variables
+  };
+}
+
 function allValuesSelected<T extends string | number>(selected: T[], values: T[]) {
   return values.length > 0 && selected.length === values.length && values.every((value) => selected.includes(value));
 }
@@ -506,6 +821,317 @@ function sourceTemporalSelection(source: SourceCatalog): TemporalSelection {
     aggregationUse: [],
     customAggregations: []
   };
+}
+
+function cartesianProduct<T>(groups: T[][]): T[][] {
+  if (groups.length === 0) return [[]];
+  return groups.reduce<T[][]>(
+    (acc, group) => acc.flatMap((prefix) => group.map((value) => [...prefix, value])),
+    [[]]
+  );
+}
+
+function selectedDimensionContexts(source: SourceCatalog, dimensions: Record<string, string[]>) {
+  const entries = sourceDimensionEntries(source);
+  if (entries.length === 0) return [{ dimensions: {}, query: {}, suffix: "" }];
+  const valueGroups = entries.map(([key, values]) => {
+    const selected = dimensions[key] && dimensions[key].length > 0 ? dimensions[key] : values.slice(0, 1);
+    return selected.map((value) => ({ key, value }));
+  });
+
+  return cartesianProduct(valueGroups).map((items) => {
+    const selectedDimensions: Record<string, string[]> = {};
+    const query: Record<string, string> = {};
+    const suffix: string[] = [];
+    for (const item of items) {
+      selectedDimensions[item.key] = [item.value];
+      const contextKey = source.dimension_context_keys?.[item.key] ?? item.key;
+      query[contextKey] = item.value;
+      suffix.push(item.value);
+    }
+    return { dimensions: selectedDimensions, query, suffix: suffix.join("_") };
+  });
+}
+
+function applyOutputVariablePattern(variable: VariableCatalog, replacements: Record<string, string | number>) {
+  const pattern = typeof variable.temporal?.variable_pattern === "string"
+    ? variable.temporal.variable_pattern
+    : variable.name;
+  return Object.entries(replacements).reduce(
+    (text, [key, value]) => text.split(`{${key}}`).join(String(value)),
+    pattern
+  );
+}
+
+function sourceQueryVariableForContext(
+  source: SourceCatalog,
+  variable: VariableCatalog,
+  context: { suffix: string },
+  categoryFraction?: CategoryFractionSelection
+) {
+  if (categoryFraction) return categoryFraction.name;
+  if (source.temporal?.kind === "yearly_static_collection" && context.suffix) {
+    return `${variable.name}_${sanitizeToken(context.suffix)}`;
+  }
+  return variable.kind === "vector_layer"
+    ? variable.name.split(".").slice(-1)[0]
+    : variable.name;
+}
+
+function rangeValues(range?: [number, number]) {
+  if (!range) return [];
+  const [start, end] = range;
+  const values: number[] = [];
+  for (let value = start; value <= end; value += 1) values.push(value);
+  return values;
+}
+
+function sourceInputForOutput({
+  source,
+  variable,
+  query,
+  dimensions,
+  temporal,
+  categoryFraction,
+  sourceResolution,
+  resampling
+}: {
+  source: SourceCatalog;
+  variable: VariableCatalog;
+  query: DerivedInputQuery;
+  dimensions?: Record<string, string[]>;
+  temporal?: Record<string, unknown>;
+  categoryFraction?: CategoryFractionSelection;
+  sourceResolution?: string;
+  resampling?: string;
+}): FeatureSourceInput {
+  const isLayer = variable.kind === "vector_layer";
+  return {
+    kind: "source",
+    source_id: source.id,
+    config: source.config_path,
+    variable: isLayer ? undefined : variable.name,
+    layer: isLayer ? variable.name : undefined,
+    query,
+    dimensions,
+    temporal,
+    category_fraction: categoryFraction,
+    source_resolution: sourceResolution,
+    resampling
+  };
+}
+
+function buildSourceLayerOutputs({
+  featureName,
+  source,
+  variable,
+  dimensions,
+  temporalMode,
+  years,
+  layers,
+  aggregation,
+  categoryFraction,
+  sourceResolution,
+  resampling
+}: {
+  featureName: string;
+  source: SourceCatalog;
+  variable: VariableCatalog;
+  dimensions: Record<string, string[]>;
+  temporalMode: FeatureTemporalMode;
+  years: number[];
+  layers?: TemporalSelection["layers"];
+  aggregation?: CustomAggregation;
+  categoryFraction?: CategoryFractionSelection;
+  sourceResolution?: string;
+  resampling?: string;
+}): DatasetFeatureOutput[] {
+  const contexts = selectedDimensionContexts(source, dimensions);
+  const outputs: DatasetFeatureOutput[] = [];
+  const selectedLayers = layers ?? {
+    annual: false,
+    annual_index: false,
+    months: [],
+    seasons: [],
+    years
+  };
+  const temporalLayers = {
+    annual: selectedLayers.annual,
+    annual_index: selectedLayers.annual_index,
+    months: selectedLayers.months,
+    seasons: selectedLayers.seasons,
+    years: years.length > 0 ? years : selectedLayers.years
+  };
+
+  for (const context of contexts) {
+    if (temporalMode === "supplied_layers") {
+      const selectedYears = years.length > 0 ? years : temporalLayers.years;
+      for (const year of selectedYears) {
+        const variableName = applyOutputVariablePattern(variable, { ...context.query, year });
+        const categoryName = categoryFraction
+          ? selectedYears.length > 1 ? `${categoryFraction.name}_${year}` : categoryFraction.name
+          : undefined;
+        const suffix = [context.suffix, year].filter(Boolean).join("_");
+        const temporal = {
+          output_mode: "supplied_layers",
+          layers: temporalLayers
+        };
+        const query = {
+          source_id: source.id,
+          variable: categoryName ?? variableName,
+          ...context.query
+        };
+        outputs.push({
+          name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
+          suffix,
+          temporal_key: String(year),
+          dimension_key: context.suffix,
+          source: sourceInputForOutput({
+            source,
+            variable,
+            query,
+            dimensions: context.dimensions,
+            temporal,
+            categoryFraction,
+            sourceResolution,
+            resampling
+          })
+        });
+      }
+
+      for (const token of selectedTemporalLayerTokens(selectedLayers)) {
+        const suffix = [context.suffix, token.key].filter(Boolean).join("_");
+        const temporal = {
+          output_mode: "supplied_layers",
+          layers: temporalLayers
+        };
+        const query = {
+          source_id: source.id,
+          variable: categoryFraction?.name ?? variable.name,
+          ...context.query,
+          ...token.query
+        };
+        outputs.push({
+          name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
+          suffix,
+          temporal_key: token.key,
+          dimension_key: context.suffix,
+          source: sourceInputForOutput({
+            source,
+            variable,
+            query,
+            dimensions: context.dimensions,
+            temporal,
+            categoryFraction,
+            sourceResolution,
+            resampling
+          })
+        });
+      }
+      continue;
+    }
+
+    if (temporalMode === "raw_slices" && aggregation) {
+      const months = rangeValues(aggregation.months ?? [1, 12]);
+      const rawYears = source.temporal?.kind === "year_month_series"
+        ? rangeValues(aggregation.years)
+        : [undefined];
+      const temporal = {
+        output_mode: "raw_slices",
+        months: aggregation.months,
+        years: source.temporal?.kind === "year_month_series" ? aggregation.years : undefined
+      };
+      for (const rawYear of rawYears) {
+        for (const month of months) {
+          const monthToken = `${month}`.padStart(2, "0");
+          const aggregationName = rawYear ? `raw_${rawYear}_${monthToken}` : `month_${monthToken}`;
+          const suffix = [context.suffix, rawYear, `m${monthToken}`].filter(Boolean).join("_");
+          const query = {
+            source_id: source.id,
+            variable: sourceQueryVariableForContext(source, variable, context, categoryFraction),
+            aggregation_name: aggregationName,
+            months: [month],
+            ...context.query
+          };
+          outputs.push({
+            name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
+            suffix,
+            temporal_key: rawYear ? `${rawYear}-${monthToken}` : `m${monthToken}`,
+            dimension_key: context.suffix,
+            source: sourceInputForOutput({
+              source,
+              variable,
+              query,
+              dimensions: context.dimensions,
+              temporal,
+              categoryFraction,
+              sourceResolution,
+              resampling
+            })
+          });
+        }
+      }
+      continue;
+    }
+
+    if ((temporalMode === "aggregate" || temporalMode === "postprocess_aggregate") && aggregation) {
+      const suffix = [context.suffix, aggregation.name].filter(Boolean).join("_");
+      const temporal = {
+        output_mode: temporalMode,
+        aggregations: {
+          use: [],
+          custom: [aggregation]
+        }
+      };
+      const query = {
+        source_id: source.id,
+        variable: sourceQueryVariableForContext(source, variable, context, categoryFraction),
+        aggregation_name: aggregation.name,
+        ...context.query
+      };
+      outputs.push({
+        name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
+        suffix,
+        temporal_key: aggregation.name,
+        dimension_key: context.suffix,
+        source: sourceInputForOutput({
+          source,
+          variable,
+          query,
+          dimensions: context.dimensions,
+          temporal,
+          categoryFraction,
+          sourceResolution,
+          resampling
+        })
+      });
+      continue;
+    }
+
+    const suffix = context.suffix;
+    const query = {
+      source_id: source.id,
+      variable: sourceQueryVariableForContext(source, variable, context, categoryFraction),
+      ...context.query
+    };
+    outputs.push({
+      name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
+      suffix,
+      dimension_key: context.suffix,
+      source: sourceInputForOutput({
+        source,
+        variable,
+        query,
+        dimensions: context.dimensions,
+        temporal: source.temporal ? { output_mode: "static" } : undefined,
+        categoryFraction,
+        sourceResolution,
+        resampling
+      })
+    });
+  }
+
+  return outputs;
 }
 
 function dimensionPatternContexts(source: SourceCatalog, selection: SourceSelection) {
@@ -533,7 +1159,7 @@ function applyVariablePattern(pattern: string, replacements: Record<string, stri
   );
 }
 
-function toggleValue(values: string[], value: string) {
+function toggleValue<T extends string | number>(values: T[], value: T) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
     : [...values, value];
@@ -683,14 +1309,16 @@ function App() {
   const [createdAois, setCreatedAois] = useState<AoiCatalog[]>([]);
   const [selections, setSelections] = useState<Record<string, SourceSelection>>({});
   const [derivedFeatures, setDerivedFeatures] = useState<DerivedFeatureConfig[]>([]);
+  const [datasetFeatures, setDatasetFeatures] = useState<DatasetFeatureConfig[]>([]);
+  const [projectStep, setProjectStep] = useState<"setup" | "features" | "review">("setup");
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [serverYaml, setServerYaml] = useState("");
   const [apiError, setApiError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [startMode, setStartMode] = useState<StartMode>("menu");
-  const [backgroundUrls, setBackgroundUrls] = useState<string[]>([defaultBackgroundUrl]);
-  const [backgroundUrl, setBackgroundUrl] = useState(defaultBackgroundUrl);
+  const [backgroundUrls, setBackgroundUrls] = useState<string[]>([]);
+  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
 
   useEffect(() => {
     fetchCatalog()
@@ -733,12 +1361,17 @@ function App() {
             : undefined
         );
         setBackgroundUrls(images);
-        setBackgroundUrl(pickRandomBackground(images));
+        const nextBackground = pickRandomBackground(images);
+        if (!nextBackground) return;
+        preloadBackground(nextBackground)
+          .then((loadedUrl) => {
+            if (!cancelled) setBackgroundUrl(loadedUrl);
+          })
+          .catch(() => undefined);
       })
       .catch(() => {
         if (cancelled) return;
-        setBackgroundUrls([defaultBackgroundUrl]);
-        setBackgroundUrl(defaultBackgroundUrl);
+        setBackgroundUrls([]);
       });
 
     return () => {
@@ -747,25 +1380,18 @@ function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.style.setProperty(
-      "--pirineus-background-image",
-      cssBackgroundImage(backgroundUrl)
-    );
-
-    return () => {
-      document.documentElement.style.removeProperty("--pirineus-background-image");
-    };
-  }, [backgroundUrl]);
-
-  useEffect(() => {
-    if (backgroundUrls.length <= 1) return undefined;
+    if (backgroundUrls.length <= 1 || !backgroundUrl) return undefined;
 
     const intervalId = window.setInterval(() => {
-      setBackgroundUrl((current) => pickRandomBackground(backgroundUrls, current));
+      const nextBackground = pickRandomBackground(backgroundUrls, backgroundUrl);
+      if (!nextBackground) return;
+      preloadBackground(nextBackground)
+        .then((loadedUrl) => setBackgroundUrl(loadedUrl))
+        .catch(() => undefined);
     }, backgroundRotationMs);
 
     return () => window.clearInterval(intervalId);
-  }, [backgroundUrls]);
+  }, [backgroundUrl, backgroundUrls]);
 
   const selectedSources = useMemo(
     () => Object.values(selections).filter((selection) => selection.selected),
@@ -803,69 +1429,6 @@ function App() {
   }, [activeSourceId, catalog, selectedCatalogSources]);
 
   const runConfig = useMemo(() => {
-    const sourceEntries = selectedSources.map((selection) => {
-      const source = catalog?.sources.find((item) => item.id === selection.id);
-      const variableNames = selection.variables.filter((name) =>
-        (source?.variables ?? []).some((variable) => variable.name === name)
-      );
-      const layerNames = selection.variables.filter((name) =>
-        (source?.layers ?? []).some((layer) => layer.name === name)
-      );
-      const dimensions = Object.fromEntries(
-        Object.entries(selection.dimensions).filter(
-          ([key]) => !temporalDimensionKeys.has(key.toLowerCase())
-        )
-      );
-
-      const temporal = buildTemporalConfig(source, selection);
-      const resamplingOverrides = Object.keys(selection.resamplingByVariable).length > 0
-        ? {
-            by_variable: selection.resamplingByVariable
-          }
-        : undefined;
-      const processingOverrides = selection.sourceResolution && selection.sourceResolution !== source?.source_resolution
-        ? {
-            source_resolution: selection.sourceResolution
-          }
-        : undefined;
-      const downloadOverrides = selection.keepRawAfterClip !== (source?.keep_raw_after_clip_default ?? true)
-        ? {
-            keep_raw_after_clip: selection.keepRawAfterClip
-          }
-        : undefined;
-      const overrides = {
-        resampling: resamplingOverrides,
-        processing: processingOverrides,
-        download: downloadOverrides
-      };
-      const hasOverrides = Object.values(overrides).some((value) => value !== undefined);
-      const select = {
-        variables: (source?.variables ?? []).length > 0 || selection.categoryFractions.length > 0
-          ? variableNames
-          : undefined,
-        layers: layerNames.length > 0 ? layerNames : undefined,
-        category_fractions: selection.categoryFractions.length > 0
-          ? selection.categoryFractions.map((item) => ({
-              variable: item.variable,
-              name: item.name,
-              class_values: item.class_values,
-              label: item.label
-            }))
-          : undefined,
-        dimensions: Object.keys(dimensions).length > 0 ? dimensions : undefined,
-        temporal
-      };
-      const hasSelect = Object.values(select).some((value) => value !== undefined);
-
-      return {
-        id: selection.id,
-        config: selection.config,
-        stages: selection.stages.length > 0 ? selection.stages : undefined,
-        select: hasSelect ? select : undefined,
-        overrides: hasOverrides ? overrides : undefined
-      };
-    });
-
     return {
       run: {
         name: runName,
@@ -876,8 +1439,7 @@ function App() {
         resolution_m: resolution,
         stages
       },
-      sources: sourceEntries,
-      derived_features: derivedFeatures.length > 0 ? derivedFeatures : undefined,
+      features: datasetFeatures,
       outputs: {
         dataset_dir: datasetDir,
         copy_rasters: true,
@@ -897,7 +1459,7 @@ function App() {
     runName,
     selectedSources,
     stages,
-    derivedFeatures
+    datasetFeatures
   ]);
 
   const localYaml = useMemo(() => renderYaml(runConfig), [runConfig]);
@@ -1015,10 +1577,22 @@ function App() {
     });
   }
 
+  if (!backgroundUrl) {
+    return (
+      <main className="background-loading-screen">
+        <div>
+          <span className="eyebrow">Pirineus Raster</span>
+          <h1>Loading background</h1>
+        </div>
+      </main>
+    );
+  }
+
   if (!hasStarted) {
     return (
-      <main className="home-screen">
-        <section className="home-hero">
+      <main className="welcome-screen">
+        <BackgroundImage src={backgroundUrl} variant="welcome" />
+        <section className="welcome-hero">
           <div className="home-kicker">Environmental raster workbench</div>
           <h1>Welcome to Pirineus Raster</h1>
           <p>
@@ -1036,7 +1610,7 @@ function App() {
 
   if (startMode === "menu") {
     return (
-      <div className="app-shell workbench-shell">
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
         <header className="topbar">
           <div>
             <h1>Pirineus Raster</h1>
@@ -1048,13 +1622,13 @@ function App() {
         </header>
         <StartModePanel setStartMode={setStartMode} />
         <BackgroundCredit />
-      </div>
+      </WorkbenchShell>
     );
   }
 
   if (startMode === "aoi") {
     return (
-      <div className="app-shell workbench-shell">
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
         <header className="topbar">
           <div>
             <h1>New AOI</h1>
@@ -1077,13 +1651,13 @@ function App() {
           }}
         />
         <BackgroundCredit />
-      </div>
+      </WorkbenchShell>
     );
   }
 
   if (startMode === "sources") {
     return (
-      <div className="app-shell workbench-shell">
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
         <header className="topbar">
           <div>
             <h1>Sources Information</h1>
@@ -1097,142 +1671,132 @@ function App() {
           </section>
         )}
         <BackgroundCredit />
-      </div>
+      </WorkbenchShell>
     );
   }
 
-  return (
-    <div className="app-shell workbench-shell">
-      <header className="topbar">
-        <div>
-          <h1>Pirineus Raster Workbench</h1>
-          <p>{targetCrs} · {selectedSources.length} sources · {validation?.estimated_layers ?? 0} estimated layers</p>
-        </div>
-        <div className="topbar-actions">
-          <button className="ghost" onClick={() => setStartMode("menu")}>Home</button>
-          <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
-            {apiStatus}
+  if (startMode === "tutorial") {
+    return (
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
+        <header className="topbar">
+          <div>
+            <h1>Workbench Guide</h1>
+            <p>How to build final features, choose resampling and avoid common traps.</p>
           </div>
-        </div>
-      </header>
+          <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
+        </header>
+        <TutorialPanel />
+        <BackgroundCredit />
+      </WorkbenchShell>
+    );
+  }
 
-      <nav className="tabs" aria-label="Workbench sections">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            className={activeTab === tab ? "active" : ""}
-            onClick={() => setActiveTab(tab)}
-          >
-            <span aria-hidden="true">{tabs.indexOf(tab) + 1}</span>
-            {tab}
-          </button>
-        ))}
-      </nav>
+  if (startMode === "project") {
+    const stepTitle = projectStep === "setup"
+      ? "Project Setup"
+      : projectStep === "features"
+        ? "Feature Builder"
+        : "Review";
 
-      {!catalog && (
-        <section className={`notice ${catalogError ? "error" : "info"}`}>
-          {catalogLoading
-            ? "Loading project catalog from the local config API..."
-            : `Config API is not available: ${catalogError}. Start it with "python3 -m src.cli.main serve-config-api --host 127.0.0.1 --port 8765" from the repository root.`}
-        </section>
-      )}
+    return (
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
+        <header className="topbar">
+          <div>
+            <h1>{stepTitle}</h1>
+            <p>{targetCrs} · {datasetFeatures.length} final features · {validation?.estimated_layers ?? 0} estimated layers</p>
+          </div>
+          <div className="topbar-actions">
+            <button className="ghost" onClick={() => setStartMode("menu")}>Home</button>
+            {projectStep !== "setup" && (
+              <button className="ghost" onClick={() => setProjectStep(projectStep === "review" ? "features" : "setup")}>
+                Back
+              </button>
+            )}
+            <div className={`api-pill ${catalogError ? "bad" : catalog ? "good" : "loading"}`}>
+              {apiStatus}
+            </div>
+          </div>
+        </header>
 
-      {activeTab === "Project" && catalog && (
-        <ProjectPanel
-          catalog={catalog}
-          aois={availableAois}
-          runName={runName}
-          setRunName={setRunName}
-          description={description}
-          setDescription={setDescription}
-          projectConfig={projectConfig}
-          setProjectConfig={setProjectConfig}
-          targetCrs={targetCrs}
-          setTargetCrs={setTargetCrs}
-          aoiPath={aoiPath}
-          setAoiPath={setAoiPath}
-          resolution={resolution}
-          setResolution={setResolution}
-          stages={stages}
-          setStages={setStages}
-          datasetDir={datasetDir}
-          setDatasetDir={setDatasetDir}
-        />
-      )}
+        <nav className="feature-stepper" aria-label="Project workflow">
+          {(["setup", "features", "review"] as const).map((step) => (
+            <button
+              key={step}
+              className={projectStep === step ? "active" : ""}
+              disabled={step === "features" && !catalog}
+              onClick={() => {
+                if (step === "review" && datasetFeatures.length === 0) return;
+                setProjectStep(step);
+              }}
+            >
+              {step === "setup" ? "Project setup" : step === "features" ? "Final features" : "Review"}
+            </button>
+          ))}
+        </nav>
 
-      {activeTab === "Sources" && catalog && (
-        <SourcePanel
-          catalog={catalog}
-          selections={selections}
-          patchSelection={patchSelection}
-          setActiveSourceId={setActiveSourceId}
-          setActiveTab={setActiveTab}
-        />
-      )}
+        {!catalog && (
+          <section className={`notice ${catalogError ? "error" : "info"}`}>
+            {catalogLoading
+              ? "Loading project catalog from the local config API..."
+              : `Config API is not available: ${catalogError}. Start it with "python3 -m src.cli.main serve-config-api --host 127.0.0.1 --port 8765" from the repository root.`}
+          </section>
+        )}
 
-      {activeTab === "Variables" && catalog && activeSource && (
-        <VariablesPanel
-          catalog={catalog}
-          sources={selectedCatalogSources}
-          source={activeSource}
-          selection={selections[activeSource.id]}
-          activeSourceId={activeSourceId}
-          setActiveSourceId={setActiveSourceId}
-          patchSelectionMut={patchSelectionMut}
-        />
-      )}
+        {projectStep === "setup" && catalog && (
+          <FeatureProjectSetupPanel
+            catalog={catalog}
+            aois={availableAois}
+            runName={runName}
+            setRunName={setRunName}
+            description={description}
+            setDescription={setDescription}
+            projectConfig={projectConfig}
+            setProjectConfig={setProjectConfig}
+            targetCrs={targetCrs}
+            setTargetCrs={setTargetCrs}
+            aoiPath={aoiPath}
+            setAoiPath={setAoiPath}
+            resolution={resolution}
+            setResolution={setResolution}
+            stages={stages}
+            setStages={setStages}
+            datasetDir={datasetDir}
+            setDatasetDir={setDatasetDir}
+            onNext={() => setProjectStep("features")}
+          />
+        )}
 
-      {activeTab === "Variables" && catalog && !activeSource && (
-        <NoSelectedSourcesPanel title="Variables" />
-      )}
+        {projectStep === "features" && catalog && (
+          <FeatureBuilderPanel
+            catalog={catalog}
+            features={datasetFeatures}
+            setFeatures={setDatasetFeatures}
+            projectName={runName}
+            onReview={() => setProjectStep("review")}
+          />
+        )}
 
-      {activeTab === "Temporal" && catalog && activeSource && (
-        <TemporalPanel
-          catalog={catalog}
-          sources={selectedCatalogSources}
-          source={activeSource}
-          selection={selections[activeSource.id]}
-          activeSourceId={activeSourceId}
-          setActiveSourceId={setActiveSourceId}
-          patchSelectionMut={patchSelectionMut}
-        />
-      )}
+        {projectStep === "review" && (
+          <FeatureReviewPanel
+            yamlText={yamlText}
+            validation={validation}
+            apiError={apiError}
+            saveStatus={saveStatus}
+            validate={validate}
+            renderFromServer={renderFromServer}
+            copyYaml={copyYaml}
+            saveYamlToRuns={saveYamlToRuns}
+            downloadYaml={downloadYaml}
+            features={datasetFeatures}
+            setFeatures={setDatasetFeatures}
+          />
+        )}
+        <BackgroundCredit />
+      </WorkbenchShell>
+    );
+  }
 
-      {activeTab === "Temporal" && catalog && !activeSource && (
-        <NoSelectedSourcesPanel title="Temporal" />
-      )}
-
-      {activeTab === "Derived" && catalog && (
-        <DerivedPanel
-          selectedSources={selectedSources}
-          catalog={catalog}
-          derivedFeatures={derivedFeatures}
-          setDerivedFeatures={setDerivedFeatures}
-        />
-      )}
-
-      {activeTab === "Review" && (
-        <ReviewPanel
-          yamlText={yamlText}
-          validation={validation}
-          apiError={apiError}
-          saveStatus={saveStatus}
-          validate={validate}
-          renderFromServer={renderFromServer}
-          copyYaml={copyYaml}
-          saveYamlToRuns={saveYamlToRuns}
-          downloadYaml={downloadYaml}
-          plannedLayers={plannedReviewLayers}
-          derivedFeatures={derivedFeatures}
-          removePlannedLayer={removePlannedLayer}
-          removeDerivedFeature={(index) =>
-            setDerivedFeatures(derivedFeatures.filter((_, itemIndex) => itemIndex !== index))
-          }
-        />
-      )}
-      <BackgroundCredit />
-    </div>
-  );
+  return null;
 }
 
 function StartModePanel({ setStartMode }: { setStartMode: (mode: StartMode) => void }) {
@@ -1250,6 +1814,282 @@ function StartModePanel({ setStartMode }: { setStartMode: (mode: StartMode) => v
         <strong>Sources information</strong>
         <small>Browse available sources, sub-sources and variables.</small>
       </button>
+      <button className="start-mode-card tutorial-entry-card" onClick={() => setStartMode("tutorial")}>
+        <strong>How the workbench works</strong>
+        <small>Read the practical guide before building a dataset: final features, temporal choices, masks, category fractions, resampling and examples.</small>
+      </button>
+    </main>
+  );
+}
+
+function TutorialPanel() {
+  const [section, setSection] = useState("overview");
+  const sections = [
+    ["overview", "Overview"],
+    ["project", "New project"],
+    ["custom", "Single feature"],
+    ["official", "Official layers"],
+    ["masks", "Fractions and masks"],
+    ["examples", "Examples"],
+    ["limits", "Limits"]
+  ];
+
+  return (
+    <main className="workspace tutorial-workspace">
+      <section className="panel tutorial-nav">
+        <h2>Workbench guide</h2>
+        <p className="builder-copy">A precise map of what each tool does and when to use it.</p>
+        <div className="tutorial-section-list">
+          {sections.map(([value, label]) => (
+            <button
+              key={value}
+              className={section === value ? "active" : ""}
+              onClick={() => setSection(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel tutorial-content">
+        {section === "overview" && (
+          <>
+            <h2>Think in final features</h2>
+            <p>
+              A project is built around final dataset variables. Official source rasters, temporal slices and
+              intermediate layers can be downloaded and clipped during the run, but the final manifest is meant
+              to contain only the features that you explicitly confirm.
+            </p>
+            <p>
+              The safest mental model is: every card in the right sidebar should be a variable you would be happy
+              to see in the final modelling table. If an official raster is only needed to compute another variable,
+              use it as an input inside a custom feature rather than adding it as an official final layer.
+            </p>
+            <div className="tutorial-grid">
+              <article>
+                <strong>Project setup</strong>
+                <span>Defines run name, AOI, CRS, target resolution, output directory and stages.</span>
+              </article>
+              <article>
+                <strong>Feature builder</strong>
+                <span>Creates final features from official layers, recipes, masks, spatial operations or expressions.</span>
+              </article>
+              <article>
+                <strong>Review</strong>
+                <span>Validates, renders and saves the YAML that the CLI will run.</span>
+              </article>
+            </div>
+            <div className="tutorial-subsection">
+              <h3>What happens internally</h3>
+              <ul>
+                <li>The YAML stores final features, not a long source-first shopping list.</li>
+                <li>The compiler derives the source requirements needed to build those final features.</li>
+                <li>Download and clip steps may create intermediate rasters, but those are implementation details.</li>
+                <li>Derived features can use official inputs or features already created earlier in the same project.</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {section === "project" && (
+          <>
+            <h2>New project</h2>
+            <p>
+              Use this when you want to build a dataset. First define the project envelope: AOI, target CRS,
+              target resolution and output folder. All features created later are aligned to that target grid.
+            </p>
+            <ul>
+              <li><strong>AOI</strong> controls the spatial extent. Create it in New AOI if your study area is not already configured.</li>
+              <li><strong>Target CRS</strong> is the CRS of the final rasters. Source CRS is handled internally during clip/build.</li>
+              <li><strong>Resolution</strong> is the final grid size, for example 100 m. Resampling choices decide how native rasters are transferred to that grid.</li>
+              <li><strong>Stages</strong> should usually stay on all; split stages only for debugging or reruns.</li>
+            </ul>
+            <div className="tutorial-subsection">
+              <h3>Recommended order</h3>
+              <ul>
+                <li>Create or select the AOI before choosing variables, because it controls which source tiles matter.</li>
+                <li>Choose the target CRS from the final analysis needs, not from the source CRS. The tool reprojects sources internally.</li>
+                <li>Choose the target resolution from the ecological question. A 100 m dataset is good for broad habitat modelling; smaller cells increase runtime and storage.</li>
+                <li>Keep the output directory tied to the run name so repeated experiments do not overwrite each other.</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {section === "custom" && (
+          <>
+            <h2>Build single feature</h2>
+            <p>
+              Use this when one final variable needs a deliberate construction. You first name the final feature,
+              then choose one operation family.
+            </p>
+            <div className="tutorial-grid">
+              <article>
+                <strong>Use official source layer</strong>
+                <span>One source variable, optionally with dimensions, temporal selection, category fraction and resampling.</span>
+              </article>
+              <article>
+                <strong>Guided recipe</strong>
+                <span>Strict formulas such as thermal range, water balance or snow persistence. Inputs are filtered to compatible variables.</span>
+              </article>
+              <article>
+                <strong>Masking</strong>
+                <span>Creates final-grid binary 0/1 rasters from thresholds or class equality.</span>
+              </article>
+              <article>
+                <strong>Spatial operation</strong>
+                <span>DEM terrain derivatives, focal windows or distances to masks/classes.</span>
+              </article>
+              <article>
+                <strong>Advanced expression</strong>
+                <span>Map algebra using x, y and z. Multi-input temporal outputs are intersected by matching temporal keys.</span>
+              </article>
+            </div>
+            <div className="tutorial-subsection">
+              <h3>Input selection rules</h3>
+              <ul>
+                <li>DEM terrain operations only accept DEM/elevation-like variables.</li>
+                <li>Distance operations accept binary masks, categorical rasters or class-derived masks.</li>
+                <li>Thermal range expects maximum and minimum temperature inputs, not arbitrary climate variables.</li>
+                <li>Expression inputs y and z are optional until the expression text references them.</li>
+                <li>When two temporal inputs are used together, only matching temporal outputs are combined. Non-temporal dimensions expand by product.</li>
+              </ul>
+            </div>
+            <div className="tutorial-subsection">
+              <h3>When to use features already created</h3>
+              <p>
+                After confirming a final feature, it appears as a project input in later selectors. This is useful
+                for chained workflows such as category fraction first, focal smoothing second, and expression third.
+              </p>
+            </div>
+          </>
+        )}
+
+        {section === "official" && (
+          <>
+            <h2>Add official source layers</h2>
+            <p>
+              Use this when you want to add several official variables without derived processing. Select the
+              source product, choose variables and category fractions, complete dimensions, temporal mode and
+              resampling, then add them as final features.
+            </p>
+            <ul>
+              <li><strong>Dimensions</strong> are non-temporal variants such as GCM, SSP, period, season or product-specific axes.</li>
+              <li><strong>Temporal supplied layers</strong> keeps existing years, months, seasons or index layers from the source.</li>
+              <li><strong>Temporal aggregate</strong> creates a named summary over available source time steps.</li>
+              <li><strong>Raw slices</strong> keeps smaller temporal units when the source supports them.</li>
+            </ul>
+            <div className="tutorial-subsection">
+              <h3>How to avoid accidental outputs</h3>
+              <ul>
+                <li>Select the original variable only if you really want its raster in the final dataset.</li>
+                <li>Select category fractions if you want each class as its own proportional variable.</li>
+                <li>If you select fractions but not the original categorical variable, the source can still be used internally without adding the class-code raster to the final dataset.</li>
+                <li>Use the final resampling/source-resolution panel to decide how the source becomes the project grid.</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {section === "masks" && (
+          <>
+            <h2>Category fractions, masks and resampling</h2>
+            <p>
+              Category fractions and class masks are related but not interchangeable. Use category fractions for
+              coverage percentages; use class masks for final-grid binary rasters.
+            </p>
+            <div className="tutorial-grid">
+              <article>
+                <strong>Category fraction</strong>
+                <span>The source categorical raster is converted to 0/1 at native resolution, then resampled. With average, the output is a 0-1 coverage ratio per target cell.</span>
+              </article>
+              <article>
+                <strong>Class mask</strong>
+                <span>The already aligned target-grid raster is tested with where(x == class). It returns 0/1 and cannot recover sub-cell composition lost during resampling.</span>
+              </article>
+              <article>
+                <strong>Resampling</strong>
+                <span>Choose average for category fractions, nearest or mode for original categorical codes, and bilinear/average for continuous rasters depending on the source.</span>
+              </article>
+            </div>
+            <div className="notice info compact-notice">
+              For habitat percentages at 100 m from a 10 m categorical map, do not build the original class and
+              then mask it. Select the desired category fractions and keep average resampling.
+            </div>
+            <div className="tutorial-subsection">
+              <h3>Practical interpretation</h3>
+              <ul>
+                <li><strong>Category fraction + average:</strong> 0.73 means 73% of valid native pixels inside the target cell belonged to that class/group.</li>
+                <li><strong>Original categorical + nearest:</strong> the target cell stores one class code. It is useful for dominant class maps, not for mixtures.</li>
+                <li><strong>Original categorical + mode:</strong> the target cell stores the most frequent class. It still loses minority classes.</li>
+                <li><strong>Class mask:</strong> 1 means the final aligned raster equals the chosen code. It is good for masks and distance-to-class workflows.</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {section === "examples" && (
+          <>
+            <h2>Useful examples</h2>
+            <div className="tutorial-grid examples-grid">
+              <article>
+                <strong>Broadleaf forest cover at 100 m</strong>
+                <span>Add official categorical land-cover layer, select the broadleaf category fraction, keep resampling as average, and optionally do not add the original categorical code.</span>
+              </article>
+              <article>
+                <strong>Relative altitude</strong>
+                <span>Select DEM, build a focal mean with a radius matching the neighbourhood, then use advanced expression x - y.</span>
+              </article>
+              <article>
+                <strong>Distance to tracks</strong>
+                <span>Use OSM tracks/forest roads as a binary/vector raster source, then spatial operation distance to mask.</span>
+              </article>
+              <article>
+                <strong>Thermal range</strong>
+                <span>Use guided recipe with tmax and tmin layers selected for matching temporal periods or aggregations.</span>
+              </article>
+              <article>
+                <strong>Snow persistence</strong>
+                <span>Use snow-days and valid-days layers or aggregations. The recipe divides snow observations by valid observations.</span>
+              </article>
+            </div>
+            <div className="tutorial-subsection">
+              <h3>Bear dataset examples</h3>
+              <ul>
+                <li><strong>Slope:</strong> build a single feature with spatial operation DEM terrain and method slope from a DEM input.</li>
+                <li><strong>Ruggedness:</strong> build a DEM terrain feature with ruggedness or roughness and choose a radius in cells that matches the ecological scale.</li>
+                <li><strong>Tree cover density:</strong> use an official continuous CLMS forest/tree-cover variable and choose average resampling to 100 m.</li>
+                <li><strong>Shrubland/grassland/rock fractions:</strong> use category fractions from the best available land-cover layer, not class masks.</li>
+                <li><strong>Human pressure:</strong> use OSM roads/tracks/settlements as masks or vector-derived rasters, then create distance features.</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {section === "limits" && (
+          <>
+            <h2>Limitations and sharp edges</h2>
+            <ul>
+              <li>Unavailable source combinations can still fail during download if the provider does not publish that exact file.</li>
+              <li>Categorical temporal aggregation is only meaningful for supplied layers, mode-like summaries, or category fractions; numeric mean over class codes is not interpretable.</li>
+              <li>Class masks work after source alignment. They are binary final-grid masks, not coverage percentages.</li>
+              <li>Very large selections can generate many rasters. Check the output count and validation warnings before running.</li>
+              <li>The workbench builds raster datasets. It does not train habitat models or XGBoost models itself.</li>
+            </ul>
+            <div className="tutorial-subsection">
+              <h3>What to check before launching a long run</h3>
+              <ul>
+                <li>Every final feature name should be unique after temporal and dimension expansion.</li>
+                <li>Every temporal aggregation should use years/months actually available in the source.</li>
+                <li>Every categorical percentage should be a category fraction with average resampling.</li>
+                <li>Every source with multiple native resolutions should use the intended original resolution.</li>
+                <li>The Review page should show only variables you intend to keep in the final dataset.</li>
+              </ul>
+            </div>
+          </>
+        )}
+      </section>
     </main>
   );
 }
@@ -1705,6 +2545,2246 @@ function AoiBuilderPanel({
             Map drawing currently supports EPSG:4326 and EPSG:3035. Other CRS values can still be typed manually.
           </div>
         )}
+      </section>
+    </main>
+  );
+}
+
+function FeatureProjectSetupPanel({
+  catalog,
+  aois,
+  runName,
+  setRunName,
+  description,
+  setDescription,
+  projectConfig,
+  setProjectConfig,
+  targetCrs,
+  setTargetCrs,
+  aoiPath,
+  setAoiPath,
+  resolution,
+  setResolution,
+  stages,
+  setStages,
+  datasetDir,
+  setDatasetDir,
+  onNext
+}: ProjectPanelProps & { onNext: () => void }) {
+  const resolutions = catalog?.project.available_resolutions_m ?? [100];
+  const supportedStages = catalog?.supported_stages ?? ["download", "clip", "build", "all"];
+
+  return (
+    <main className="workspace feature-project-setup">
+      <section className="panel feature-setup-hero">
+        <div>
+          <span className="eyebrow">Project setup</span>
+          <h2>Dataset workspace</h2>
+          <p>Define the run envelope once, then build the final features one by one.</p>
+        </div>
+      </section>
+
+      <section className="panel project-setup-card">
+        <div className="panel-head">
+          <h2>Run identity</h2>
+          <span className="field-hint">Names and output folder</span>
+        </div>
+        <div className="form-grid project-setup-grid">
+          <label>
+            Run name
+            <input value={runName} onChange={(event) => setRunName(event.target.value)} />
+          </label>
+          <label>
+            Dataset directory
+            <input value={datasetDir} onChange={(event) => setDatasetDir(event.target.value)} />
+          </label>
+          <label className="span-2">
+            Description
+            <textarea value={description} rows={3} onChange={(event) => setDescription(event.target.value)} />
+          </label>
+        </div>
+      </section>
+
+      <section className="panel project-setup-card">
+        <div className="panel-head">
+          <h2>Grid and AOI</h2>
+          <span className="field-hint">Target geometry for all final features</span>
+        </div>
+        <div className="form-grid project-setup-grid">
+          <label>
+            Target CRS
+            <select value={targetCrs} onChange={(event) => setTargetCrs(event.target.value)}>
+              <option value="EPSG:3035">EPSG:3035</option>
+              <option value="EPSG:4326">EPSG:4326</option>
+            </select>
+          </label>
+          <label>
+            AOI
+            <select value={aoiPath} onChange={(event) => setAoiPath(event.target.value)}>
+              {aois.map((aoi) => (
+                <option key={aoi.path} value={aoi.path}>{aoi.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Target resolution
+            <select value={resolution} onChange={(event) => setResolution(Number(event.target.value))}>
+              {!resolutions.includes(resolution) && <option value={resolution}>{resolution} m</option>}
+              {resolutions.map((item) => (
+                <option key={item} value={item}>{item} m</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Project config
+            <input value={projectConfig} onChange={(event) => setProjectConfig(event.target.value)} />
+          </label>
+        </div>
+      </section>
+
+      <section className="panel project-setup-card">
+        <div className="panel-head">
+          <h2>Stages</h2>
+          <span className="field-hint">Run all by default</span>
+        </div>
+        <div className="choice-list compact">
+          {supportedStages.map((stage) => (
+            <label key={stage} className="check-row">
+              <input
+                type="checkbox"
+                checked={stages.includes(stage)}
+                onChange={() => setStages(toggleStage(stages, stage))}
+              />
+              <span>{stage}</span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel project-start-panel">
+        <div>
+          <h2>Ready for features</h2>
+          <p className="builder-copy">When these project-level settings look right, continue to build the final dataset variables.</p>
+        </div>
+        <button className="primary" onClick={onNext}>Start creating features</button>
+      </section>
+    </main>
+  );
+}
+
+function featureOutputNames(feature: DatasetFeatureConfig) {
+  return (feature.outputs && feature.outputs.length > 0)
+    ? feature.outputs.map((output) => output.name)
+    : [feature.name];
+}
+
+function featureOutputCount(feature: DatasetFeatureConfig) {
+  return featureOutputNames(feature).length;
+}
+
+function FeatureSidebar({
+  features,
+  setFeatures,
+  onEdit
+}: {
+  features: DatasetFeatureConfig[];
+  setFeatures: (features: DatasetFeatureConfig[]) => void;
+  onEdit: (feature: DatasetFeatureConfig, index: number) => void;
+}) {
+  return (
+    <aside className="feature-sidebar panel">
+      <div className="panel-head">
+        <h2>Final features</h2>
+        <span className="field-hint">{features.length} cards</span>
+      </div>
+      <div className="final-feature-list">
+        {features.map((feature, index) => (
+          <article className="final-feature-card" key={`${feature.name}-${index}`}>
+            <div>
+              <strong>{feature.title || feature.name}</strong>
+              <small>{feature.name} · {feature.build_type} · {featureOutputCount(feature)} output{featureOutputCount(feature) === 1 ? "" : "s"}</small>
+            </div>
+            {feature.outputs && feature.outputs.length > 1 && (
+              <div className="feature-chip-row">
+                {feature.outputs.slice(0, 8).map((output) => (
+                  <span key={output.name}>{output.suffix || output.name}</span>
+                ))}
+                {feature.outputs.length > 8 && <span>+{feature.outputs.length - 8}</span>}
+              </div>
+            )}
+            <div className="button-row">
+              <button className="ghost" onClick={() => onEdit(feature, index)}>Edit</button>
+              <button
+                className="ghost danger"
+                onClick={() => {
+                  const outputs = new Set(featureOutputNames(feature));
+                  const dependents = features
+                    .filter((candidate, candidateIndex) => candidateIndex !== index)
+                    .filter((candidate) =>
+                      Object.values(candidate.inputs ?? {}).some((input) =>
+                        input.kind === "feature" && outputs.has(input.output || input.feature)
+                      )
+                    )
+                    .map((candidate) => candidate.name);
+                  if (dependents.length > 0) {
+                    const ok = window.confirm(
+                      `Removing ${feature.name} will also remove dependent features: ${dependents.join(", ")}. Continue?`
+                    );
+                    if (!ok) return;
+                    setFeatures(features.filter((candidate, candidateIndex) =>
+                      candidateIndex !== index && !dependents.includes(candidate.name)
+                    ));
+                    return;
+                  }
+                  setFeatures(features.filter((_, candidateIndex) => candidateIndex !== index));
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          </article>
+        ))}
+        {features.length === 0 && (
+          <div className="empty-state">No final features yet.</div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function FeatureInputPicker({
+  catalog,
+  existingFeatures,
+  projectName,
+  allowExistingFeatures = true,
+  allowCategoryFractions = true,
+  filter,
+  onCancel,
+  onConfirm
+}: {
+  catalog: WorkbenchCatalog;
+  existingFeatures: DatasetFeatureConfig[];
+  projectName: string;
+  allowExistingFeatures?: boolean;
+  allowCategoryFractions?: boolean;
+  filter?: (variable: VariableCatalog, source: SourceCatalog) => boolean;
+  onCancel: () => void;
+  onConfirm: (bundle: InputBundle) => void;
+}) {
+  const providerGroups = useMemo(() => sourceProviderGroups(catalog), [catalog]);
+  const [step, setStep] = useState<FeaturePickerStep>("origin");
+  const [origin, setOrigin] = useState<"project" | "official" | null>(null);
+  const [providerId, setProviderId] = useState("");
+  const providerGroup = providerGroups.find((group) => group.provider === providerId);
+  const [sourceId, setSourceId] = useState("");
+  const source = catalog.sources.find((item) => item.id === sourceId);
+  const variables = source ? sourceVariables(source).filter((variable) => !filter || filter(variable, source)) : [];
+  const [variableName, setVariableName] = useState("");
+  const variable = variables.find((item) => item.name === variableName);
+  const [dimensions, setDimensions] = useState<Record<string, string[]>>({});
+  const [temporalMode, setTemporalMode] = useState<FeatureTemporalMode>("static");
+  const [temporalLayers, setTemporalLayers] = useState<TemporalSelection["layers"]>({
+    annual: false,
+    annual_index: false,
+    months: [],
+    seasons: [],
+    years: []
+  });
+  const [aggregation, setAggregation] = useState<CustomAggregation>(aggregationDefaults(undefined, []));
+  const [aggregations, setAggregations] = useState<CustomAggregation[]>([]);
+  const [selectedCategoryTokens, setSelectedCategoryTokens] = useState<string[]>([]);
+  const [resamplingMethod, setResamplingMethod] = useState("nearest");
+  const [sourceResolution, setSourceResolution] = useState("");
+
+  useEffect(() => {
+    if (!source) return;
+    const nextDimensions: Record<string, string[]> = {};
+    for (const [key] of sourceDimensionEntries(source)) {
+      nextDimensions[key] = [];
+    }
+    setDimensions(nextDimensions);
+    setVariableName("");
+    setSelectedCategoryTokens([]);
+    setTemporalMode(defaultTemporalModeForSource(source));
+    setTemporalLayers(initialTemporalLayers(source));
+    setAggregation(aggregationDefaults(source, []));
+    setAggregations([]);
+    setResamplingMethod("nearest");
+    setSourceResolution(source.source_resolution ?? sourceResolutionChoices(source)[0] ?? "");
+  }, [source?.id]);
+
+  useEffect(() => {
+    if (!variable || !source) return;
+    setAggregation((current) => ({
+      ...aggregationDefaults(source, [variable.name], current.metric),
+      name: current.name || "period_mean"
+    }));
+    setAggregations([]);
+    setResamplingMethod(defaultResamplingForOutput(variable, selectedCategoryTokens.length > 0));
+  }, [source?.id, variable?.name, selectedCategoryTokens.length]);
+
+  const sourceDimensionsComplete = dimensionsAreComplete(source, dimensions);
+  const temporalComplete = temporalSelectionIsComplete(source, temporalMode, temporalLayers, aggregation.name, aggregation, aggregations, dimensions);
+  const aggregationYearBounds = effectiveAggregationYearBounds(source, dimensions);
+  const canAddAggregation = aggregationDraftIsComplete(source, dimensions, aggregation)
+    && !aggregations.some((item) => item.name === aggregation.name);
+  const categoryClasses = allowCategoryFractions ? variable?.category_classes ?? [] : [];
+  const selectedCategoryFractions = categoryClasses
+    .filter((item) => selectedCategoryTokens.includes(categoryClassToken(item)))
+    .map((item) => ({
+      ...categoryFractionConfig(variable as VariableCatalog, item),
+      resampling: resamplingMethod
+    }));
+  const canConfirmOfficial = Boolean(source && variable && sourceDimensionsComplete && temporalComplete);
+  const waitingForAddedAggregation = step === "temporal"
+    && (temporalMode === "aggregate" || temporalMode === "postprocess_aggregate")
+    && aggregations.length === 0;
+
+  function chooseProjectOutput(feature: DatasetFeatureConfig, outputName: string) {
+    onConfirm({
+      label: `${projectName} · ${outputName}`,
+      outputs: [{
+        name: outputName,
+        label: `${feature.title || feature.name} · ${outputName}`,
+        input: { kind: "feature", feature: outputName, output: outputName },
+        suffix: outputName
+      }]
+    });
+  }
+
+  function officialBundle(): InputBundle | null {
+    if (!source || !variable || !canConfirmOfficial) return null;
+    const categories = selectedCategoryFractions.length > 0 ? selectedCategoryFractions : [undefined];
+    const activeAggregations = (temporalMode === "aggregate" || temporalMode === "postprocess_aggregate")
+      ? aggregations
+      : [aggregation];
+    const outputs = categories.flatMap((categoryFraction) =>
+      activeAggregations.flatMap((item) => buildSourceLayerOutputs({
+        featureName: categoryFraction?.name ?? variable.name,
+        source,
+        variable,
+        dimensions,
+        temporalMode,
+        years: temporalLayers.years,
+        layers: temporalLayers,
+        aggregation: item,
+        categoryFraction,
+        sourceResolution: sourceResolution || source.source_resolution,
+        resampling: resamplingMethod
+      }))
+    );
+    const options = outputs
+      .filter((output) => output.source)
+      .map((output) => ({
+        name: output.name,
+        label: `${sourceShortName(source)} · ${output.name}`,
+        input: output.source as DatasetFeatureInput,
+        suffix: output.suffix,
+        temporalKey: output.temporal_key,
+        dimensionKey: output.dimension_key,
+        variable
+      }));
+    if (options.length === 0) return null;
+    return {
+      label: `${sourceShortName(source)} · ${variable.name}${options.length > 1 ? ` · ${options.length} outputs` : ""}`,
+      outputs: options
+    };
+  }
+
+  function goBack() {
+    if (step === "origin") return;
+    if (step === "provider") setStep("origin");
+    if (step === "source") setStep("provider");
+    if (step === "variable") setStep("source");
+    if (step === "category") setStep("variable");
+    if (step === "dimensions") setStep(categoryClasses.length > 0 ? "category" : "variable");
+    if (step === "temporal") setStep(sourceDimensionEntries(source as SourceCatalog).length > 0 ? "dimensions" : categoryClasses.length > 0 ? "category" : "variable");
+    if (step === "resampling") setStep("temporal");
+  }
+
+  function stepAfterVariable(selectedSource: SourceCatalog, selectedVariable: VariableCatalog) {
+    const hasCategories = allowCategoryFractions && (selectedVariable.category_classes ?? []).length > 0;
+    if (hasCategories) return "category";
+    if (sourceDimensionEntries(selectedSource).length > 0) return "dimensions";
+    return "temporal";
+  }
+
+  function goNext() {
+    if (step === "origin" && origin === "official") setStep("provider");
+    if (step === "provider" && providerId) setStep("source");
+    if (step === "source" && sourceId) setStep("variable");
+    if (step === "variable" && variable && source) setStep(stepAfterVariable(source, variable));
+    if (step === "category") setStep(sourceDimensionEntries(source as SourceCatalog).length > 0 ? "dimensions" : "temporal");
+    if (step === "dimensions" && sourceDimensionsComplete) setStep("temporal");
+    if (step === "temporal" && temporalComplete) setStep("resampling");
+  }
+
+  function canGoNext() {
+    if (step === "origin") return origin === "official";
+    if (step === "provider") return Boolean(providerId);
+    if (step === "source") return Boolean(sourceId);
+    if (step === "variable") return Boolean(variable);
+    if (step === "category") return true;
+    if (step === "dimensions") return sourceDimensionsComplete;
+    if (step === "temporal") return temporalComplete;
+    return false;
+  }
+
+  function confirmOfficial() {
+    const bundle = officialBundle();
+    if (bundle) onConfirm(bundle);
+  }
+
+  function addAggregation() {
+    if (!canAddAggregation) return;
+    setAggregations([...aggregations, { ...aggregation }]);
+    setAggregation({
+      ...aggregation,
+      name: `${aggregation.name}_${aggregations.length + 2}`
+    });
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="feature-picker panel feature-picker-sheet">
+        <div className="panel-head">
+          <h2>Select input layer</h2>
+          <div className="button-row">
+            {step !== "origin" && <button className="ghost" onClick={goBack}>Back</button>}
+            <button className="ghost" onClick={onCancel}>Cancel</button>
+          </div>
+        </div>
+
+        <div className="feature-picker-steps">
+          {["origin", "provider", "source", "variable", "category", "dimensions", "temporal", "resampling"].map((item) => (
+            <span key={item} className={step === item ? "active" : ""}>{humanizeId(item)}</span>
+          ))}
+        </div>
+
+        {step === "origin" && (
+          <div className="feature-tool-grid picker-step-panel">
+            {allowExistingFeatures && existingFeatures.length > 0 && (
+              <button
+                className={`feature-tool-card ${origin === "project" ? "active" : ""}`}
+                onClick={() => setOrigin("project")}
+                onDoubleClick={() => setOrigin("project")}
+              >
+                <strong>{projectName}</strong>
+                <small>Use a final feature already created in this project.</small>
+              </button>
+            )}
+            <button
+              className={`feature-tool-card ${origin === "official" ? "active" : ""}`}
+              onClick={() => setOrigin("official")}
+              onDoubleClick={() => {
+                setOrigin("official");
+                setStep("provider");
+              }}
+            >
+              <strong>Official sources</strong>
+              <small>Select a source, product, variable, dimensions and temporal processing.</small>
+            </button>
+          </div>
+        )}
+
+        {step === "origin" && origin === "project" && (
+          <div className="picker-block">
+            <h3>{projectName}</h3>
+            <div className="choice-list compact project-input-list">
+              {existingFeatures.flatMap((feature) =>
+                featureOutputNames(feature).map((output) => (
+                  <button key={`${feature.name}-${output}`} className="source-select-button" onClick={() => chooseProjectOutput(feature, output)}>
+                    <strong>{feature.title || feature.name}</strong>
+                    <small>{output}</small>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {step === "provider" && (
+          <div className="picker-card-grid picker-step-panel">
+            {providerGroups.map((group) => (
+              <button
+                key={group.provider}
+                className={`source-select-button ${group.provider === providerId ? "active" : ""}`}
+                onClick={() => {
+                  setProviderId(group.provider);
+                  setSourceId("");
+                }}
+                onDoubleClick={() => {
+                  setProviderId(group.provider);
+                  setSourceId("");
+                  setStep("source");
+                }}
+              >
+                <strong>{group.meta?.title ?? humanizeId(group.provider)}</strong>
+                <small>{group.sources.length} products</small>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {step === "source" && (
+          <div className="picker-card-grid picker-step-panel">
+            {(providerGroup?.sources ?? []).map((item) => (
+              <button
+                key={item.id}
+                className={`source-select-button ${item.id === sourceId ? "active" : ""}`}
+                onClick={() => setSourceId(item.id)}
+                onDoubleClick={() => {
+                  setSourceId(item.id);
+                  setStep("variable");
+                }}
+              >
+                <strong>{sourceDisplayName(item)}</strong>
+                <small>{item.id}</small>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {step === "variable" && (
+          <div className="picker-card-grid picker-step-panel">
+            {variables.map((item) => (
+              <button
+                key={item.name}
+                className={`source-select-button ${item.name === variableName ? "active" : ""}`}
+                onClick={() => setVariableName(item.name)}
+                onDoubleClick={() => {
+                  setVariableName(item.name);
+                  if (source) setStep(stepAfterVariable(source, item));
+                }}
+              >
+                <strong>{item.description || humanizeId(item.name)}</strong>
+                <small>{item.name}{item.unit ? ` · ${item.unit}` : ""}{item.value_semantics ? ` · ${item.value_semantics}` : ""}</small>
+              </button>
+            ))}
+            {variables.length === 0 && <div className="empty-state">No valid variables for this input.</div>}
+          </div>
+        )}
+
+        {step === "category" && variable && (
+          <div className="picker-step-panel">
+            <div className="notice info compact-notice">
+              Keep no class selected to use the original categorical layer. Select category fractions when you need
+              coverage ratios: the class is converted to 0/1 at native resolution and then resampled, usually with
+              average, so a 100 m cell can store 0.8 forest and 0.2 shrubland instead of one dominant code.
+            </div>
+            <div className="picker-card-grid">
+              {categoryClasses.map((item) => {
+                const token = categoryClassToken(item);
+                return (
+                  <label key={token} className="check-row rich">
+                    <input
+                      type="checkbox"
+                      checked={selectedCategoryTokens.includes(token)}
+                      onChange={() => setSelectedCategoryTokens(toggleValue(selectedCategoryTokens, token))}
+                    />
+                    <span>
+                      <strong>{item.label || item.name || token}</strong>
+                      <small>{categoryClassValues(item).join(", ")}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {step === "dimensions" && source && (
+          <div className="picker-step-panel dimension-step-grid">
+            {sourceDimensionEntries(source).map(([key, values]) => (
+              <div className="dimension-box" key={key}>
+                <strong>{humanizeId(key)}</strong>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={allValuesSelected(dimensions[key] ?? [], values)}
+                    onChange={() => setDimensions({
+                      ...dimensions,
+                      [key]: allValuesSelected(dimensions[key] ?? [], values) ? [] : values
+                    })}
+                  />
+                  <span>All</span>
+                </label>
+                {values.map((value) => (
+                  <label key={value} className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={(dimensions[key] ?? []).includes(value)}
+                      onChange={() => setDimensions({
+                        ...dimensions,
+                        [key]: toggleValue(dimensions[key] ?? [], value)
+                      })}
+                    />
+                    <span>{value}</span>
+                  </label>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {step === "temporal" && source && (
+          <div className="picker-step-panel temporal-step-grid">
+            {source.temporal ? (
+              <>
+                <div className="dimension-box">
+                  <strong>Temporal mode</strong>
+                  {supportedTemporalModes(source).map((mode) => (
+                    <label key={mode} className="check-row">
+                      <input
+                        type="radio"
+                        name="input-temporal-mode"
+                        checked={temporalMode === mode}
+                        onChange={() => setTemporalMode(mode)}
+                      />
+                      <span>{humanizeId(mode)}</span>
+                    </label>
+                  ))}
+                </div>
+                {temporalMode === "supplied_layers" && (
+                  <div className="dimension-box">
+                    <strong>Supplied layers</strong>
+                    {source.temporal.temporal_layers?.annual && (
+                      <label className="check-row">
+                        <input type="checkbox" checked={temporalLayers.annual} onChange={() => setTemporalLayers({ ...temporalLayers, annual: !temporalLayers.annual })} />
+                        <span>annual</span>
+                      </label>
+                    )}
+                    {source.temporal.temporal_layers?.annual_index && (
+                      <label className="check-row">
+                        <input type="checkbox" checked={temporalLayers.annual_index} onChange={() => setTemporalLayers({ ...temporalLayers, annual_index: !temporalLayers.annual_index })} />
+                        <span>annual index</span>
+                      </label>
+                    )}
+                    {(source.temporal.temporal_layers?.years ?? []).length > 1 && (
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={allValuesSelected(temporalLayers.years, source.temporal.temporal_layers?.years ?? [])}
+                          onChange={() => {
+                            const years = source.temporal?.temporal_layers?.years ?? [];
+                            setTemporalLayers({
+                              ...temporalLayers,
+                              years: allValuesSelected(temporalLayers.years, years) ? [] : [...years]
+                            });
+                          }}
+                        />
+                        <span>All years</span>
+                      </label>
+                    )}
+                    {(source.temporal.temporal_layers?.years ?? []).map((year) => (
+                      <label key={year} className="check-row">
+                        <input type="checkbox" checked={temporalLayers.years.includes(year)} onChange={() => setTemporalLayers({ ...temporalLayers, years: toggleValue(temporalLayers.years, year) })} />
+                        <span>{year}</span>
+                      </label>
+                    ))}
+                    {(source.temporal.temporal_layers?.months ?? []).length > 1 && (
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={allValuesSelected(temporalLayers.months, source.temporal.temporal_layers?.months ?? [])}
+                          onChange={() => {
+                            const months = source.temporal?.temporal_layers?.months ?? [];
+                            setTemporalLayers({
+                              ...temporalLayers,
+                              months: allValuesSelected(temporalLayers.months, months) ? [] : [...months]
+                            });
+                          }}
+                        />
+                        <span>All months</span>
+                      </label>
+                    )}
+                    {(source.temporal.temporal_layers?.months ?? []).map((month) => (
+                      <label key={month} className="check-row">
+                        <input type="checkbox" checked={temporalLayers.months.includes(month)} onChange={() => setTemporalLayers({ ...temporalLayers, months: toggleValue(temporalLayers.months, month) })} />
+                        <span>{month}</span>
+                      </label>
+                    ))}
+                    {(source.temporal.temporal_layers?.seasons ?? []).length > 1 && (
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={allValuesSelected(temporalLayers.seasons, source.temporal.temporal_layers?.seasons ?? [])}
+                          onChange={() => {
+                            const seasons = source.temporal?.temporal_layers?.seasons ?? [];
+                            setTemporalLayers({
+                              ...temporalLayers,
+                              seasons: allValuesSelected(temporalLayers.seasons, seasons) ? [] : [...seasons]
+                            });
+                          }}
+                        />
+                        <span>All seasons</span>
+                      </label>
+                    )}
+                    {(source.temporal.temporal_layers?.seasons ?? []).map((season) => (
+                      <label key={season} className="check-row">
+                        <input type="checkbox" checked={temporalLayers.seasons.includes(season)} onChange={() => setTemporalLayers({ ...temporalLayers, seasons: toggleValue(temporalLayers.seasons, season) })} />
+                        <span>{season}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {temporalMode === "raw_slices" && (
+                  <div className="dimension-box temporal-aggregate-box">
+                    <strong>Raw slices</strong>
+                    <div className="mini-form-grid">
+                      <label>
+                        Start month
+                        <input type="number" min={1} max={12} value={aggregation.months?.[0] ?? 1} onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })} />
+                      </label>
+                      <label>
+                        End month
+                        <input type="number" min={1} max={12} value={aggregation.months?.[1] ?? 12} onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })} />
+                      </label>
+                    </div>
+                    {source.temporal.kind === "year_month_series" && (
+                      <div className="mini-form-grid">
+                        <label>
+                          Start year
+                          <input
+                            type="number"
+                            min={aggregationYearBounds?.[0]}
+                            max={aggregationYearBounds?.[1]}
+                            value={aggregation.years?.[0] ?? aggregationYearBounds?.[0] ?? source.temporal.default_years?.[0] ?? ""}
+                            onChange={(event) => setAggregation({
+                              ...aggregation,
+                              years: clampYearRangeToBounds(
+                                [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
+                                aggregationYearBounds
+                              )
+                            })}
+                          />
+                        </label>
+                        <label>
+                          End year
+                          <input
+                            type="number"
+                            min={aggregationYearBounds?.[0]}
+                            max={aggregationYearBounds?.[1]}
+                            value={aggregation.years?.[1] ?? aggregationYearBounds?.[1] ?? source.temporal.default_years?.[1] ?? ""}
+                            onChange={(event) => setAggregation({
+                              ...aggregation,
+                              years: clampYearRangeToBounds(
+                                [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
+                                aggregationYearBounds
+                              )
+                            })}
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(temporalMode === "aggregate" || temporalMode === "postprocess_aggregate") && (
+                  <div className="dimension-box temporal-aggregate-box">
+                    <strong>Aggregation</strong>
+                    {aggregationYearBounds && (
+                      <div className="notice info compact-notice">
+                        Available year range after selected dimensions: {aggregationYearBounds[0]}-{aggregationYearBounds[1]}.
+                      </div>
+                    )}
+                    <label>
+                      Name
+                      <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeToken(event.target.value) })} />
+                    </label>
+                    <label>
+                      Metric
+                      <select value={aggregation.metric} onChange={(event) => setAggregation({ ...aggregation, metric: event.target.value })}>
+                        {catalog.supported_metrics.map((metric) => <option key={metric} value={metric}>{metric}</option>)}
+                      </select>
+                    </label>
+                    {aggregation.years && (
+                      <div className="mini-form-grid">
+                        <label>
+                          Start year
+                          <input
+                            type="number"
+                            min={aggregationYearBounds?.[0]}
+                            max={aggregationYearBounds?.[1]}
+                            value={aggregation.years[0]}
+                            onChange={(event) => setAggregation({
+                              ...aggregation,
+                              years: clampYearRangeToBounds(
+                                [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
+                                aggregationYearBounds
+                              )
+                            })}
+                          />
+                        </label>
+                        <label>
+                          End year
+                          <input
+                            type="number"
+                            min={aggregationYearBounds?.[0]}
+                            max={aggregationYearBounds?.[1]}
+                            value={aggregation.years[1]}
+                            onChange={(event) => setAggregation({
+                              ...aggregation,
+                              years: clampYearRangeToBounds(
+                                [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
+                                aggregationYearBounds
+                              )
+                            })}
+                          />
+                        </label>
+                      </div>
+                    )}
+                    {aggregation.months && (
+                      <div className="mini-form-grid">
+                        <label>
+                          Start month
+                          <input type="number" min={1} max={12} value={aggregation.months[0]} onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })} />
+                        </label>
+                        <label>
+                          End month
+                          <input type="number" min={1} max={12} value={aggregation.months[1]} onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })} />
+                        </label>
+                      </div>
+                    )}
+                    <button className="primary" disabled={!canAddAggregation} onClick={addAggregation}>Add aggregation</button>
+                    <div className="aggregation-list compact-list">
+                      {aggregations.map((item, index) => (
+                        <div className="aggregation-chip" key={`${item.name}-${index}`}>
+                          <span>
+                            <strong>{item.name}</strong>
+                            <small>{item.metric}{item.months ? ` · months ${item.months[0]}-${item.months[1]}` : ""}{item.years ? ` · years ${item.years[0]}-${item.years[1]}` : ""}</small>
+                          </span>
+                          <button className="ghost danger" onClick={() => setAggregations(aggregations.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+                        </div>
+                      ))}
+                      {aggregations.length === 0 && (
+                        <div className="empty-state">Add at least one aggregation before continuing.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="notice info">This source is static; no temporal selection is needed.</div>
+            )}
+          </div>
+        )}
+
+        {step === "resampling" && source && variable && (
+          <div className="picker-step-panel temporal-step-grid">
+            <div className="dimension-box">
+              <strong>Output resampling</strong>
+              <ResamplingMethodControl
+                catalog={catalog}
+                value={resamplingMethod}
+                onChange={setResamplingMethod}
+                variable={variable}
+                isCategoryFraction={selectedCategoryFractions.length > 0}
+              />
+            </div>
+            {sourceResolutionChoices(source).length > 0 && (
+              <div className="dimension-box">
+                <strong>Original source resolution</strong>
+                <label>
+                  Resolution used for download/build
+                  <select value={sourceResolution} onChange={(event) => setSourceResolution(event.target.value)}>
+                    {sourceResolutionChoices(source).map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </select>
+                  <small className="field-hint">Choose the native product resolution when the provider offers several variants.</small>
+                </label>
+              </div>
+            )}
+            <div className="notice info compact-notice">
+              Resampling is applied when source data are aligned to the project target grid. Category fractions
+              should normally use average; original categorical codes usually use nearest or mode.
+            </div>
+          </div>
+        )}
+
+        <div className="picker-footer">
+          <span className="field-hint">
+            {source && variable ? `${sourceShortName(source)} · ${variable.name}` : "Select an input source"}
+          </span>
+          <div className="button-row">
+            {step !== "resampling" && origin === "official" && !waitingForAddedAggregation && (
+              <button className="primary" disabled={!canGoNext()} onClick={goNext}>Next</button>
+            )}
+            {step === "resampling" && (
+              <button className="primary" disabled={!canConfirmOfficial} onClick={confirmOfficial}>Confirm input</button>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OfficialLayersBuilder({
+  catalog,
+  addFeatures
+}: {
+  catalog: WorkbenchCatalog;
+  addFeatures: (features: DatasetFeatureConfig[]) => void;
+}) {
+  const [sourceId, setSourceId] = useState(catalog.sources[0]?.id ?? "");
+  const source = catalog.sources.find((item) => item.id === sourceId) ?? catalog.sources[0];
+  const variables = source ? sourceVariables(source) : [];
+  const [selectedVariables, setSelectedVariables] = useState<string[]>([]);
+  const [categorySelections, setCategorySelections] = useState<Record<string, string[]>>({});
+  const [dimensions, setDimensions] = useState<Record<string, string[]>>({});
+  const [temporalMode, setTemporalMode] = useState<FeatureTemporalMode>("static");
+  const [temporalLayers, setTemporalLayers] = useState<TemporalSelection["layers"]>({
+    annual: false,
+    annual_index: false,
+    months: [],
+    seasons: [],
+    years: []
+  });
+  const [aggregation, setAggregation] = useState<CustomAggregation>(aggregationDefaults(source, [], catalog.supported_metrics[0] ?? "mean"));
+  const [aggregations, setAggregations] = useState<CustomAggregation[]>([]);
+  const [resamplingByOutput, setResamplingByOutput] = useState<Record<string, string>>({});
+  const [sourceResolution, setSourceResolution] = useState(source?.source_resolution ?? sourceResolutionChoices(source)[0] ?? "");
+
+  useEffect(() => {
+    if (!source) return;
+    const nextDimensions: Record<string, string[]> = {};
+    for (const [key] of sourceDimensionEntries(source)) {
+      nextDimensions[key] = [];
+    }
+    setDimensions(nextDimensions);
+    setSelectedVariables([]);
+    setCategorySelections({});
+    setTemporalMode(defaultTemporalModeForSource(source));
+    setTemporalLayers(initialTemporalLayers(source));
+    setAggregation(aggregationDefaults(source, [], catalog.supported_metrics[0] ?? "mean"));
+    setAggregations([]);
+    setResamplingByOutput({});
+    setSourceResolution(source.source_resolution ?? sourceResolutionChoices(source)[0] ?? "");
+  }, [source?.id]);
+
+  const sourceReady = dimensionsAreComplete(source, dimensions)
+    && temporalSelectionIsComplete(source, temporalMode, temporalLayers, aggregation.name, aggregation, aggregations, dimensions);
+  const aggregationYearBounds = effectiveAggregationYearBounds(source, dimensions);
+  const canAddAggregation = aggregationDraftIsComplete(source, dimensions, aggregation)
+    && !aggregations.some((item) => item.name === aggregation.name);
+  const selectedFractionRequests = variables.flatMap((variable) =>
+    (categorySelections[variable.name] ?? []).flatMap((token) => {
+      const item = variable.category_classes?.find((candidate) => categoryClassToken(candidate) === token);
+      return item ? [{ variable, categoryFraction: categoryFractionConfig(variable, item) }] : [];
+    })
+  );
+  const selectedOutputCount = selectedVariables.length + selectedFractionRequests.length;
+  const outputResampling = (key: string, variable: VariableCatalog, isCategoryFraction = false) =>
+    resamplingByOutput[key] ?? defaultResamplingForOutput(variable, isCategoryFraction);
+  const setOutputResampling = (key: string, method: string) =>
+    setResamplingByOutput((current) => ({ ...current, [key]: method }));
+  function addAggregation() {
+    if (!canAddAggregation) return;
+    setAggregations([...aggregations, { ...aggregation }]);
+    setAggregation({
+      ...aggregation,
+      name: `${aggregation.name}_${aggregations.length + 2}`
+    });
+  }
+
+  function addSelected() {
+    if (!source) return;
+    const activeAggregations = (temporalMode === "aggregate" || temporalMode === "postprocess_aggregate")
+      ? aggregations
+      : [aggregation];
+    const originalFeatures = selectedVariables.flatMap((name) => {
+      const variable = variables.find((item) => item.name === name);
+      if (!variable) return [];
+      const safeName = sanitizeToken(name);
+      const resampling = outputResampling(name, variable, false);
+      const outputs = activeAggregations.flatMap((item) => buildSourceLayerOutputs({
+          featureName: safeName,
+          source,
+          variable,
+          dimensions,
+          temporalMode,
+          years: temporalLayers.years,
+          layers: temporalLayers,
+          aggregation: { ...item, variables: [name] },
+          sourceResolution: sourceResolution || source.source_resolution,
+          resampling
+        }));
+      return [{
+        name: safeName,
+        title: variable.description || humanizeId(name),
+        description: variable.description,
+        unit: variable.unit ?? undefined,
+        value_semantics: variable.value_semantics ?? variable.data_type,
+        output_dtype: "float32",
+        build_type: "source_layer" as const,
+        outputs
+      }];
+    });
+    const fractionFeatures = selectedFractionRequests.map(({ variable, categoryFraction }) => {
+      const resampling = outputResampling(categoryFraction.name, variable, true);
+      const fractionWithResampling = { ...categoryFraction, resampling };
+      const outputs = activeAggregations.flatMap((item) => buildSourceLayerOutputs({
+          featureName: categoryFraction.name,
+          source,
+          variable,
+          dimensions,
+          temporalMode,
+          years: temporalLayers.years,
+          layers: temporalLayers,
+          aggregation: { ...item, variables: [categoryFraction.variable] },
+          categoryFraction: fractionWithResampling,
+          sourceResolution: sourceResolution || source.source_resolution,
+          resampling
+        }));
+      return {
+        name: categoryFraction.name,
+        title: categoryFraction.label ? `${categoryFraction.label} fraction` : humanizeId(categoryFraction.name),
+        description: `Fraction of ${variable.description || variable.name} classes: ${categoryFraction.class_values.join(", ")}`,
+        unit: "fraction",
+        value_semantics: "fraction",
+        output_dtype: "float32",
+        build_type: "source_layer" as const,
+        outputs
+      };
+    });
+    addFeatures([...originalFeatures, ...fractionFeatures]);
+    setSelectedVariables([]);
+    setCategorySelections({});
+  }
+
+  return (
+    <section className="panel feature-builder-panel">
+      <div className="panel-head">
+        <h2>Add official source layers</h2>
+        <span className="field-hint">No derived processing</span>
+      </div>
+      <div className="builder-layout">
+        <div className="picker-column">
+          <h3>Sources</h3>
+          {catalog.sources.map((item) => (
+            <button
+              key={item.id}
+              className={`source-select-button ${item.id === source?.id ? "active" : ""}`}
+              onClick={() => setSourceId(item.id)}
+            >
+              <strong>{sourceDisplayName(item)}</strong>
+              <small>{item.id}</small>
+            </button>
+          ))}
+        </div>
+        <div className="picker-column">
+          <h3>Features</h3>
+          {variables.map((variable) => (
+            <div key={variable.name} className="official-variable-block">
+              <label className="check-row rich">
+                <input
+                  type="checkbox"
+                  checked={selectedVariables.includes(variable.name)}
+                  onChange={() => setSelectedVariables(toggleValue(selectedVariables, variable.name))}
+                />
+                <span>
+                  <strong>{variable.description || humanizeId(variable.name)}</strong>
+                  <small>{variable.name}{variable.unit ? ` · ${variable.unit}` : ""}</small>
+                </span>
+              </label>
+              {selectedVariables.includes(variable.name) && (
+                <div className="resampling-inline">
+                  <ResamplingMethodControl
+                    catalog={catalog}
+                    value={outputResampling(variable.name, variable, false)}
+                    onChange={(method) => setOutputResampling(variable.name, method)}
+                    variable={variable}
+                  />
+                </div>
+              )}
+              {variable.category_classes && variable.category_classes.length > 0 && (
+                <div className="category-slice-list">
+                  {variable.category_classes.map((item) => {
+                    const token = categoryClassToken(item);
+                    const selected = categorySelections[variable.name] ?? [];
+                    const fraction = categoryFractionConfig(variable, item);
+                    return (
+                      <div key={token} className="fraction-choice">
+                        <label className="check-row rich subtle-check">
+                          <input
+                            type="checkbox"
+                            checked={selected.includes(token)}
+                            onChange={() => setCategorySelections({
+                              ...categorySelections,
+                              [variable.name]: toggleValue(selected, token)
+                            })}
+                          />
+                          <span>
+                            <strong>{item.label || item.name || token}</strong>
+                            <small>category fraction · {categoryClassValues(item).join(", ")}</small>
+                          </span>
+                        </label>
+                        {selected.includes(token) && (
+                          <div className="resampling-inline">
+                            <ResamplingMethodControl
+                              catalog={catalog}
+                              value={outputResampling(fraction.name, variable, true)}
+                              onChange={(method) => setOutputResampling(fraction.name, method)}
+                              variable={variable}
+                              isCategoryFraction
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="picker-column">
+          <h3>Dimensions and temporal</h3>
+          {source && sourceResolutionChoices(source).length > 0 && (
+            <div className="dimension-box">
+              <strong>Original source resolution</strong>
+              <label>
+                Resolution used for download/build
+                <select value={sourceResolution} onChange={(event) => setSourceResolution(event.target.value)}>
+                  {sourceResolutionChoices(source).map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+                <small className="field-hint">Choose the native product resolution when the provider offers several variants.</small>
+              </label>
+            </div>
+          )}
+          {source && sourceDimensionEntries(source).map(([key, values]) => (
+            <div className="dimension-box" key={key}>
+              <strong>{humanizeId(key)}</strong>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={allValuesSelected(dimensions[key] ?? [], values)}
+                  onChange={() => setDimensions({
+                    ...dimensions,
+                    [key]: allValuesSelected(dimensions[key] ?? [], values) ? [] : values
+                  })}
+                />
+                <span>All</span>
+              </label>
+              {values.map((value) => (
+                <label key={value} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={(dimensions[key] ?? []).includes(value)}
+                    onChange={() => setDimensions({ ...dimensions, [key]: toggleValue(dimensions[key] ?? [], value) })}
+                  />
+                  <span>{value}</span>
+                </label>
+              ))}
+            </div>
+          ))}
+          {source?.temporal && (
+            <div className="dimension-box">
+              <strong>Temporal mode</strong>
+              {supportedTemporalModes(source).map((mode) => (
+                <label key={mode} className="check-row">
+                  <input
+                    type="radio"
+                    name="official-temporal-mode"
+                    checked={temporalMode === mode}
+                    onChange={() => setTemporalMode(mode)}
+                  />
+                  <span>{humanizeId(mode)}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {temporalMode === "supplied_layers" && source?.temporal && (
+            <div className="dimension-box">
+              <strong>Supplied layers</strong>
+              {source.temporal.temporal_layers?.annual && (
+                <label className="check-row">
+                  <input type="checkbox" checked={temporalLayers.annual} onChange={() => setTemporalLayers({ ...temporalLayers, annual: !temporalLayers.annual })} />
+                  <span>annual</span>
+                </label>
+              )}
+              {source.temporal.temporal_layers?.annual_index && (
+                <label className="check-row">
+                  <input type="checkbox" checked={temporalLayers.annual_index} onChange={() => setTemporalLayers({ ...temporalLayers, annual_index: !temporalLayers.annual_index })} />
+                  <span>annual index</span>
+                </label>
+              )}
+              {(source.temporal.temporal_layers?.years ?? []).length > 1 && (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={allValuesSelected(temporalLayers.years, source.temporal.temporal_layers?.years ?? [])}
+                    onChange={() => {
+                      const years = source.temporal?.temporal_layers?.years ?? [];
+                      setTemporalLayers({
+                        ...temporalLayers,
+                        years: allValuesSelected(temporalLayers.years, years) ? [] : [...years]
+                      });
+                    }}
+                  />
+                  <span>All years</span>
+                </label>
+              )}
+              {(source.temporal.temporal_layers?.years ?? []).map((year) => (
+                <label key={year} className="check-row">
+                  <input type="checkbox" checked={temporalLayers.years.includes(year)} onChange={() => setTemporalLayers({ ...temporalLayers, years: toggleValue(temporalLayers.years, year) })} />
+                  <span>{year}</span>
+                </label>
+              ))}
+              {(source.temporal.temporal_layers?.months ?? []).length > 1 && (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={allValuesSelected(temporalLayers.months, source.temporal.temporal_layers?.months ?? [])}
+                    onChange={() => {
+                      const months = source.temporal?.temporal_layers?.months ?? [];
+                      setTemporalLayers({
+                        ...temporalLayers,
+                        months: allValuesSelected(temporalLayers.months, months) ? [] : [...months]
+                      });
+                    }}
+                  />
+                  <span>All months</span>
+                </label>
+              )}
+              {(source.temporal.temporal_layers?.months ?? []).map((month) => (
+                <label key={month} className="check-row">
+                  <input type="checkbox" checked={temporalLayers.months.includes(month)} onChange={() => setTemporalLayers({ ...temporalLayers, months: toggleValue(temporalLayers.months, month) })} />
+                  <span>{month}</span>
+                </label>
+              ))}
+              {(source.temporal.temporal_layers?.seasons ?? []).length > 1 && (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={allValuesSelected(temporalLayers.seasons, source.temporal.temporal_layers?.seasons ?? [])}
+                    onChange={() => {
+                      const seasons = source.temporal?.temporal_layers?.seasons ?? [];
+                      setTemporalLayers({
+                        ...temporalLayers,
+                        seasons: allValuesSelected(temporalLayers.seasons, seasons) ? [] : [...seasons]
+                      });
+                    }}
+                  />
+                  <span>All seasons</span>
+                </label>
+              )}
+              {(source.temporal.temporal_layers?.seasons ?? []).map((season) => (
+                <label key={season} className="check-row">
+                  <input type="checkbox" checked={temporalLayers.seasons.includes(season)} onChange={() => setTemporalLayers({ ...temporalLayers, seasons: toggleValue(temporalLayers.seasons, season) })} />
+                  <span>{season}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {temporalMode === "raw_slices" && source?.temporal && (
+            <div className="dimension-box temporal-aggregate-box">
+              <strong>Raw slices</strong>
+              <div className="mini-form-grid">
+                <label>
+                  Start month
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={aggregation.months?.[0] ?? 1}
+                    onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })}
+                  />
+                </label>
+                <label>
+                  End month
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={aggregation.months?.[1] ?? 12}
+                    onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })}
+                  />
+                </label>
+              </div>
+              {source.temporal.kind === "year_month_series" && (
+                <div className="mini-form-grid">
+                  <label>
+                    Start year
+                      <input
+                        type="number"
+                        min={aggregationYearBounds?.[0]}
+                        max={aggregationYearBounds?.[1]}
+                        value={aggregation.years?.[0] ?? source.temporal.default_years?.[0] ?? ""}
+                        onChange={(event) => setAggregation({
+                          ...aggregation,
+                          years: clampYearRangeToBounds(
+                            [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
+                            aggregationYearBounds
+                          )
+                        })}
+                      />
+                    </label>
+                    <label>
+                      End year
+                      <input
+                        type="number"
+                        min={aggregationYearBounds?.[0]}
+                        max={aggregationYearBounds?.[1]}
+                        value={aggregation.years?.[1] ?? source.temporal.default_years?.[1] ?? ""}
+                        onChange={(event) => setAggregation({
+                          ...aggregation,
+                          years: clampYearRangeToBounds(
+                            [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
+                            aggregationYearBounds
+                          )
+                        })}
+                      />
+                    </label>
+                </div>
+              )}
+            </div>
+          )}
+          {(temporalMode === "aggregate" || temporalMode === "postprocess_aggregate") && (
+            <div className="dimension-box temporal-aggregate-box">
+              <strong>Aggregation</strong>
+              {aggregationYearBounds && (
+                <div className="notice info compact-notice">
+                  Available year range after selected dimensions: {aggregationYearBounds[0]}-{aggregationYearBounds[1]}.
+                </div>
+              )}
+              <label>
+                Name
+                <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeToken(event.target.value) })} />
+              </label>
+              <label>
+                Metric
+                <select value={aggregation.metric} onChange={(event) => setAggregation({ ...aggregation, metric: event.target.value })}>
+                  {catalog.supported_metrics.map((metric) => (
+                    <option key={metric} value={metric}>{metric}</option>
+                  ))}
+                </select>
+              </label>
+              {aggregation.years && (
+                <div className="mini-form-grid">
+                  <label>
+                    Start year
+                    <input
+                      type="number"
+                      min={aggregationYearBounds?.[0]}
+                      max={aggregationYearBounds?.[1]}
+                      value={aggregation.years[0]}
+                      onChange={(event) => setAggregation({
+                        ...aggregation,
+                        years: clampYearRangeToBounds(
+                          [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
+                          aggregationYearBounds
+                        )
+                      })}
+                    />
+                  </label>
+                  <label>
+                    End year
+                    <input
+                      type="number"
+                      min={aggregationYearBounds?.[0]}
+                      max={aggregationYearBounds?.[1]}
+                      value={aggregation.years[1]}
+                      onChange={(event) => setAggregation({
+                        ...aggregation,
+                        years: clampYearRangeToBounds(
+                          [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
+                          aggregationYearBounds
+                        )
+                      })}
+                    />
+                  </label>
+                </div>
+              )}
+              {aggregation.months && (
+                <div className="mini-form-grid">
+                  <label>
+                    Start month
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={aggregation.months[0]}
+                      onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })}
+                    />
+                  </label>
+                  <label>
+                    End month
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={aggregation.months[1]}
+                      onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })}
+                    />
+                  </label>
+                </div>
+              )}
+              <button className="primary" disabled={!canAddAggregation} onClick={addAggregation}>Add aggregation</button>
+              <div className="aggregation-list compact-list">
+                {aggregations.map((item, index) => (
+                  <div className="aggregation-chip" key={`${item.name}-${index}`}>
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>{item.metric}{item.months ? ` · months ${item.months[0]}-${item.months[1]}` : ""}{item.years ? ` · years ${item.years[0]}-${item.years[1]}` : ""}</small>
+                    </span>
+                    <button className="ghost danger" onClick={() => setAggregations(aggregations.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+                  </div>
+                ))}
+                {aggregations.length === 0 && (
+                  <div className="empty-state">Add at least one aggregation before adding features.</div>
+                )}
+              </div>
+            </div>
+          )}
+          <button className="primary" disabled={selectedOutputCount === 0 || !sourceReady} onClick={addSelected}>
+            Add {selectedOutputCount || ""} feature{selectedOutputCount === 1 ? "" : "s"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CustomFeatureBuilder({
+  catalog,
+  existingFeatures,
+  projectName,
+  addFeature,
+  editing,
+  clearEditing
+}: {
+  catalog: WorkbenchCatalog;
+  existingFeatures: DatasetFeatureConfig[];
+  projectName: string;
+  addFeature: (feature: DatasetFeatureConfig) => void;
+  editing?: DatasetFeatureConfig | null;
+  clearEditing?: () => void;
+}) {
+  const bundlesFromInputs = (items?: Record<string, DatasetFeatureInput>): Record<string, InputBundle> => Object.fromEntries(
+    Object.entries(items ?? {}).map(([alias, input]) => [
+      alias,
+      {
+        label: input.kind === "feature" ? `${projectName} · ${input.output || input.feature}` : `${input.source_id} · ${input.variable || input.layer || "layer"}`,
+        outputs: [{
+          name: input.kind === "feature" ? input.output || input.feature : input.variable || input.layer || alias,
+          label: input.kind === "feature" ? input.output || input.feature : `${input.source_id} · ${input.variable || input.layer || "layer"}`,
+          input,
+          suffix: input.kind === "feature" ? input.output || input.feature : input.variable || input.layer
+        }]
+      }
+    ])
+  );
+  const [name, setName] = useState(editing?.name ?? "custom_feature");
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [description, setDescription] = useState(editing?.description ?? "");
+  const [unit, setUnit] = useState(editing?.unit ?? "");
+  const [semantics, setSemantics] = useState(editing?.value_semantics ?? "intensive");
+  const [buildType, setBuildType] = useState<DatasetFeatureConfig["build_type"]>(editing?.build_type ?? "expression");
+  const [operation, setOperation] = useState(editing?.operation ?? "terrain");
+	  const [method, setMethod] = useState(editing?.method ?? "slope");
+	  const [recipe, setRecipe] = useState(editing?.recipe ?? "thermal_range");
+	  const [expression, setExpression] = useState(editing?.expression ?? "x");
+	  const [parametersText, setParametersText] = useState(JSON.stringify(editing?.parameters ?? {}, null, 2));
+	  const [inputBundles, setInputBundles] = useState<Record<string, InputBundle>>(bundlesFromInputs(editing?.inputs));
+	  const [pickingAlias, setPickingAlias] = useState<string | null>(null);
+	  const [thresholdValue, setThresholdValue] = useState<string>(
+	    editing?.parameters?.threshold !== undefined ? String(editing.parameters.threshold) : ""
+	  );
+	  const [classValue, setClassValue] = useState<string>(
+	    editing?.parameters?.class_value !== undefined ? String(editing.parameters.class_value) : ""
+	  );
+	  const [radius, setRadius] = useState<number>(
+	    Number(editing?.parameters?.radius ?? 1)
+	  );
+	  const [reclassText, setReclassText] = useState(
+	    JSON.stringify(editing?.parameters?.classes ?? {}, null, 2)
+	  );
+	  const terrainMethods = ["slope", "aspect", "ruggedness", "tpi", "roughness"];
+	  const focalMethods = ["mean", "std", "min", "max", "sum", "majority", "diversity"];
+	  const distanceMethods = ["distance_to_mask", "distance_to_class"];
+	  const guidedRecipeOptions = [
+	    ["thermal_range", "Thermal range", "Maximum temperature minus minimum temperature."],
+	    ["water_balance", "Water balance", "Precipitation minus potential evapotranspiration."],
+	    ["aridity_index", "Aridity index", "Precipitation divided by PET."],
+	    ["snow_persistence_ratio", "Snow persistence ratio", "Snow-day count divided by valid observation count for the same period."],
+	    ["seasonal_contrast", "Seasonal contrast", "Contrast between two numeric seasonal or period layers."]
+	  ];
+	  const maskingOptions = [
+	    ["binary_threshold_mask", "Binary threshold mask", "Numeric input converted to a final-grid 0/1 mask with a threshold."],
+	    ["class_mask", "Final-grid class mask", "Categorical input converted to 0/1 after source resampling."],
+	    ["reclassification", "Reclassification", "Map selected class codes to new numeric/categorical values."]
+	  ];
+	  const spatialOptions = [
+	    ["terrain", "DEM terrain", "Terrain derivatives from a DEM/elevation layer."],
+	    ["focal", "Focal window", "Neighbourhood statistics around each cell."],
+	    ["distance", "Distance", "Distance to positive mask pixels or a selected class."]
+	  ];
+
+  useEffect(() => {
+    if (!editing) return;
+    setName(editing.name);
+    setTitle(editing.title ?? "");
+    setDescription(editing.description ?? "");
+    setUnit(editing.unit ?? "");
+    setSemantics(editing.value_semantics ?? "intensive");
+    setBuildType(editing.build_type);
+    setOperation(editing.operation ?? "terrain");
+    setMethod(editing.method ?? "slope");
+	    setRecipe(editing.recipe ?? "thermal_range");
+	    setExpression(editing.expression ?? "x");
+	    setParametersText(JSON.stringify(editing.parameters ?? {}, null, 2));
+	    setInputBundles(bundlesFromInputs(editing.inputs));
+	    setThresholdValue(editing.parameters?.threshold !== undefined ? String(editing.parameters.threshold) : "");
+	    setClassValue(editing.parameters?.class_value !== undefined ? String(editing.parameters.class_value) : "");
+	    setRadius(Number(editing.parameters?.radius ?? 1));
+	    setReclassText(JSON.stringify(editing.parameters?.classes ?? {}, null, 2));
+	  }, [editing]);
+
+	  useEffect(() => {
+	    if (buildType === "recipe" && !guidedRecipeOptions.some(([value]) => value === recipe)) {
+	      setRecipe("thermal_range");
+	    }
+	    if (buildType === "masking" && !maskingOptions.some(([value]) => value === recipe)) {
+	      setRecipe("binary_threshold_mask");
+	    }
+	  }, [buildType, recipe]);
+
+	  useEffect(() => {
+	    if (operation === "terrain" && !terrainMethods.includes(method)) setMethod("slope");
+	    if (operation === "focal" && !focalMethods.includes(method)) setMethod("mean");
+	    if (operation === "distance" && !distanceMethods.includes(method)) setMethod("distance_to_mask");
+	  }, [operation]);
+
+	  const aliases = buildType === "recipe"
+	    ? recipe === "thermal_range"
+	      ? ["tmax", "tmin"]
+	      : recipe === "water_balance" || recipe === "aridity_index"
+	        ? ["prec", "pet"]
+	        : recipe === "snow_persistence_ratio"
+	          ? ["snow_days", "valid_days"]
+	          : recipe === "seasonal_contrast"
+	            ? ["a", "b"]
+	            : ["x"]
+	    : buildType === "spatial"
+	      ? [operation === "terrain" ? "dem" : operation === "distance" ? "mask" : "x"]
+	      : buildType === "expression"
+	        ? ["x", "y", "z"]
+	        : ["x"];
+	  const aliasesKey = aliases.join("|");
+
+	  useEffect(() => {
+	    setInputBundles((current) => Object.fromEntries(
+	      Object.entries(current).filter(([alias]) => aliases.includes(alias))
+	    ));
+	  }, [aliasesKey]);
+
+	  function variableFilter(variable: VariableCatalog, alias?: string) {
+	    const haystack = `${variable.name} ${variable.description ?? ""} ${variable.value_semantics ?? ""} ${variable.data_type ?? ""}`;
+    if (buildType === "spatial" && operation === "terrain") {
+      return /\b(dem|elev|elevation|altitude|height)\b/i.test(haystack);
+    }
+    if (buildType === "spatial" && operation === "focal") {
+      return !/\b(categorical|ordinal|class)\b/i.test(haystack);
+    }
+    if (buildType === "spatial" && operation === "distance") {
+      return /\b(categorical|binary|ordinal|class|mask|presence|landcover|road|track|building|settlement)\b/i.test(
+        haystack
+      );
+    }
+    if (buildType === "recipe" && recipe === "thermal_range") {
+      if (alias === "tmax") return /\b(tmax|tasmax|max(?:imum)? temperature)\b/i.test(haystack);
+      if (alias === "tmin") return /\b(tmin|tasmin|min(?:imum)? temperature)\b/i.test(haystack);
+      return /\b(tmin|tmax|tasmin|tasmax|temperature)\b/i.test(haystack);
+    }
+	    if (buildType === "recipe" && (recipe === "water_balance" || recipe === "aridity_index")) {
+	      if (alias === "prec") return /\b(prec|precip|precipitation|rain)\b/i.test(haystack);
+	      if (alias === "pet") return /\b(pet|evapo|evapotranspiration)\b/i.test(haystack);
+	    }
+	    if (buildType === "recipe" && recipe === "snow_persistence_ratio") {
+	      if (alias === "snow_days") return /\b(snow|nieve|neu|snow_days|snow_days_count|scd|snow_cover)\b/i.test(haystack);
+	      if (alias === "valid_days") return /\b(valid|observation|observations|valid_days|valid_observations|count)\b/i.test(haystack);
+	    }
+	    if (buildType === "recipe" && recipe === "seasonal_contrast") {
+	      return !/\b(categorical|ordinal|class|mask)\b/i.test(haystack);
+	    }
+	    if (buildType === "masking" && recipe === "binary_threshold_mask") {
+	      return !/\b(categorical|ordinal|class)\b/i.test(haystack);
+	    }
+    if (buildType === "masking" && (recipe === "class_mask" || recipe === "reclassification")) {
+      return /\b(categorical|ordinal|class|landcover|settlement|mask)\b/i.test(haystack);
+	    }
+	    return true;
+	  }
+
+	  function inputVariable(alias: string) {
+	    return inputBundles[alias]?.outputs[0]?.variable;
+	  }
+
+	  function requiredAliases() {
+	    if (buildType === "expression") {
+	      return aliases.filter((alias) => alias === "x" || new RegExp(`\\b${alias}\\b`).test(expression));
+	    }
+	    return aliases;
+	  }
+
+	  function classOptionsForAlias(alias: string) {
+	    return inputVariable(alias)?.category_classes ?? [];
+	  }
+
+	  function thresholdRange() {
+	    const range = inputVariable("x")?.valid_range;
+	    return Array.isArray(range) && range.length >= 2 ? [Number(range[0]), Number(range[1])] as [number, number] : undefined;
+	  }
+
+	  function thresholdIsValid() {
+	    if (!(buildType === "masking" && recipe === "binary_threshold_mask")) return true;
+	    if (thresholdValue.trim() === "") return false;
+	    const value = Number(thresholdValue);
+	    if (!Number.isFinite(value)) return false;
+	    const range = thresholdRange();
+	    return !range || (value >= range[0] && value <= range[1]);
+	  }
+
+	  function classValueIsValid() {
+	    if (buildType === "masking" && recipe === "class_mask") return classValue.trim().length > 0;
+	    if (buildType === "spatial" && operation === "distance" && method === "distance_to_class") {
+	      return classValue.trim().length > 0;
+	    }
+	    return true;
+	  }
+
+	  function reclassificationIsValid() {
+	    if (!(buildType === "masking" && recipe === "reclassification")) return true;
+	    try {
+	      const parsed = JSON.parse(reclassText);
+	      return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length > 0;
+	    } catch {
+	      return false;
+	    }
+	  }
+
+	  function radiusIsRequired() {
+	    return buildType === "spatial" && (
+	      operation === "focal" ||
+	      (operation === "terrain" && ["ruggedness", "tpi", "roughness"].includes(method))
+	    );
+	  }
+
+	  function radiusIsValid() {
+	    return !radiusIsRequired() || (Number.isFinite(radius) && radius >= 1);
+	  }
+
+	  function canAddFeature() {
+	    const required = requiredAliases();
+	    return Boolean(name.trim())
+	      && required.every((alias) => inputBundles[alias]?.outputs.length > 0)
+	      && thresholdIsValid()
+	      && classValueIsValid()
+	      && reclassificationIsValid()
+	      && radiusIsValid();
+	  }
+
+	  function operationParameters(extra: Record<string, unknown>) {
+	    const parameters = { ...extra };
+	    if (buildType === "masking" && recipe === "binary_threshold_mask") {
+	      parameters.operator = ">=";
+	      parameters.threshold = Number(thresholdValue);
+	    }
+	    if (buildType === "masking" && recipe === "class_mask") {
+	      parameters.class_value = Number.isNaN(Number(classValue)) ? classValue : Number(classValue);
+	    }
+	    if (buildType === "masking" && recipe === "reclassification") {
+	      parameters.classes = JSON.parse(reclassText);
+	    }
+	    if (buildType === "spatial" && operation === "distance" && method === "distance_to_class") {
+	      parameters.class_value = Number.isNaN(Number(classValue)) ? classValue : Number(classValue);
+	    }
+	    if (radiusIsRequired()) {
+	      parameters.radius = Math.max(1, Math.round(radius));
+	    }
+	    return parameters;
+	  }
+
+	  function add() {
+	    let extraParameters: Record<string, unknown> = {};
+	    try {
+	      extraParameters = buildType !== "source_layer" && parametersText.trim() ? JSON.parse(parametersText) : {};
+	    } catch {
+	      window.alert("Parameters must be valid JSON.");
+	      return;
+	    }
+	    const safeName = sanitizeToken(name);
+	    if (!canAddFeature()) {
+	      window.alert("Complete all required inputs before adding the feature.");
+	      return;
+	    }
+	    const parameters = operationParameters(extraParameters);
+	    const activeAliases = requiredAliases();
+	    const bundles = activeAliases.map((alias) => ({ alias, bundle: inputBundles[alias] }));
+    const temporalBundles = bundles.filter(({ bundle }) => bundle.outputs.some((output) => output.temporalKey));
+    let combinations: Array<Array<{ alias: string; option: InputOutputOption }>> = [];
+
+    if (temporalBundles.length >= 2) {
+      const commonTemporalKeys = temporalBundles
+        .map(({ bundle }) => new Set(bundle.outputs.map((output) => output.temporalKey).filter(Boolean) as string[]))
+        .reduce<Set<string> | null>((current, next) => {
+          if (current === null) return next;
+          return new Set([...current].filter((key) => next.has(key)));
+        }, null);
+      const keys = [...(commonTemporalKeys ?? new Set<string>())];
+      if (keys.length === 0) {
+        window.alert("These inputs do not share temporal outputs. Choose aligned temporal selections.");
+        return;
+      }
+      combinations = keys.map((key) => bundles.map(({ alias, bundle }) => ({
+        alias,
+        option: bundle.outputs.find((output) => output.temporalKey === key) ?? bundle.outputs[0]
+      })));
+    } else {
+      combinations = cartesianProduct(bundles.map(({ alias, bundle }) =>
+        bundle.outputs.map((option) => ({ alias, option }))
+      ));
+    }
+
+    const outputs = combinations.map((combo, index) => {
+      const suffix = [...new Set(combo.map(({ option }) => option.temporalKey || option.dimensionKey || option.suffix).filter(Boolean))].join("_");
+      return {
+        name: suffix ? `${safeName}_${sanitizeToken(suffix)}` : combinations.length > 1 ? `${safeName}_${index + 1}` : safeName,
+        suffix,
+        inputs: Object.fromEntries(combo.map(({ alias, option }) => [alias, option.input])),
+        expression: buildType === "expression" ? expression : undefined,
+        recipe: buildType === "recipe" || buildType === "masking" ? recipe : undefined,
+        operation: buildType === "spatial" ? operation : undefined,
+        method: buildType === "spatial" ? method : undefined,
+        parameters
+      };
+    });
+    const firstInputs = outputs[0]?.inputs ?? {};
+    const feature: DatasetFeatureConfig = {
+      name: safeName,
+      title: title || humanizeId(safeName),
+      description,
+	      unit: unit || undefined,
+	      value_semantics: buildType === "masking" && recipe !== "reclassification" ? "binary" : semantics,
+	      output_dtype: buildType === "masking" && recipe !== "reclassification" ? "uint8" : "float32",
+      build_type: buildType,
+      inputs: firstInputs,
+      expression: buildType === "expression" ? expression : undefined,
+      recipe: buildType === "recipe" || buildType === "masking" ? recipe : undefined,
+      operation: buildType === "spatial" ? operation : undefined,
+      method: buildType === "spatial" ? method : undefined,
+      parameters,
+      outputs
+    };
+    addFeature(feature);
+    clearEditing?.();
+    setName("custom_feature");
+	    setTitle("");
+	    setDescription("");
+	    setInputBundles({});
+	    setThresholdValue("");
+	    setClassValue("");
+	    setRadius(1);
+	    setReclassText("{}");
+	  }
+
+	  function aliasLabel(alias: string) {
+	    const labels: Record<string, string> = {
+	      x: "Input x",
+	      y: "Input y",
+	      z: "Input z",
+	      tmax: "Maximum temperature",
+	      tmin: "Minimum temperature",
+	      prec: "Precipitation",
+	      pet: "Potential evapotranspiration",
+	      snow_days: "Snow-days layer",
+	      valid_days: "Valid-days layer",
+	      a: "First numeric layer",
+	      b: "Second numeric layer",
+	      dem: "DEM input",
+	      mask: "Mask or categorical input"
+	    };
+	    return labels[alias] ?? humanizeId(alias);
+	  }
+
+	  function aliasHint(alias: string) {
+	    if (buildType === "source_layer") return "Official source layer, temporal slice, aggregation or category fraction.";
+	    if (buildType === "expression") return alias === "x"
+	      ? "Required base input for the expression."
+	      : "Optional; required only if the expression uses this symbol.";
+	    if (buildType === "spatial" && operation === "terrain") return "Only DEM/elevation layers are accepted.";
+	    if (buildType === "spatial" && operation === "distance") return "Use a binary mask, categorical layer or class-derived mask.";
+	    if (buildType === "spatial" && operation === "focal") return "Use a numeric layer for focal statistics.";
+	    if (buildType === "masking" && recipe === "binary_threshold_mask") return "Numeric input required; choose a threshold below.";
+	    if (buildType === "masking" && recipe === "class_mask") return "Categorical input required. This creates a final-grid 0/1 mask, not a coverage fraction.";
+	    if (buildType === "masking" && recipe === "reclassification") return "Categorical/ordinal input required. Provide a class-code mapping below.";
+	    if (buildType === "recipe" && recipe === "snow_persistence_ratio") return alias === "snow_days"
+	      ? "Snow-day count for the selected period, used as numerator."
+	      : "Valid observation count for the same period, used as denominator. Example: a layer counting cloud-free or otherwise valid HRSI snow observations.";
+	    if (buildType === "recipe" && recipe === "seasonal_contrast") return "Numeric layer; temporal overlap is kept when both inputs are temporal.";
+	    return "Filtered to variables compatible with this operation.";
+	  }
+
+	  function renderInputSlot(alias: string, required = true) {
+	    return (
+	      <div className="input-slot feature-input-slot" key={alias}>
+	        <div>
+	          <strong>{aliasLabel(alias)}{required ? " *" : ""}</strong>
+	          <small>{aliasHint(alias)}</small>
+	        </div>
+	        <span>{inputBundles[alias]?.label || "No input selected"}</span>
+	        <button onClick={() => setPickingAlias(alias)}>Select input</button>
+	      </div>
+	    );
+	  }
+
+	  const required = new Set(requiredAliases());
+	  const range = thresholdRange();
+	  const classOptions = classOptionsForAlias(buildType === "spatial" ? "mask" : "x");
+
+  return (
+    <section className="panel feature-builder-panel custom-feature-builder">
+      <div className="panel-head">
+        <h2>{editing ? "Edit custom feature" : "Build custom feature"}</h2>
+        {editing && <button className="ghost" onClick={clearEditing}>Cancel edit</button>}
+      </div>
+
+      <div className="form-grid custom-feature-metadata">
+        <label>
+          Feature name *
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+          <small className="field-hint">Stable output name used in the YAML and final raster filenames.</small>
+        </label>
+        <label>
+          Title
+          <input value={title} onChange={(event) => setTitle(event.target.value)} />
+          <small className="field-hint">Readable title for review and metadata.</small>
+        </label>
+        <label>
+          Unit
+          <input value={unit} onChange={(event) => setUnit(event.target.value)} />
+          <small className="field-hint">Leave empty if unitless or inherited from the source.</small>
+        </label>
+        <label>
+          Value semantics
+          <select value={semantics} onChange={(event) => setSemantics(event.target.value)}>
+            {(catalog.value_semantics ?? ["intensive", "percentage", "fraction", "categorical", "binary", "ratio"]).map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+          <small className="field-hint">How the final raster values should be interpreted.</small>
+        </label>
+        <label className="span-4">
+          Description
+          <textarea value={description} rows={2} onChange={(event) => setDescription(event.target.value)} />
+        </label>
+      </div>
+
+      <div className="feature-option-row build-type-row" aria-label="Build type">
+        {[
+          ["source_layer", "Use official source layer"],
+          ["recipe", "Guided recipe"],
+          ["masking", "Masking"],
+          ["spatial", "Spatial operation"],
+          ["expression", "Advanced expression"]
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            className={`operation-card compact ${buildType === value ? "active" : ""}`}
+            onClick={() => setBuildType(value as DatasetFeatureConfig["build_type"])}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {buildType === "recipe" && (
+        <div className="feature-option-row" aria-label="Guided recipe">
+          {guidedRecipeOptions.map(([value, label, help]) => (
+            <button key={value} className={`operation-card compact ${recipe === value ? "active" : ""}`} onClick={() => setRecipe(value)}>
+              <strong>{label}</strong>
+              <small>{help}</small>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {buildType === "masking" && (
+        <div className="feature-option-row three-options" aria-label="Masking type">
+          {maskingOptions.map(([value, label, help]) => (
+            <button key={value} className={`operation-card compact ${recipe === value ? "active" : ""}`} onClick={() => setRecipe(value)}>
+              <strong>{label}</strong>
+              <small>{help}</small>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {buildType === "spatial" && (
+        <>
+          <div className="feature-option-row three-options" aria-label="Spatial operation">
+            {spatialOptions.map(([value, label, help]) => (
+              <button key={value} className={`operation-card compact ${operation === value ? "active" : ""}`} onClick={() => setOperation(value)}>
+                <strong>{label}</strong>
+                <small>{help}</small>
+              </button>
+            ))}
+          </div>
+          <div className="feature-option-row method-row" aria-label="Spatial method">
+            {(operation === "terrain" ? terrainMethods : operation === "focal" ? focalMethods : distanceMethods).map((item) => (
+              <button key={item} className={`operation-card compact method-card ${method === item ? "active" : ""}`} onClick={() => setMethod(item)}>
+                {humanizeId(item)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <section className="feature-work-area">
+        {buildType === "expression" && (
+          <>
+            <label className="full-row">
+              Expression *
+              <input value={expression} onChange={(event) => setExpression(event.target.value)} />
+              <small className="field-hint">Use x, y and z as selected input layers. Inputs y/z become required when the expression references them.</small>
+              <div className="expression-keypad">
+                {["where(", "maximum(", "minimum(", "log10(", "sqrt(", "nan", "+", "-", "*", "/"].map((token) => (
+                  <button key={token} className="ghost" onClick={() => setExpression(`${expression}${token}`)}>{token}</button>
+                ))}
+              </div>
+            </label>
+            <div className="input-grid three-inputs">
+              {aliases.map((alias) => renderInputSlot(alias, required.has(alias)))}
+            </div>
+          </>
+        )}
+
+        {buildType === "source_layer" && (
+          <div className="input-grid single-input">
+            {renderInputSlot("x", true)}
+          </div>
+        )}
+
+        {buildType === "recipe" && (
+          <div className={`input-grid ${aliases.length === 1 ? "single-input" : "two-inputs"}`}>
+            {aliases.map((alias) => renderInputSlot(alias, true))}
+          </div>
+        )}
+
+        {buildType === "masking" && (
+          <>
+            <div className="notice info compact-notice full-row">
+              Use masking for binary final-grid rasters. For habitat percentages from categorical maps, choose
+              category fractions in the source picker instead: they are computed before resampling and can become
+              true target-cell coverage ratios with average resampling.
+            </div>
+            <div className="input-grid single-input">
+              {renderInputSlot("x", true)}
+            </div>
+            {recipe === "binary_threshold_mask" && (
+              <div className="parameter-grid">
+                <label>
+                  Threshold *
+                  <input type="number" value={thresholdValue} onChange={(event) => setThresholdValue(event.target.value)} />
+                  <small className={`field-hint ${thresholdIsValid() ? "" : "error-text"}`}>
+                    {range ? `Accepted range for selected variable: ${range[0]} to ${range[1]}.` : "Choose a numeric value that makes sense for the selected input."}
+                  </small>
+                </label>
+              </div>
+            )}
+            {recipe === "class_mask" && (
+              <div className="parameter-grid">
+                <label>
+                  Class value *
+                  {classOptions.length > 0 ? (
+                    <select value={classValue} onChange={(event) => setClassValue(event.target.value)}>
+                      <option value="">Select class</option>
+                      {classOptions.map((item) => {
+                        const value = item.value ?? item.values?.[0] ?? item.name ?? item.label ?? "";
+                        return <option key={String(value)} value={String(value)}>{item.label || item.name || String(value)}</option>;
+                      })}
+                    </select>
+                  ) : (
+                    <input value={classValue} onChange={(event) => setClassValue(event.target.value)} placeholder="class code" />
+                  )}
+                  <small className="field-hint">This is not a category fraction. It tests the already aligned target-grid layer and returns 1 where the final cell equals this class.</small>
+                </label>
+              </div>
+            )}
+            {recipe === "reclassification" && (
+              <label className="full-row optional-json-field">
+                Class mapping JSON *
+                <textarea value={reclassText} rows={5} onChange={(event) => setReclassText(event.target.value)} />
+                <small className={`field-hint ${reclassificationIsValid() ? "" : "error-text"}`}>
+                  Map original class codes to new values, for example {"{\"10\": 1, \"20\": 2}"}. Unlisted classes keep their original value.
+                </small>
+              </label>
+            )}
+          </>
+        )}
+
+        {buildType === "spatial" && (
+          <>
+            <div className="input-grid single-input">
+              {renderInputSlot(aliases[0], true)}
+            </div>
+            {(radiusIsRequired() || (operation === "distance" && method === "distance_to_class")) && (
+              <div className="parameter-grid">
+                {radiusIsRequired() && (
+                  <label>
+                    Radius in cells *
+                    <input type="number" min={1} value={radius} onChange={(event) => setRadius(Math.max(1, Number(event.target.value)))} />
+                    <small className="field-hint">Used by focal windows and terrain neighbourhood metrics such as TPI, ruggedness and roughness.</small>
+                  </label>
+                )}
+                {operation === "distance" && method === "distance_to_class" && (
+                  <label>
+                    Class value *
+                    {classOptions.length > 0 ? (
+                      <select value={classValue} onChange={(event) => setClassValue(event.target.value)}>
+                        <option value="">Select class</option>
+                        {classOptions.map((item) => {
+                          const value = item.value ?? item.values?.[0] ?? item.name ?? item.label ?? "";
+                          return <option key={String(value)} value={String(value)}>{item.label || item.name || String(value)}</option>;
+                        })}
+                      </select>
+                    ) : (
+                      <input value={classValue} onChange={(event) => setClassValue(event.target.value)} placeholder="class code" />
+                    )}
+                    <small className="field-hint">Distance is computed to cells equal to this class value.</small>
+                  </label>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {buildType !== "source_layer" && (
+          <label className="full-row optional-json-field">
+            Parameters JSON
+            <textarea value={parametersText} rows={3} onChange={(event) => setParametersText(event.target.value)} />
+            <small className="field-hint">Optional advanced overrides for the derived operation. Most users can leave this as {"{}"}; required parameters above are filled automatically.</small>
+          </label>
+        )}
+      </section>
+
+      <button className="primary" disabled={!canAddFeature()} onClick={add}>
+        {editing ? "Update feature" : "Add final feature"}
+      </button>
+
+      {pickingAlias && (
+        <FeatureInputPicker
+          catalog={catalog}
+          existingFeatures={existingFeatures}
+          projectName={projectName}
+          allowCategoryFractions={!(buildType === "masking" && recipe === "class_mask")}
+          filter={(variable) => variableFilter(variable, pickingAlias ?? undefined)}
+          onCancel={() => setPickingAlias(null)}
+          onConfirm={(bundle) => {
+            setInputBundles({ ...inputBundles, [pickingAlias]: bundle });
+            setPickingAlias(null);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function FeatureBuilderPanel({
+  catalog,
+  features,
+  setFeatures,
+  projectName,
+  onReview
+}: {
+  catalog: WorkbenchCatalog;
+  features: DatasetFeatureConfig[];
+  setFeatures: (features: DatasetFeatureConfig[]) => void;
+  projectName: string;
+  onReview: () => void;
+}) {
+  const [mode, setMode] = useState<"home" | "official" | "custom">("home");
+  const [editing, setEditing] = useState<{ feature: DatasetFeatureConfig; index: number } | null>(null);
+
+  function upsertFeature(feature: DatasetFeatureConfig) {
+    if (editing) {
+      setFeatures(features.map((item, index) => index === editing.index ? feature : item));
+      setEditing(null);
+      return;
+    }
+    setFeatures([...features, feature]);
+  }
+
+  return (
+    <main className="feature-workspace">
+      <section className="feature-builder-main">
+        <section className="panel feature-mode-panel">
+          <div className="panel-head">
+            <h2>Feature builder</h2>
+            <div className="button-row">
+              <button className={mode === "home" ? "primary" : "ghost"} onClick={() => setMode("home")}>Tools</button>
+              <button className="primary" disabled={features.length === 0} onClick={onReview}>Review</button>
+            </div>
+          </div>
+          {mode === "home" && (
+            <div className="feature-tool-grid">
+              <button className="feature-tool-card" onClick={() => setMode("custom")}>
+                <strong>Build custom feature</strong>
+                <small>Create one final feature with source inputs, derived operations or expressions.</small>
+              </button>
+              <button className="feature-tool-card" onClick={() => setMode("official")}>
+                <strong>Add official source layers</strong>
+                <small>Select several original layers and optional dimensions/years without derived processing.</small>
+              </button>
+            </div>
+          )}
+        </section>
+
+        {mode === "official" && (
+          <OfficialLayersBuilder
+            catalog={catalog}
+            addFeatures={(items) => setFeatures([...features, ...items])}
+          />
+        )}
+        {mode === "custom" && (
+          <CustomFeatureBuilder
+            catalog={catalog}
+            existingFeatures={features}
+            projectName={projectName}
+            editing={editing?.feature ?? null}
+            clearEditing={() => setEditing(null)}
+            addFeature={upsertFeature}
+          />
+        )}
+      </section>
+      <FeatureSidebar
+        features={features}
+        setFeatures={setFeatures}
+        onEdit={(feature, index) => {
+          setEditing({ feature, index });
+          setMode("custom");
+        }}
+      />
+    </main>
+  );
+}
+
+function FeatureReviewPanel({
+  yamlText,
+  validation,
+  apiError,
+  saveStatus,
+  validate,
+  renderFromServer,
+  copyYaml,
+  saveYamlToRuns,
+  downloadYaml,
+  features,
+  setFeatures
+}: {
+  yamlText: string;
+  validation: ValidationReport | null;
+  apiError: string | null;
+  saveStatus: string | null;
+  validate: () => void;
+  renderFromServer: () => void;
+  copyYaml: () => void;
+  saveYamlToRuns: () => void;
+  downloadYaml: () => void;
+  features: DatasetFeatureConfig[];
+  setFeatures: (features: DatasetFeatureConfig[]) => void;
+}) {
+  const expandedOutputs = features.flatMap((feature) =>
+    featureOutputNames(feature).map((output) => ({ feature, output }))
+  );
+
+  function removeFeature(index: number) {
+    const feature = features[index];
+    const outputs = new Set(featureOutputNames(feature));
+    const dependents = features
+      .filter((candidate, candidateIndex) => candidateIndex !== index)
+      .filter((candidate) =>
+        Object.values(candidate.inputs ?? {}).some((input) =>
+          input.kind === "feature" && outputs.has(input.output || input.feature)
+        )
+      )
+      .map((candidate) => candidate.name);
+    if (dependents.length > 0) {
+      const ok = window.confirm(
+        `Removing ${feature.name} will also remove dependent features: ${dependents.join(", ")}. Continue?`
+      );
+      if (!ok) return;
+      setFeatures(features.filter((candidate, candidateIndex) =>
+        candidateIndex !== index && !dependents.includes(candidate.name)
+      ));
+      return;
+    }
+    setFeatures(features.filter((_, candidateIndex) => candidateIndex !== index));
+  }
+
+  return (
+    <main className="workspace review-grid feature-review-grid">
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Review final dataset</h2>
+          <div className="button-row">
+            <button className="primary" onClick={validate}>Validate</button>
+            <button onClick={renderFromServer}>Render</button>
+            <button onClick={copyYaml}>Copy YAML</button>
+            <button onClick={saveYamlToRuns}>Save YAML</button>
+            <button onClick={downloadYaml}>Download YAML</button>
+          </div>
+        </div>
+        {apiError && <div className="notice error">{apiError}</div>}
+        {saveStatus && <div className="notice success">{saveStatus}</div>}
+        {validation && (
+          <div className={`notice ${validation.ok ? "success" : "error"}`}>
+            {validation.ok ? "Valid feature config" : "Invalid feature config"} · {validation.estimated_layers} estimated layers
+          </div>
+        )}
+        {validation?.errors.map((error) => (
+          <div className="notice error" key={error}>{error}</div>
+        ))}
+        {validation?.warnings.map((warning) => (
+          <div className="notice info" key={warning}>{warning}</div>
+        ))}
+        {features.length === 0 && <div className="notice info">Add at least one final feature before saving the run.</div>}
+      </section>
+
+      <section className="panel review-layers-panel">
+        <div className="panel-head">
+          <h2>Final Features</h2>
+          <span className="field-hint">{expandedOutputs.length} expanded output{expandedOutputs.length === 1 ? "" : "s"}</span>
+        </div>
+        <div className="review-layer-list">
+          {features.map((feature, index) => (
+            <div className="review-layer-row derived-row" key={`${feature.name}-${index}`}>
+              <span>
+                <strong>{feature.title || feature.name}</strong>
+                <small>{feature.name} · {feature.build_type} · {featureOutputCount(feature)} output{featureOutputCount(feature) === 1 ? "" : "s"}</small>
+                {feature.outputs && feature.outputs.length > 1 && (
+                  <span className="feature-chip-row compact-chips">
+                    {feature.outputs.slice(0, 10).map((output) => (
+                      <em key={output.name}>{output.suffix || output.name}</em>
+                    ))}
+                    {feature.outputs.length > 10 && <em>+{feature.outputs.length - 10}</em>}
+                  </span>
+                )}
+              </span>
+              <button className="ghost danger" onClick={() => removeFeature(index)}>Remove</button>
+            </div>
+          ))}
+          {features.length === 0 && <div className="empty-state">No final features yet.</div>}
+        </div>
+      </section>
+
+      <section className="panel yaml-panel">
+        <h2>YAML</h2>
+        <pre>{yamlText}</pre>
       </section>
     </main>
   );

@@ -165,6 +165,7 @@ export interface CategoryFractionSelection {
   name: string;
   class_values: Array<string | number>;
   label?: string;
+  resampling?: string;
 }
 
 export interface TemporalSelection {
@@ -216,6 +217,71 @@ export interface DerivedInputQuery {
   gcm?: string;
   ssp?: string;
   period?: string;
+}
+
+export interface FeatureSourceInput {
+  kind: "source";
+  source_id: string;
+  config: string;
+  variable?: string;
+  layer?: string;
+  query?: DerivedInputQuery;
+  dimensions?: Record<string, string[]>;
+  temporal?: Dict;
+  category_fraction?: {
+    variable: string;
+    name: string;
+    class_values: Array<string | number>;
+    label?: string;
+    resampling?: string;
+  };
+  source_resolution?: string;
+  resampling?: string;
+}
+
+export interface FeatureReferenceInput {
+  kind: "feature";
+  feature: string;
+  output?: string;
+}
+
+export type DatasetFeatureInput = FeatureSourceInput | FeatureReferenceInput;
+
+export interface DatasetFeatureOutput {
+  name: string;
+  suffix?: string;
+  temporal_key?: string;
+  dimension_key?: string;
+  title?: string;
+  description?: string;
+  unit?: string;
+  value_semantics?: string;
+  output_dtype?: string;
+  source?: FeatureSourceInput;
+  inputs?: Record<string, DatasetFeatureInput>;
+  expression?: string;
+  recipe?: string;
+  operation?: string;
+  method?: string;
+  parameters?: Dict;
+}
+
+export interface DatasetFeatureConfig {
+  name: string;
+  title?: string;
+  description?: string;
+  unit?: string;
+  value_semantics?: string;
+  output_dtype?: string;
+  build_type: "source_layer" | "recipe" | "masking" | "spatial" | "expression";
+  source?: FeatureSourceInput;
+  inputs?: Record<string, DatasetFeatureInput>;
+  outputs?: DatasetFeatureOutput[];
+  expression?: string;
+  recipe?: string;
+  operation?: string;
+  method?: string;
+  parameters?: Dict;
 }
 
 export interface DerivedFeatureConfig {
