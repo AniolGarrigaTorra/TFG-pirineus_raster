@@ -12,7 +12,7 @@ set -euo pipefail
 export PS1="${PS1:-}"   
 source jobs/common.sh
 
-RUN_CONFIG="${1:-configs/runs/pallars_worldclim_100m.yaml}"
+RUN_CONFIG="${1:-configs/runs/ursus_arctos_pyrenees_100m.yaml}"
 
 echo "=============================="
 echo "Running Pirineus Raster dataset pipeline"

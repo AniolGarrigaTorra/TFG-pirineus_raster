@@ -1298,14 +1298,14 @@ function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("Project");
   const [activeSourceId, setActiveSourceId] = useState<string>("");
-  const [runName, setRunName] = useState("pallars_workbench_100m");
+  const [runName, setRunName] = useState("pirineus_dataset_100m");
   const [description, setDescription] = useState("Workbench-generated Pirineus Raster dataset.");
   const [projectConfig, setProjectConfig] = useState("configs/project.yaml");
   const [targetCrs, setTargetCrs] = useState("EPSG:3035");
   const [aoiPath, setAoiPath] = useState("configs/aoi/experimental_pallars_sobira.yaml");
   const [resolution, setResolution] = useState(100);
   const [stages, setStages] = useState<string[]>(["all"]);
-  const [datasetDir, setDatasetDir] = useState("data_processed/datasets/pallars_workbench_100m");
+  const [datasetDir, setDatasetDir] = useState("data_processed/datasets/pirineus_dataset_100m");
   const [createdAois, setCreatedAois] = useState<AoiCatalog[]>([]);
   const [selections, setSelections] = useState<Record<string, SourceSelection>>({});
   const [derivedFeatures, setDerivedFeatures] = useState<DerivedFeatureConfig[]>([]);

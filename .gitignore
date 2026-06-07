@@ -19,3 +19,5 @@ ui/vite.config.d.ts
 *.csv
 .venv/
 ui/public/*
+!ui/public/backgrounds/
+!ui/public/backgrounds/**

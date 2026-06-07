@@ -28,6 +28,7 @@ from src.workbench.catalog import list_source_catalogs
 from src.workbench.compiler import (
     compile_run_config,
     compile_source_config_for_run,
+    render_run_config_yaml,
     validate_researcher_run_config,
 )
 from src.pipeline.config import validate_run_config
@@ -84,6 +85,54 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(compiled["derived_features"][0]["operation"], "expression")
         self.assertEqual(compiled["derived_features"][0]["expression"], "x")
 
+    def test_render_run_config_yaml_does_not_emit_yaml_aliases(self):
+        shared_temporal = {
+            "output_mode": "supplied_layers",
+            "layers": {"years": [2018]},
+        }
+        cfg = {
+            "run": {
+                "name": "no_yaml_aliases",
+                "project_config": "configs/project.yaml",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+            },
+            "features": [
+                {
+                    "name": "two_outputs",
+                    "build_type": "source_layer",
+                    "outputs": [
+                        {
+                            "name": "a",
+                            "source": {
+                                "kind": "source",
+                                "source_id": "copernicus_clms_clcplus_backbone",
+                                "config": "configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml",
+                                "variable": "clcplus_backbone",
+                                "temporal": shared_temporal,
+                            },
+                        },
+                        {
+                            "name": "b",
+                            "source": {
+                                "kind": "source",
+                                "source_id": "copernicus_clms_clcplus_backbone",
+                                "config": "configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml",
+                                "variable": "clcplus_backbone",
+                                "temporal": shared_temporal,
+                            },
+                        },
+                    ],
+                }
+            ],
+            "outputs": {"dataset_dir": "data/processed/no_yaml_aliases"},
+        }
+
+        rendered = render_run_config_yaml(cfg)
+        self.assertNotIn("&id", rendered)
+        self.assertNotIn("*id", rendered)
+        self.assertEqual(rendered.count("output_mode: supplied_layers"), 2)
+
     def test_feature_oriented_yearly_dimension_source_layer_keeps_temporal_query(self):
         cfg = {
             "run": {
@@ -139,6 +188,82 @@ class NewSourceIntegrationTests(unittest.TestCase):
             compiled["sources"][0]["select"]["temporal"]["output_mode"],
             "static",
         )
+
+    def test_feature_compiler_splits_conflicting_custom_aggregation_names(self):
+        cfg = {
+            "run": {
+                "name": "conflicting_aggregations",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "built_surface_mean_2010_2020",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "ghsl_ghs_built_s_r2023a",
+                        "config": "configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml",
+                        "variable": "built_surface",
+                        "query": {
+                            "variable": "built_surface",
+                            "aggregation_name": "built_mean",
+                        },
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "built_mean",
+                                        "form": "year_range_metric",
+                                        "variables": ["built_surface"],
+                                        "years": [2010, 2020],
+                                        "metric": "mean",
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                },
+                {
+                    "name": "built_surface_mean_2015_2020",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "ghsl_ghs_built_s_r2023a",
+                        "config": "configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml",
+                        "variable": "built_surface",
+                        "query": {
+                            "variable": "built_surface",
+                            "aggregation_name": "built_mean",
+                        },
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "built_mean",
+                                        "form": "year_range_metric",
+                                        "variables": ["built_surface"],
+                                        "years": [2015, 2020],
+                                        "metric": "mean",
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                },
+            ],
+            "outputs": {"dataset_dir": "data/processed/conflicting_aggregations"},
+        }
+
+        compiled = compile_run_config(cfg)
+        self.assertEqual(len(compiled["sources"]), 2)
+        self.assertNotEqual(compiled["sources"][0]["id"], compiled["sources"][1]["id"])
+        self.assertEqual(len(compiled["derived_features"]), 2)
 
     def test_legacy_run_configs_without_features_fail_clearly(self):
         cfg = {
@@ -864,6 +989,194 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["errors"])
         self.assertEqual(report["estimated_layers"], 2)
 
+    def test_feature_compiler_merges_category_fraction_source_requirements(self):
+        cfg = {
+            "run": {
+                "name": "merged_fraction_requirements",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "leaf_type_fractions",
+                    "build_type": "source_layer",
+                    "outputs": [
+                        {
+                            "name": "broadleaved_fraction",
+                            "source": {
+                                "kind": "source",
+                                "source_id": "copernicus_clms_forest",
+                                "config": "configs/sources/copernicus/copernicus_clms_forest.yaml",
+                                "variable": "dominant_leaf_type",
+                                "query": {"variable": "broadleaved_fraction"},
+                                "category_fraction": {
+                                    "variable": "dominant_leaf_type",
+                                    "name": "broadleaved_fraction",
+                                    "class_values": [1],
+                                    "resampling": "average",
+                                },
+                                "resampling": "average",
+                            },
+                        },
+                        {
+                            "name": "coniferous_fraction",
+                            "source": {
+                                "kind": "source",
+                                "source_id": "copernicus_clms_forest",
+                                "config": "configs/sources/copernicus/copernicus_clms_forest.yaml",
+                                "variable": "dominant_leaf_type",
+                                "query": {"variable": "coniferous_fraction"},
+                                "category_fraction": {
+                                    "variable": "dominant_leaf_type",
+                                    "name": "coniferous_fraction",
+                                    "class_values": [2],
+                                    "resampling": "average",
+                                },
+                                "resampling": "average",
+                            },
+                        },
+                    ],
+                }
+            ],
+            "outputs": {"dataset_dir": "data/processed/merged_fraction_requirements"},
+        }
+
+        compiled = compile_run_config(cfg)
+        self.assertEqual(len(compiled["sources"]), 1)
+        source_entry = compiled["sources"][0]
+        self.assertEqual(source_entry["select"]["variables"], [])
+        self.assertEqual(len(source_entry["select"]["category_fractions"]), 2)
+
+        source_cfg = expand_source_config(load_yaml(source_entry["config"]))
+        compiled_source = compile_source_config_for_run(source_cfg, source_entry)
+        self.assertTrue(compiled_source["variables"]["dominant_leaf_type"]["enabled"])
+        self.assertFalse(
+            compiled_source["variables"]["dominant_leaf_type"]["build_output_enabled"]
+        )
+
+    def test_feature_compiler_merges_compatible_temporal_aggregations(self):
+        cfg = {
+            "run": {
+                "name": "merged_temporal_requirements",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "built_surface_mean",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "ghsl_ghs_built_s_r2023a",
+                        "config": "configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml",
+                        "variable": "built_surface",
+                        "query": {
+                            "variable": "built_surface",
+                            "aggregation_name": "built_surface_mean",
+                        },
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "built_surface_mean",
+                                        "form": "year_range_metric",
+                                        "variables": ["built_surface"],
+                                        "years": [2010, 2020],
+                                        "metric": "mean",
+                                    }
+                                ]
+                            },
+                        },
+                        "source_resolution": "100m",
+                        "resampling": "conservative_sum",
+                    },
+                },
+                {
+                    "name": "built_surface_non_residential_mean",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "ghsl_ghs_built_s_r2023a",
+                        "config": "configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml",
+                        "variable": "built_surface_non_residential",
+                        "query": {
+                            "variable": "built_surface_non_residential",
+                            "aggregation_name": "built_surface_non_residential_mean",
+                        },
+                        "temporal": {
+                            "output_mode": "aggregate",
+                            "aggregations": {
+                                "custom": [
+                                    {
+                                        "name": "built_surface_non_residential_mean",
+                                        "form": "year_range_metric",
+                                        "variables": ["built_surface_non_residential"],
+                                        "years": [2010, 2020],
+                                        "metric": "mean",
+                                    }
+                                ]
+                            },
+                        },
+                        "source_resolution": "100m",
+                        "resampling": "conservative_sum",
+                    },
+                },
+            ],
+            "outputs": {"dataset_dir": "data/processed/merged_temporal_requirements"},
+        }
+
+        compiled = compile_run_config(cfg)
+        self.assertEqual(len(compiled["sources"]), 1)
+        source_entry = compiled["sources"][0]
+        self.assertEqual(
+            sorted(source_entry["select"]["variables"]),
+            ["built_surface", "built_surface_non_residential"],
+        )
+        custom = source_entry["select"]["temporal"]["aggregations"]["custom"]
+        self.assertEqual(len(custom), 2)
+        self.assertEqual(
+            sorted(source_entry["overrides"]["resampling"]["by_variable"]),
+            ["built_surface", "built_surface_non_residential"],
+        )
+
+    def test_variable_group_expansion_preserves_output_suppression(self):
+        source_cfg = expand_source_config(
+            load_yaml("configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml")
+        )
+        compiled = compile_source_config_for_run(
+            source_cfg,
+            {
+                "select": {
+                    "variables": [],
+                    "temporal": {
+                        "output_mode": "supplied_layers",
+                        "layers": {"years": [2018]},
+                    },
+                    "category_fractions": [
+                        {
+                            "variable": "clcplus_backbone",
+                            "name": "low_woody_fraction",
+                            "class_values": [5],
+                        }
+                    ],
+                }
+            },
+        )
+        expanded_again = expand_source_config(compiled)
+
+        self.assertTrue(expanded_again["variables"]["clcplus_backbone_2018"]["enabled"])
+        self.assertFalse(
+            expanded_again["variables"]["clcplus_backbone_2018"]["build_output_enabled"]
+        )
+        self.assertEqual(len(expanded_again["category_fractions"]), 1)
+
     def test_ghsl_resolution_labels_are_mapped_to_provider_tokens(self):
         cfg = expand_source_config(
             load_yaml("configs/sources/ghsl/ghsl_ghs_pop_r2023a.yaml")
@@ -1080,6 +1393,35 @@ class NewSourceIntegrationTests(unittest.TestCase):
             "derived_features require outputs.copy_rasters=true.",
             report["errors"],
         )
+
+    def test_download_only_feature_run_does_not_require_derived_output_contract(self):
+        cfg = {
+            "run": {
+                "name": "download_only_feature_run",
+                "project_config": "configs/project.yaml",
+                "stages": ["download"],
+            },
+            "features": [
+                {
+                    "name": "elevation",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "copernicus_dem_glo30",
+                        "config": "configs/sources/copernicus/copernicus_dem_glo30.yaml",
+                        "variable": "elevation",
+                    },
+                }
+            ],
+            "outputs": {
+                "dataset_dir": "data/processed/download_only_feature_run",
+                "copy_rasters": False,
+                "write_manifest": False,
+            },
+        }
+
+        report = validate_researcher_run_config(cfg)
+        self.assertTrue(report["ok"], report["errors"])
 
 
 if __name__ == "__main__":

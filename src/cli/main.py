@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "run_config",
-        help="Path to a run config YAML, e.g. configs/runs/pallars_worldclim_100m.yaml",
+        help="Path to a run config YAML, e.g. configs/runs/ursus_arctos_pyrenees_100m.yaml",
     )
 
     run_source_parser = subparsers.add_parser(

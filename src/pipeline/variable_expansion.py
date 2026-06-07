@@ -161,8 +161,13 @@ def _expand_groups_to_mapping(
                     isinstance(existing, dict)
                     and existing.get("generated_from_group") == group_name
                 ):
-                    if "enabled" in existing:
-                        item_cfg["enabled"] = existing["enabled"]
+                    for preserved_key in [
+                        "enabled",
+                        "build_output_enabled",
+                        "required",
+                    ]:
+                        if preserved_key in existing:
+                            item_cfg[preserved_key] = existing[preserved_key]
                     target[item_name] = item_cfg
                     continue
                 raise ValueError(

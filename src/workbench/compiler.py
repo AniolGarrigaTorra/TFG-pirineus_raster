@@ -364,6 +364,10 @@ def _compile_category_fractions(
         raise ConfigValidationError("select.category_fractions must be a list.")
 
     variables = cfg.get("variables", {}) or {}
+    requested_output_variables = {
+        str(item)
+        for item in _as_list(select_cfg.get("variables"))
+    }
     compiled: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
@@ -409,9 +413,13 @@ def _compile_category_fractions(
                 raise ConfigValidationError(f"Duplicate category fraction name: {name}")
             seen_names.add(name)
 
-            build_output_enabled = bool(variable_cfg.get("enabled", False))
+            output_requested = (
+                target_variable in requested_output_variables
+                or variable in requested_output_variables
+                or str(variable_cfg.get("generated_from_group", "")) in requested_output_variables
+            )
             variable_cfg["enabled"] = True
-            variable_cfg.setdefault("build_output_enabled", build_output_enabled)
+            variable_cfg["build_output_enabled"] = bool(output_requested)
 
             compiled.append(
                 {
@@ -1690,14 +1698,7 @@ def _source_input_select(input_cfg: dict[str, Any]) -> dict[str, Any]:
 
     category_fraction = input_cfg.get("category_fraction")
     if isinstance(category_fraction, dict):
-        select["variables"] = [
-            str(
-                category_fraction.get("source_variable")
-                or category_fraction.get("variable")
-                or input_cfg.get("variable")
-                or ""
-            )
-        ]
+        select["variables"] = []
         select["category_fractions"] = [deepcopy(category_fraction)]
     elif input_cfg.get("layer") is not None:
         select["layers"] = [str(input_cfg["layer"])]
@@ -1749,11 +1750,40 @@ def _source_input_overrides(input_cfg: dict[str, Any]) -> dict[str, Any] | None:
     return compact or None
 
 
+def _mergeable_temporal_key(temporal: Any) -> Any:
+    if not isinstance(temporal, dict):
+        return temporal
+    output_mode = temporal.get("output_mode")
+    key: dict[str, Any] = {"output_mode": output_mode}
+    if output_mode == "raw_slices":
+        for item in ["months", "years"]:
+            if item in temporal:
+                key[item] = deepcopy(temporal[item])
+    return key
+
+
 def _mergeable_select_key(select: dict[str, Any]) -> dict[str, Any]:
     key_select = deepcopy(select)
-    for key in ["variables", "indices", "layers", "category_fractions"]:
+    for key in ["variables", "indices", "layers", "category_fractions", "dimensions"]:
         key_select.pop(key, None)
+    if "temporal" in key_select:
+        key_select["temporal"] = _mergeable_temporal_key(key_select["temporal"])
     return key_select
+
+
+def _mergeable_overrides_key(overrides: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not overrides:
+        return None
+
+    key_overrides = deepcopy(overrides)
+    resampling = key_overrides.get("resampling")
+    if isinstance(resampling, dict):
+        for key in ["by_variable", "variables", "per_variable"]:
+            resampling.pop(key, None)
+        if not resampling:
+            key_overrides.pop("resampling", None)
+
+    return key_overrides or None
 
 
 def _merge_unique_list(existing: list[Any], incoming: list[Any]) -> list[Any]:
@@ -1767,12 +1797,187 @@ def _merge_unique_list(existing: list[Any], incoming: list[Any]) -> list[Any]:
     return result
 
 
+def _merge_dict_unique(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(existing)
+    for key, value in incoming.items():
+        if key not in result:
+            result[key] = deepcopy(value)
+            continue
+        if _canonical_json(result[key]) != _canonical_json(value):
+            raise ConfigValidationError(
+                f"Conflicting values for source requirement key {key!r}: "
+                f"{result[key]!r} vs {value!r}"
+            )
+    return result
+
+
+def _merge_dimension_select(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(existing)
+    for key, value in incoming.items():
+        result[key] = _merge_unique_list(_as_list(result.get(key)), _as_list(value))
+    return result
+
+
+def _merge_temporal_layers(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(existing)
+    for key, value in incoming.items():
+        if isinstance(value, bool):
+            result[key] = bool(result.get(key, False)) or value
+        elif isinstance(value, list):
+            result[key] = _merge_unique_list(_as_list(result.get(key)), value)
+        elif value is not None:
+            result.setdefault(key, deepcopy(value))
+    return result
+
+
+def _merge_temporal_aggregations(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    result = deepcopy(existing)
+    if "use" in incoming:
+        result["use"] = _merge_unique_list(
+            _as_list(result.get("use")),
+            _as_list(incoming.get("use")),
+        )
+
+    if "custom" in incoming:
+        by_name: dict[str, dict[str, Any]] = {}
+        unnamed_existing: list[Any] = []
+        for item in _as_list(result.get("custom")):
+            if isinstance(item, dict) and item.get("name"):
+                by_name[str(item["name"])] = deepcopy(item)
+            else:
+                unnamed_existing.append(deepcopy(item))
+
+        for item in _as_list(incoming.get("custom")):
+            if isinstance(item, dict) and item.get("name"):
+                name = str(item["name"])
+                previous = by_name.get(name)
+                if (
+                    previous is not None
+                    and _canonical_json(previous) != _canonical_json(item)
+                ):
+                    raise ConfigValidationError(
+                        f"Conflicting temporal aggregation named {name!r}."
+                    )
+                by_name[name] = deepcopy(item)
+            else:
+                unnamed_existing = _merge_unique_list(unnamed_existing, [item])
+
+        result["custom"] = unnamed_existing + list(by_name.values())
+    return result
+
+
+def _merge_temporal_select(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(existing)
+    existing_mode = result.get("output_mode")
+    incoming_mode = incoming.get("output_mode")
+    if existing_mode != incoming_mode:
+        raise ConfigValidationError(
+            f"Cannot merge temporal output modes {existing_mode!r} and {incoming_mode!r}."
+        )
+
+    mode = incoming_mode
+    if mode == "supplied_layers":
+        result["layers"] = _merge_temporal_layers(
+            result.get("layers", {}) or {},
+            incoming.get("layers", {}) or {},
+        )
+    elif mode in {"aggregate", "postprocess_aggregate"}:
+        result["aggregations"] = _merge_temporal_aggregations(
+            result.get("aggregations", {}) or {},
+            incoming.get("aggregations", {}) or {},
+        )
+    else:
+        for key, value in incoming.items():
+            if key not in result:
+                result[key] = deepcopy(value)
+            elif _canonical_json(result[key]) != _canonical_json(value):
+                raise ConfigValidationError(
+                    f"Cannot merge temporal selection key {key!r}: "
+                    f"{result[key]!r} vs {value!r}"
+                )
+    return result
+
+
 def _merge_source_select(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
     for key, value in incoming.items():
         if key in {"variables", "indices", "layers", "category_fractions"}:
             existing[key] = _merge_unique_list(_as_list(existing.get(key)), _as_list(value))
             continue
+        if key == "dimensions" and isinstance(value, dict):
+            existing[key] = _merge_dimension_select(existing.get(key, {}) or {}, value)
+            continue
+        if key == "temporal" and isinstance(value, dict):
+            existing[key] = _merge_temporal_select(existing.get(key, {}) or {}, value)
+            continue
         existing.setdefault(key, deepcopy(value))
+
+
+def _merge_resampling_overrides(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(existing)
+    for key, value in incoming.items():
+        if key in {"by_variable", "variables", "per_variable"} and isinstance(value, dict):
+            target = result.setdefault("by_variable", {})
+            for variable, method in value.items():
+                if variable in target and target[variable] != method:
+                    raise ConfigValidationError(
+                        f"Conflicting resampling for {variable!r}: "
+                        f"{target[variable]!r} vs {method!r}"
+                    )
+                target[variable] = method
+            continue
+        if key in result and _canonical_json(result[key]) != _canonical_json(value):
+            raise ConfigValidationError(
+                f"Conflicting resampling override {key!r}: {result[key]!r} vs {value!r}"
+            )
+        result[key] = deepcopy(value)
+    return result
+
+
+def _merge_source_overrides(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not existing:
+        return deepcopy(incoming) if incoming else None
+    if not incoming:
+        return deepcopy(existing)
+
+    result = deepcopy(existing)
+    for key, value in incoming.items():
+        if key == "resampling" and isinstance(value, dict):
+            result[key] = _merge_resampling_overrides(result.get(key, {}) or {}, value)
+        elif key in {"processing", "download"} and isinstance(value, dict):
+            result[key] = _merge_dict_unique(result.get(key, {}) or {}, value)
+        elif key not in result:
+            result[key] = deepcopy(value)
+        elif _canonical_json(result[key]) != _canonical_json(value):
+            raise ConfigValidationError(
+                f"Conflicting source override {key!r}: {result[key]!r} vs {value!r}"
+            )
+    return {key: value for key, value in result.items() if value not in [None, {}, []]} or None
+
+
+def _try_merge_source_requirement(
+    entry: dict[str, Any],
+    select: dict[str, Any],
+    overrides: dict[str, Any] | None,
+) -> bool:
+    try:
+        merged_select = deepcopy(entry["select"])
+        _merge_source_select(merged_select, select)
+        merged_overrides = _merge_source_overrides(entry.get("overrides"), overrides)
+    except ConfigValidationError:
+        return False
+
+    entry["select"] = merged_select
+    if merged_overrides:
+        entry["overrides"] = merged_overrides
+    else:
+        entry.pop("overrides", None)
+    return True
 
 
 def _source_requirement_alias(
@@ -1798,14 +2003,24 @@ def _source_requirement_alias(
     key_payload = {
         "config": str(config),
         "select": _mergeable_select_key(select),
-        "overrides": overrides,
+        "overrides": _mergeable_overrides_key(overrides),
         "stages": stages,
     }
     key = _canonical_json(key_payload)
     if key in source_key_to_alias:
         alias = source_key_to_alias[key]
-        _merge_source_select(source_alias_to_entry[alias]["select"], select)
-        return alias
+        if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides):
+            return alias
+
+        conflict_payload = {
+            **key_payload,
+            "overrides": overrides,
+        }
+        key = _canonical_json(conflict_payload)
+        if key in source_key_to_alias:
+            alias = source_key_to_alias[key]
+            if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides):
+                return alias
 
     base_alias = _sanitize_token(source_id)
     alias_counts[base_alias] = alias_counts.get(base_alias, 0) + 1
@@ -2091,12 +2306,21 @@ def _stages_need(stages: list[str], stage: str) -> bool:
     return stage in stages
 
 
+def _compiled_run_requests_build(compiled_run: dict[str, Any]) -> bool:
+    for source_entry in compiled_run.get("sources", []) or []:
+        if _stages_need(_source_stages(compiled_run, source_entry), "build"):
+            return True
+    return False
+
+
 def _validate_derived_runtime_contract(
     compiled_run: dict[str, Any],
     errors: list[str],
 ) -> None:
     derived = compiled_run.get("derived_features", []) or []
     if not derived:
+        return
+    if not _compiled_run_requests_build(compiled_run):
         return
 
     outputs = compiled_run.get("outputs", {}) or {}
@@ -2494,6 +2718,11 @@ def load_and_compile_run_config(
     return compile_run_config(cfg)
 
 
+class _NoAliasSafeDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
 def render_run_config_yaml(
     run_cfg: dict[str, Any],
     compile_groups: bool = True,
@@ -2507,8 +2736,9 @@ def render_run_config_yaml(
     ]:
         if key.startswith("_") or "features" in cfg:
             cfg.pop(key, None)
-    return yaml.safe_dump(
+    return yaml.dump(
         cfg,
+        Dumper=_NoAliasSafeDumper,
         sort_keys=False,
         allow_unicode=True,
         default_flow_style=False,

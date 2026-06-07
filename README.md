@@ -78,26 +78,26 @@ python -m src.validation.validate_grid \
 Run a complete dataset recipe:
 
 ```bash
-pirineus-raster run configs/runs/pallars_worldclim_full_100m.yaml
+pirineus-raster run configs/runs/ursus_arctos_pyrenees_100m.yaml
 ```
 
 Inspect the generated manifest:
 
 ```bash
-pirineus-raster inspect data_processed/datasets/pallars_worldclim_full_100m
+pirineus-raster inspect data_processed/datasets/ursus_arctos_pyrenees_100m
 ```
 
 Validate all rasters in a generated dataset:
 
 ```bash
-pirineus-raster validate-dataset data_processed/datasets/pallars_worldclim_full_100m
+pirineus-raster validate-dataset data_processed/datasets/ursus_arctos_pyrenees_100m
 ```
 
 Use strict metadata validation for newly regenerated datasets:
 
 ```bash
 pirineus-raster validate-dataset \
-  data_processed/datasets/pallars_worldclim_full_100m \
+  data_processed/datasets/ursus_arctos_pyrenees_100m \
   --strict-metadata
 ```
 
@@ -117,10 +117,10 @@ pirineus-raster catalog \
   --source-config configs/sources/worldclim/worldclim_cmip6_future.yaml
 
 pirineus-raster validate-config \
-  configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
+  configs/runs/ursus_arctos_pyrenees_100m.yaml
 
 pirineus-raster render-run \
-  configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
+  configs/runs/ursus_arctos_pyrenees_100m.yaml
 ```
 
 `validate-config` checks the effective source selections used by the runner. It
@@ -174,19 +174,40 @@ Run configs define the final dataset:
 - `run.clip_aoi_config`: optional larger clipping AOI.
 - `run.resolution_m`: final output resolution.
 - `run.crs`: optional output CRS override such as `EPSG:3035` or `EPSG:25831`.
-- `sources`: source configs and stages to execute.
-- `derived_features`: optional raster expressions from generated layers.
+- `features`: final dataset features requested by the user.
 - `outputs.dataset_dir`: packaged dataset output directory.
 
-Simplified run configs may also define source-level selections:
+The `features` list is the researcher-facing source of truth. Legacy run
+configs with top-level `sources` or `derived_features` are intentionally
+rejected by validation. The compiler expands final features into the internal
+source requirements and derived outputs needed by the runner, then the dataset
+manifest is pruned so only the final feature rasters remain visible.
 
-- `sources[].select.variables`: variables or indices to enable.
-- `sources[].select.layers`: vector layers to enable.
-- `sources[].select.dimensions`: selected GCMs, SSPs, periods or other dimensions.
-- `sources[].select.temporal`: temporal output mode and source-aware temporal
-  choices.
-- `sources[].overrides.resampling`: explicit per-variable resampling overrides.
-- `derived_feature_groups`: recipe-based derived features such as thermal range.
+Each final feature has:
+
+- `name`: stable output name used for the GeoTIFF filename.
+- `build_type`: one of `source_layer`, `recipe`, `masking`, `spatial` or
+  `expression`.
+- optional metadata such as `title`, `description`, `unit`,
+  `value_semantics` and `output_dtype`.
+- one or more inputs. Inputs can point to official source layers or to earlier
+  final features created in the same run.
+
+Official source inputs can define:
+
+- `source_id` and `config`: the provider/product source config.
+- `variable`, `layer` or `category_fraction`: the requested source output.
+- `dimensions`: selected non-temporal dimensions such as GCM, SSP, period,
+  season or product year, depending on the source.
+- `temporal`: source-aware temporal choices.
+- `source_resolution` and `resampling`: how the source should become the
+  project grid.
+
+Category fractions are the preferred way to turn categorical land-cover classes
+into target-cell proportions. They are computed before target-grid resampling,
+so `average` resampling gives a 0-1 coverage fraction at 100 m or any other
+target resolution. A class mask, by contrast, tests an already aligned raster
+and cannot recover sub-cell composition lost during categorical resampling.
 
 Temporal selections are explicit because sources do not all behave the same:
 
@@ -204,6 +225,11 @@ Temporal selections are explicit because sources do not all behave the same:
   aggregations.
 - HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
   are generated during the Copernicus download/postprocess stage.
+
+Feature-oriented configs may request multiple temporal aggregations for the
+same final feature family. Multi-input derived features only combine temporal
+outputs that share the same temporal label; non-temporal dimensions expand by
+cartesian product.
 
 Resampling is variable-aware. Source configs expose defaults per variable and
 the UI can override them for a run. Standard raster reprojection methods include
@@ -292,7 +318,7 @@ Reusable Slurm scripts live in `jobs/`.
 Example:
 
 ```bash
-sbatch jobs/run_raster_features.sh configs/runs/pallars_worldclim_full_100m.yaml
+sbatch jobs/run_raster_features.sh configs/runs/ursus_arctos_pyrenees_100m.yaml
 ```
 
 The job helpers switch to the repository directory, activate the conda

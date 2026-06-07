@@ -464,7 +464,12 @@ def run_dataset_pipeline(
             {"source_id": source_id, "stage": stage}
             for stage in stages
         )
-    if run_cfg.get("derived_features"):
+
+    should_run_derived = bool(run_cfg.get("derived_features")) and any(
+        task["stage"] == "build"
+        for task in planned_tasks
+    )
+    if should_run_derived:
         planned_tasks.append({"source_id": "derived", "stage": "derived"})
 
     stage_totals: dict[str, int] = {}
@@ -627,7 +632,7 @@ def run_dataset_pipeline(
 
         derived_paths: list[Path] = []
 
-        if run_cfg.get("derived_features"):
+        if should_run_derived:
             if run_aoi_cfg is None:
                 raise ValueError(
                     "derived_features require run.aoi_config to be defined."

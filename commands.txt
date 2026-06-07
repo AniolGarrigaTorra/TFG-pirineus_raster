@@ -11,7 +11,7 @@ python -m src.validation.validate_grid \
   --resolution 100
 
 2.1: run config
-pirineus-raster run configs/runs/pallars_worldclim_100m.yaml
+pirineus-raster run configs/runs/ursus_arctos_pyrenees_100m.yaml
 
 2.2: debugging
 pirineus-raster run-source \
@@ -19,15 +19,15 @@ pirineus-raster run-source \
   --stage build
 
 3: Inspect the dataset
-pirineus-raster inspect data_processed/datasets/pallars_worldclim_100m/
+pirineus-raster inspect data_processed/datasets/ursus_arctos_pyrenees_100m/
 
 4: Validate the dataset
-pirineus-raster validate-dataset data_processed/datasets/pallars_worldclim_100m/
+pirineus-raster validate-dataset data_processed/datasets/ursus_arctos_pyrenees_100m/
 
 5: Config workbench CLI
 pirineus-raster catalog --source-config configs/sources/worldclim/worldclim_cmip6_future.yaml
-pirineus-raster validate-config configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
-pirineus-raster render-run configs/runs/pallars_worldclim_cmip6_simplified_100m.yaml
+pirineus-raster validate-config configs/runs/ursus_arctos_pyrenees_100m.yaml
+pirineus-raster render-run configs/runs/ursus_arctos_pyrenees_100m.yaml
 
 6: React workbench
 pirineus-raster serve-config-api --host 127.0.0.1 --port 8765
@@ -38,7 +38,7 @@ npm run dev
 
 HPC JOBS:
 
-sbatch jobs/run_raster_features.sh configs/runs/pallars_worldclim_full_100m.yaml
+sbatch jobs/run_raster_features.sh configs/runs/ursus_arctos_pyrenees_100m.yaml
 
 squeue -u $USER
 
