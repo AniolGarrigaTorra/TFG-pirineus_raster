@@ -316,6 +316,7 @@ def build_worldclim_static_features(
             output_aoi_name=output_aoi_name,
             target_resolution_m=target_resolution_m,
             resampling_method_name=resampling_name,
+            source_input_path=clipped_path,
         )
 
         written_path = write_feature_raster(
@@ -528,6 +529,7 @@ def _write_monthly_raw_slices(
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=resampling_name,
             )
+            metadata["source_clipped_path"] = str(clipped_path)
             metadata.update(
                 {
                     "temporal_axis": "month",
@@ -671,6 +673,18 @@ def build_worldclim_monthly_features(
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=resampling_name,
             )
+            metadata["source_clipped_paths"] = [
+                str(
+                    _get_monthly_clipped_path(
+                        clipped_dir=clipped_dir,
+                        source_cfg=source_cfg,
+                        clip_aoi_name=clip_aoi_name,
+                        variable=variable,
+                        month=month,
+                    )
+                )
+                for month in months
+            ]
 
             written_path = write_feature_raster(
                 output_path=output_path,
@@ -829,6 +843,7 @@ def _write_time_series_raw_slices(
                     output_aoi_name=output_aoi_name,
                     target_resolution_m=target_resolution_m,
                     resampling_method_name=resampling_name,
+                    source_input_path=clipped_path,
                 )
                 metadata.update(
                     {
@@ -996,6 +1011,11 @@ def build_worldclim_monthly_time_series_features(
                     "year_start": min(years),
                     "year_end": max(years),
                     "temporal_axis": "year_month",
+                    "source_clipped_paths": [
+                        str(spec_factory(year, month).path)
+                        for year in years
+                        for month in months
+                    ],
                 }
             )
 
@@ -1242,6 +1262,7 @@ def _write_future_raw_slices(
                 output_aoi_name=output_aoi_name,
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=resampling_name,
+                source_input_path=clipped_path,
             )
             metadata.update(
                 {

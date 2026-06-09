@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { ReactNode } from "react";
-import { createAoiConfig, createProjectGrid, fetchCatalog, renderRunConfig, saveRunConfig, validateRunConfig } from "./api";
+import { createAoiConfig, createProjectGrid, deleteRunConfig, fetchCatalog, fetchRunConfig, fetchRunConfigs, renderRunConfig, saveRunConfig, validateRunConfig } from "./api";
 import type {
   AoiCatalog,
   AoiBounds,
@@ -13,6 +13,7 @@ import type {
   DerivedFeatureConfig,
   DerivedInputQuery,
   FeatureSourceInput,
+  RunProjectSummary,
   SourceCatalog,
   SourceSelection,
   TemporalSelection,
@@ -24,7 +25,7 @@ import { renderYaml } from "./yaml";
 import "./App.css";
 
 const tabs = ["Project", "Sources", "Variables", "Temporal", "Derived", "Review"];
-type StartMode = "menu" | "project" | "aoi" | "sources" | "tutorial";
+type StartMode = "menu" | "project" | "aoi" | "sources" | "projects";
 type FeatureTemporalMode = "static" | "supplied_layers" | "aggregate" | "raw_slices" | "postprocess_aggregate";
 type FeaturePickerStep = "origin" | "provider" | "source" | "variable" | "category" | "dimensions" | "temporal" | "resampling";
 type InputOutputOption = {
@@ -35,6 +36,9 @@ type InputOutputOption = {
   temporalKey?: string;
   dimensionKey?: string;
   variable?: VariableCatalog;
+  valueSemantics?: string;
+  unit?: string;
+  outputDtype?: string;
 };
 type InputBundle = {
   label: string;
@@ -106,6 +110,14 @@ function WorkbenchShell({ backgroundUrl, children }: { backgroundUrl: string; ch
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function optionalNumberInputValue(value: number | undefined) {
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+function parseOptionalNumberInput(value: string) {
+  return value.trim() === "" ? Number.NaN : Number(value);
 }
 
 function lonLatToPixel(lon: number, lat: number, zoom: number) {
@@ -449,6 +461,138 @@ function sanitizeToken(value: string | number) {
     .replace(/^_+|_+$/g, "");
 }
 
+function sanitizeAggregationName(value: string | number) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "");
+}
+
+function parseCoordinate(value: string | number) {
+  if (typeof value === "number") return value;
+  const normalised = value.trim().replace(",", ".");
+  return normalised ? Number(normalised) : Number.NaN;
+}
+
+function sanitizeCoordinateInput(value: string) {
+  let result = "";
+  let hasPoint = false;
+  for (const char of value) {
+    if (char >= "0" && char <= "9") {
+      result += char;
+      continue;
+    }
+    if ((char === "-" || char === "+") && result.length === 0) {
+      result += char;
+      continue;
+    }
+    if (char === "." && !hasPoint) {
+      result += char;
+      hasPoint = true;
+    }
+  }
+  return result;
+}
+
+const EXPRESSION_FUNCTION_NAMES = ["abs", "sqrt", "log", "log10", "exp", "minimum", "maximum", "where", "clip", "isfinite"];
+const EXPRESSION_CONSTANT_NAMES = ["nan"];
+const EXPRESSION_FUNCTION_SIGNATURES: Record<string, { min: number; max: number; label: string }> = {
+  abs: { min: 1, max: 1, label: "abs(x)" },
+  sqrt: { min: 1, max: 1, label: "sqrt(x)" },
+  log: { min: 1, max: 1, label: "log(x)" },
+  log10: { min: 1, max: 1, label: "log10(x)" },
+  exp: { min: 1, max: 1, label: "exp(x)" },
+  minimum: { min: 2, max: 2, label: "minimum(x, y)" },
+  maximum: { min: 2, max: 2, label: "maximum(x, y)" },
+  where: { min: 3, max: 3, label: "where(condition, a, b)" },
+  clip: { min: 3, max: 3, label: "clip(x, min, max)" },
+  isfinite: { min: 1, max: 1, label: "isfinite(x)" }
+};
+const EXPRESSION_KEYPAD_TOKENS = [
+  "where(", "minimum(", "maximum(", "clip(", "isfinite(", "abs(", "sqrt(", "log(", "log10(", "exp(",
+  "nan", "x", "y", "z", "+", "-", "*", "/", "**", ">", ">=", "<", "<=", "==", "!=", "and", "or", "not", "(", ")", ","
+];
+
+function findMatchingParenthesis(text: string, openIndex: number) {
+  let depth = 0;
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (depth === 0) return index;
+    if (depth < 0) return -1;
+  }
+  return -1;
+}
+
+function splitTopLevelExpressionArgs(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return { args: [] as string[], hasEmptyArgument: false };
+
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  let hasEmptyArgument = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (char === "," && depth === 0) {
+      const arg = text.slice(start, index).trim();
+      hasEmptyArgument = hasEmptyArgument || arg.length === 0;
+      args.push(arg);
+      start = index + 1;
+    }
+  }
+
+  const finalArg = text.slice(start).trim();
+  hasEmptyArgument = hasEmptyArgument || finalArg.length === 0;
+  args.push(finalArg);
+  return { args, hasEmptyArgument };
+}
+
+function validateExpressionFunctionCalls(text: string) {
+  const errors: string[] = [];
+  const identifiers = text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g);
+
+  for (const match of identifiers) {
+    const name = match[0];
+    const signature = EXPRESSION_FUNCTION_SIGNATURES[name];
+    if (!signature) continue;
+
+    let cursor = (match.index ?? 0) + name.length;
+    while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+
+    if (text[cursor] !== "(") {
+      errors.push(`Function ${name} must be called as ${signature.label}.`);
+      continue;
+    }
+
+    const closeIndex = findMatchingParenthesis(text, cursor);
+    if (closeIndex < 0) {
+      errors.push(`Function ${name} is missing a closing parenthesis.`);
+      continue;
+    }
+
+    const { args, hasEmptyArgument } = splitTopLevelExpressionArgs(text.slice(cursor + 1, closeIndex));
+    if (hasEmptyArgument) {
+      errors.push(`Function ${name} has an empty argument. Expected ${signature.label}.`);
+      continue;
+    }
+
+    if (args.length < signature.min || args.length > signature.max) {
+      const expected = signature.min === signature.max
+        ? `${signature.min} argument${signature.min === 1 ? "" : "s"}`
+        : `${signature.min}-${signature.max} arguments`;
+      errors.push(`Function ${name} expects ${expected}; got ${args.length}. Use ${signature.label}.`);
+    }
+  }
+
+  return [...new Set(errors)];
+}
+
 function humanizeId(value: string) {
   const acronyms: Record<string, string> = {
     cmip6: "CMIP6",
@@ -509,6 +653,206 @@ function InfoTip({ text }: { text: string }) {
       <span role="tooltip">{text}</span>
     </span>
   );
+}
+
+type ValueSemanticInfo = {
+  label: string;
+  group: "Categorical" | "Numeric" | "Special";
+  description: string;
+  examples: string[];
+  resampling: string;
+  caveat: string;
+};
+
+const VALUE_SEMANTIC_INFO: Record<string, ValueSemanticInfo> = {
+  categorical: {
+    label: "Categorical class",
+    group: "Categorical",
+    description: "Nominal class codes where numbers are labels, not quantities.",
+    examples: ["land-cover class", "geology code", "forest type"],
+    resampling: "Use nearest or mode for the original class raster. Use category fractions with average for coverage ratios.",
+    caveat: "Do not calculate means over class codes."
+  },
+  ordinal: {
+    label: "Ordered class",
+    group: "Categorical",
+    description: "Ranked classes where order matters but numeric distance between codes is not guaranteed.",
+    examples: ["low/medium/high", "settlement degree class", "risk class"],
+    resampling: "Use nearest or mode unless the source explicitly defines numeric meaning.",
+    caveat: "Treat arithmetic with care; class 4 is not necessarily twice class 2."
+  },
+  binary: {
+    label: "Binary mask 0/1",
+    group: "Categorical",
+    description: "Presence/absence raster where 1 means the condition is true and 0 means false.",
+    examples: ["building presence", "road mask", "threshold mask"],
+    resampling: "Use nearest/mode to keep a mask; use average when you intentionally want proportion of presence.",
+    caveat: "Averaging a binary mask turns it into a fraction, not another binary mask."
+  },
+  intensive: {
+    label: "Continuous local value",
+    group: "Numeric",
+    description: "A numeric value measured at a location or cell that is not a total over the cell area.",
+    examples: ["elevation", "temperature", "slope", "distance", "biomass Mg/ha"],
+    resampling: "Use bilinear, cubic or average depending on smoothness and source meaning.",
+    caveat: "Changing resolution does not create extra source precision."
+  },
+  intensive_depth: {
+    label: "Depth / accumulated amount",
+    group: "Numeric",
+    description: "A depth-like accumulation over an area, usually in mm, interpreted as a field value rather than a per-cell total.",
+    examples: ["precipitation mm", "PET mm", "water availability mm"],
+    resampling: "Use average/bilinear as an intensive depth field; do not use conservative_sum for mm depth.",
+    caveat: "A 100 m precipitation cell value is still mm, not total litres in that cell."
+  },
+  percentage: {
+    label: "Percentage 0-100",
+    group: "Numeric",
+    description: "A numeric percentage where 0 means none and 100 means full coverage or probability.",
+    examples: ["tree cover density", "imperviousness", "snow fraction percent"],
+    resampling: "Use average for aggregation to a coarser target grid.",
+    caveat: "Keep the 0-100 scale distinct from fractions on a 0-1 scale."
+  },
+  fraction: {
+    label: "Fraction 0-1",
+    group: "Numeric",
+    description: "A proportion or coverage ratio where values normally range from 0 to 1.",
+    examples: ["broadleaf cover fraction", "grassland fraction", "valid snow ratio"],
+    resampling: "Use average for coverage ratios and category fractions.",
+    caveat: "0.35 means 35%, but the stored value is 0.35, not 35."
+  },
+  ratio: {
+    label: "Ratio",
+    group: "Numeric",
+    description: "A unitless numeric ratio that is not necessarily limited to the 0-1 interval.",
+    examples: ["aridity index", "normalised pressure ratio", "x/y derived index"],
+    resampling: "Use average or bilinear only when the ratio behaves as a continuous field.",
+    caveat: "A ratio is not always a fraction; values can be above 1."
+  },
+  extensive: {
+    label: "Cell total / extensive",
+    group: "Numeric",
+    description: "A quantity whose value is a total within the source cell and depends on cell area.",
+    examples: ["built-up m2 per cell", "total area per cell"],
+    resampling: "Use conservative_sum/extensive_sum when changing grid size.",
+    caveat: "Average resampling can corrupt totals when cell size changes."
+  },
+  count: {
+    label: "Count",
+    group: "Numeric",
+    description: "A discrete count associated with a cell or time period.",
+    examples: ["population count", "snow days", "valid observations"],
+    resampling: "Use conservative_sum for spatial counts when totals must be conserved; temporal counts can be summed or averaged intentionally.",
+    caveat: "Counts may become float after resampling because cells overlap."
+  },
+  circular: {
+    label: "Circular angle",
+    group: "Special",
+    description: "Angular values where 0 and 360 degrees are neighbours.",
+    examples: ["aspect", "wind direction", "orientation"],
+    resampling: "Use specialist circular handling where possible; avoid naive averages across the 0/360 boundary.",
+    caveat: "Mean of 359 and 1 should be 0, not 180."
+  }
+};
+
+function semanticInfo(value?: string): ValueSemanticInfo {
+  if (!value) return VALUE_SEMANTIC_INFO.intensive;
+  return VALUE_SEMANTIC_INFO[value] ?? {
+    label: humanizeId(value),
+    group: "Special",
+    description: "Project-specific value semantics.",
+    examples: [],
+    resampling: "Check the source metadata before choosing resampling.",
+    caveat: "This semantics is not part of the standard Pirineus Raster list."
+  };
+}
+
+function semanticLabel(value?: string) {
+  const code = value ?? "intensive";
+  return `${semanticInfo(code).label} (${code})`;
+}
+
+function semanticHelpText(value?: string) {
+  const info = semanticInfo(value);
+  const examples = info.examples.length > 0 ? ` Examples: ${info.examples.join(", ")}.` : "";
+  return `${info.description}${examples} Recommended resampling: ${info.resampling} ${info.caveat}`;
+}
+
+function normalizeValueSemanticsCode(value?: string | null) {
+  if (!value) return undefined;
+  const text = String(value).trim();
+  const aliases: Record<string, string> = {
+    continuous: "intensive",
+    numeric: "intensive",
+    float: "intensive",
+    float32: "intensive",
+    float64: "intensive",
+    integer: "count",
+    int: "count",
+    boolean: "binary",
+    bool: "binary",
+    class: "categorical",
+    classes: "categorical",
+    proportion: "fraction",
+    coverage_fraction: "fraction"
+  };
+  return aliases[text.toLowerCase()] ?? text;
+}
+
+function sourceOutputValueSemantics(variable?: VariableCatalog, categoryFraction?: CategoryFractionSelection) {
+  if (categoryFraction) return "fraction";
+  return normalizeValueSemanticsCode(variable?.value_semantics ?? variable?.data_type) ?? "intensive";
+}
+
+function sourceOutputUnit(variable?: VariableCatalog, categoryFraction?: CategoryFractionSelection) {
+  if (categoryFraction) return "fraction";
+  return variable?.unit ?? undefined;
+}
+
+function defaultOutputDtypeForSemantics(value?: string, buildType?: string, recipe?: string) {
+  if (buildType === "masking" && recipe !== "reclassification") return "uint8";
+  if (value === "binary") return "uint8";
+  if (value === "categorical" || value === "ordinal") return "int32";
+  return "float32";
+}
+
+function inferExpressionValueSemantics(expression: string, inputSemantics: Record<string, string | undefined>) {
+  const compact = expression.replace(/\s+/g, "");
+  if (compact === "x") return inputSemantics.x;
+  if (compact.includes("/") || /\blog10?\(/.test(compact)) return "ratio";
+  if (/[<>]=?|==|!=/.test(compact)) {
+    return compact.startsWith("where(") ? inputSemantics.x ?? "intensive" : "binary";
+  }
+  if (/[+\-*]/.test(compact)) {
+    const values = Object.values(inputSemantics).filter(Boolean);
+    if (values.length > 0 && values.every((value) => value === "percentage")) return "percentage";
+    if (values.length > 0 && values.every((value) => value === "fraction" || value === "binary")) return "fraction";
+    if (values.length > 0 && values.every((value) => value === "count")) return "count";
+    return "intensive";
+  }
+  return inputSemantics.x;
+}
+
+function inferExpressionUnit(expression: string, inputUnits: Record<string, string | undefined>) {
+  const compact = expression.replace(/\s+/g, "");
+  const referenced = ["x", "y", "z"].filter((alias) => new RegExp(`\\b${alias}\\b`).test(compact));
+  const units = referenced.map((alias) => inputUnits[alias]).filter(Boolean) as string[];
+  const uniqueUnits = [...new Set(units)];
+  if (compact === "x") return inputUnits.x;
+  if (compact.includes("/") || /\blog10?\(|\bexp\(/.test(compact)) return "ratio";
+  if (/[<>]=?|==|!=/.test(compact)) return "binary";
+  if (/^[a-z_]+\(x\)$/i.test(compact) && !compact.startsWith("log")) return inputUnits.x;
+  if (/[+-]/.test(compact) && uniqueUnits.length === 1) return uniqueUnits[0];
+  return undefined;
+}
+
+function featureOutputMetadata(feature: DatasetFeatureConfig, outputName: string) {
+  const output = feature.outputs?.find((item) => item.name === outputName);
+  return {
+    valueSemantics: normalizeValueSemanticsCode(output?.value_semantics ?? feature.value_semantics),
+    unit: output?.unit ?? feature.unit,
+    outputDtype: output?.output_dtype ?? feature.output_dtype
+  };
 }
 
 function providerDisplayName(source: SourceCatalog) {
@@ -706,22 +1050,34 @@ function aggregationDraftIsComplete(
 ) {
   if (aggregation.name.trim().length === 0) return false;
   const months = aggregation.months;
-  if (months && (months[0] < 1 || months[1] > 12 || months[0] > months[1])) return false;
+  if (months && (
+    !Number.isFinite(months[0]) ||
+    !Number.isFinite(months[1]) ||
+    months[0] < 1 ||
+    months[1] > 12 ||
+    months[0] > months[1]
+  )) return false;
   const years = aggregation.years;
   if (years) {
-    if (years[0] > years[1]) return false;
+    if (!Number.isFinite(years[0]) || !Number.isFinite(years[1]) || years[0] > years[1]) return false;
     const bounds = effectiveAggregationYearBounds(source, dimensions);
     if (bounds && (years[0] < bounds[0] || years[1] > bounds[1])) return false;
   }
   return true;
 }
 
+function sourceVariableBaseName(variable: VariableCatalog) {
+  const generatedFrom = variable.generated_from?.replace(/^variable_groups\./, "");
+  return generatedFrom || variable.name.replace(/_\d{4}$/, "");
+}
+
 function categoryFractionConfig(variable: VariableCatalog, classItem: { value?: string | number; values?: Array<string | number>; name?: string; label?: string }) {
   const classValues = categoryClassValues(classItem);
   const classToken = categoryClassToken(classItem);
+  const baseVariable = sourceVariableBaseName(variable);
   return {
-    variable: variable.generated_from || variable.name.replace(/_\d{4}$/, ""),
-    name: `${sanitizeToken(variable.generated_from || variable.name.replace(/_\d{4}$/, ""))}_${classToken}_fraction`,
+    variable: baseVariable,
+    name: `${sanitizeToken(baseVariable)}_${classToken}_fraction`,
     class_values: classValues,
     label: classItem.label || classItem.name || classToken
   };
@@ -986,6 +1342,9 @@ function buildSourceLayerOutputs({
           suffix,
           temporal_key: String(year),
           dimension_key: context.suffix,
+          unit: sourceOutputUnit(variable, categoryFraction),
+          value_semantics: sourceOutputValueSemantics(variable, categoryFraction),
+          output_dtype: defaultOutputDtypeForSemantics(sourceOutputValueSemantics(variable, categoryFraction), "source_layer"),
           source: sourceInputForOutput({
             source,
             variable,
@@ -1016,6 +1375,9 @@ function buildSourceLayerOutputs({
           suffix,
           temporal_key: token.key,
           dimension_key: context.suffix,
+          unit: sourceOutputUnit(variable, categoryFraction),
+          value_semantics: sourceOutputValueSemantics(variable, categoryFraction),
+          output_dtype: defaultOutputDtypeForSemantics(sourceOutputValueSemantics(variable, categoryFraction), "source_layer"),
           source: sourceInputForOutput({
             source,
             variable,
@@ -1058,6 +1420,9 @@ function buildSourceLayerOutputs({
             suffix,
             temporal_key: rawYear ? `${rawYear}-${monthToken}` : `m${monthToken}`,
             dimension_key: context.suffix,
+            unit: sourceOutputUnit(variable, categoryFraction),
+            value_semantics: sourceOutputValueSemantics(variable, categoryFraction),
+            output_dtype: defaultOutputDtypeForSemantics(sourceOutputValueSemantics(variable, categoryFraction), "source_layer"),
             source: sourceInputForOutput({
               source,
               variable,
@@ -1094,6 +1459,9 @@ function buildSourceLayerOutputs({
         suffix,
         temporal_key: aggregation.name,
         dimension_key: context.suffix,
+        unit: sourceOutputUnit(variable, categoryFraction),
+        value_semantics: sourceOutputValueSemantics(variable, categoryFraction),
+        output_dtype: defaultOutputDtypeForSemantics(sourceOutputValueSemantics(variable, categoryFraction), "source_layer"),
         source: sourceInputForOutput({
           source,
           variable,
@@ -1118,6 +1486,9 @@ function buildSourceLayerOutputs({
       name: suffix ? `${featureName}_${sanitizeToken(suffix)}` : sanitizeToken(featureName),
       suffix,
       dimension_key: context.suffix,
+      unit: sourceOutputUnit(variable, categoryFraction),
+      value_semantics: sourceOutputValueSemantics(variable, categoryFraction),
+      output_dtype: defaultOutputDtypeForSemantics(sourceOutputValueSemantics(variable, categoryFraction), "source_layer"),
       source: sourceInputForOutput({
         source,
         variable,
@@ -1532,6 +1903,29 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  function loadRunIntoProject(runConfigData: unknown) {
+    const cfg = runConfigData && typeof runConfigData === "object" ? runConfigData as Record<string, unknown> : {};
+    const run = cfg.run && typeof cfg.run === "object" ? cfg.run as Record<string, unknown> : {};
+    const outputs = cfg.outputs && typeof cfg.outputs === "object" ? cfg.outputs as Record<string, unknown> : {};
+    const features = Array.isArray(cfg.features) ? cfg.features as DatasetFeatureConfig[] : [];
+
+    setRunName(String(run.name ?? "pirineus_dataset_100m"));
+    setDescription(String(run.description ?? "Workbench-generated Pirineus Raster dataset."));
+    setProjectConfig(String(run.project_config ?? projectConfig));
+    setTargetCrs(String(run.crs ?? targetCrs));
+    setAoiPath(String(run.aoi_config ?? aoiPath));
+    setResolution(Number(run.resolution_m ?? resolution));
+    setStages(Array.isArray(run.stages) ? run.stages.map(String) : ["all"]);
+    setDatasetDir(String(outputs.dataset_dir ?? datasetDir));
+    setDatasetFeatures(features);
+    setValidation(null);
+    setServerYaml("");
+    setApiError(null);
+    setSaveStatus(null);
+    setProjectStep("setup");
+    setStartMode("project");
+  }
+
   function removePlannedLayer(layer: PlannedLayer) {
     const dependents = derivedFeatures
       .filter((feature) => derivedFeatureDependsOnLayer(feature, layer))
@@ -1655,12 +2049,28 @@ function App() {
     );
   }
 
+  if (startMode === "projects") {
+    return (
+      <WorkbenchShell backgroundUrl={backgroundUrl}>
+        <header className="topbar">
+          <div>
+            <h1>My Projects</h1>
+            <p>Open, inspect, edit or remove saved run configs from configs/runs.</p>
+          </div>
+          <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
+        </header>
+        <MyProjectsPanel onEdit={loadRunIntoProject} />
+        <BackgroundCredit />
+      </WorkbenchShell>
+    );
+  }
+
   if (startMode === "sources") {
     return (
       <WorkbenchShell backgroundUrl={backgroundUrl}>
         <header className="topbar">
           <div>
-            <h1>Sources Information</h1>
+            <h1>Workbench Guide</h1>
             <p>{catalog?.sources.length ?? 0} source configs available locally.</p>
           </div>
           <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
@@ -1670,22 +2080,6 @@ function App() {
             {catalogLoading ? "Loading project catalog..." : `Config API is not available: ${catalogError}`}
           </section>
         )}
-        <BackgroundCredit />
-      </WorkbenchShell>
-    );
-  }
-
-  if (startMode === "tutorial") {
-    return (
-      <WorkbenchShell backgroundUrl={backgroundUrl}>
-        <header className="topbar">
-          <div>
-            <h1>Workbench Guide</h1>
-            <p>How to build final features, choose resampling and avoid common traps.</p>
-          </div>
-          <button className="ghost" onClick={() => setStartMode("menu")}>Back</button>
-        </header>
-        <TutorialPanel />
         <BackgroundCredit />
       </WorkbenchShell>
     );
@@ -1810,14 +2204,164 @@ function StartModePanel({ setStartMode }: { setStartMode: (mode: StartMode) => v
         <strong>New AOI</strong>
         <small>Create a new area-of-interest config and grid.</small>
       </button>
-      <button className="start-mode-card" onClick={() => setStartMode("sources")}>
-        <strong>Sources information</strong>
-        <small>Browse available sources, sub-sources and variables.</small>
+      <button className="start-mode-card" onClick={() => setStartMode("projects")}>
+        <strong>My projects</strong>
+        <small>Open, validate, edit or remove saved run YAMLs from configs/runs.</small>
       </button>
-      <button className="start-mode-card tutorial-entry-card" onClick={() => setStartMode("tutorial")}>
-        <strong>How the workbench works</strong>
-        <small>Read the practical guide before building a dataset: final features, temporal choices, masks, category fractions, resampling and examples.</small>
+      <button className="start-mode-card tutorial-entry-card" onClick={() => setStartMode("sources")}>
+        <strong>Workbench guide</strong>
+        <small>Search the complete guide: concepts, tools, examples, official sources and technical reference.</small>
       </button>
+    </main>
+  );
+}
+
+function MyProjectsPanel({ onEdit }: { onEdit: (runConfig: unknown) => void }) {
+  const [runs, setRuns] = useState<RunProjectSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [busyPath, setBusyPath] = useState<string | null>(null);
+
+  async function refreshRuns() {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchRunConfigs();
+      setRuns(result.runs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshRuns();
+  }, []);
+
+  async function editRun(path: string) {
+    setBusyPath(path);
+    setError(null);
+    try {
+      const detail = await fetchRunConfig(path);
+      onEdit(detail.run_config);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
+  async function removeRun(path: string) {
+    const confirmed = window.confirm(`Delete ${path}? This removes the YAML from configs/runs.`);
+    if (!confirmed) return;
+    setBusyPath(path);
+    setError(null);
+    try {
+      await deleteRunConfig(path);
+      setRuns((current) => current.filter((run) => run.path !== path));
+      if (expandedPath === path) setExpandedPath(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
+  return (
+    <main className="workspace my-projects-workspace">
+      <section className="panel sources-overview-panel">
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">configs/runs</span>
+            <h2>Saved run projects</h2>
+            <p className="builder-copy">
+              These are the dataset recipes saved in the repository. Open details to inspect final features,
+              validation messages and source requirements, or edit to continue from the same YAML.
+            </p>
+          </div>
+          <button className="ghost" onClick={refreshRuns} disabled={loading}>Refresh</button>
+        </div>
+        {error && <div className="notice error">{error}</div>}
+        {loading && <div className="notice info">Loading saved run configs...</div>}
+        {!loading && runs.length === 0 && <div className="empty-state">No run configs found under configs/runs.</div>}
+      </section>
+
+      <section className="project-card-list">
+        {runs.map((run) => {
+          const expanded = expandedPath === run.path;
+          return (
+            <article key={run.path} className={`panel project-run-card ${run.ok ? "" : "has-errors"}`}>
+              <div className="project-run-main">
+                <div>
+                  <span className={`status-dot ${run.ok ? "good" : "bad"}`}>{run.ok ? "valid" : "needs attention"}</span>
+                  <h3>{run.name}</h3>
+                  <p>{run.description || "No description"}</p>
+                  <div className="project-run-meta">
+                    <span>{run.path}</span>
+                    <span>{run.crs || "CRS unknown"}</span>
+                    <span>{run.resolution_m ? `${run.resolution_m} m` : "resolution unknown"}</span>
+                    <span>{run.feature_count} feature{run.feature_count === 1 ? "" : "s"}</span>
+                    <span>{run.estimated_layers} estimated layer{run.estimated_layers === 1 ? "" : "s"}</span>
+                  </div>
+                </div>
+                <div className="button-row">
+                  <button className="ghost" onClick={() => setExpandedPath(expanded ? null : run.path)}>
+                    {expanded ? "Hide details" : "View details"}
+                  </button>
+                  <button className="primary" disabled={busyPath === run.path} onClick={() => editRun(run.path)}>
+                    Edit
+                  </button>
+                  <button className="ghost danger" disabled={busyPath === run.path} onClick={() => removeRun(run.path)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+              {expanded && (
+                <div className="project-run-details">
+                  {(run.errors ?? []).map((item) => <div className="notice error compact-notice" key={item}>{item}</div>)}
+                  {(run.warnings ?? []).map((item) => <div className="notice info compact-notice" key={item}>{item}</div>)}
+                  <div className="project-run-detail-grid">
+                    <div>
+                      <h4>Final features</h4>
+                      <div className="compact-list">
+                        {run.features.map((feature) => (
+                          <div className="aggregation-chip" key={`${run.path}-${feature.name}`}>
+                            <span>
+                              <strong>{feature.title || feature.name}</strong>
+                              <small>{feature.name} · {feature.build_type} · {feature.output_count} output{feature.output_count === 1 ? "" : "s"}</small>
+                            </span>
+                          </div>
+                        ))}
+                        {run.features.length === 0 && <div className="empty-state">No feature-oriented outputs found.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <h4>Source requirements</h4>
+                      <div className="compact-list">
+                        {(run.sources ?? []).map((source) => (
+                          <div className="aggregation-chip" key={`${run.path}-${source.id}`}>
+                            <span>
+                              <strong>{source.id}</strong>
+                              <small>
+                                {source.estimated_layers} layer{source.estimated_layers === 1 ? "" : "s"}
+                                {source.temporal_output_mode ? ` · ${source.temporal_output_mode}` : ""}
+                                {source.used_by_features?.length ? ` · used by ${source.used_by_features.join(", ")}` : ""}
+                              </small>
+                            </span>
+                          </div>
+                        ))}
+                        {(run.sources ?? []).length === 0 && <div className="empty-state">No compiled source summary available.</div>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </section>
     </main>
   );
 }
@@ -2381,12 +2925,14 @@ function AoiBuilderPanel({
   });
   const [aoiStatus, setAoiStatus] = useState<string | null>(null);
   const [gridStatus, setGridStatus] = useState<string | null>(null);
+  const [createdAoiPath, setCreatedAoiPath] = useState<string | null>(null);
+  const [crsConversionStatus, setCrsConversionStatus] = useState<string | null>(null);
   const normalizedAoiCrs = normalizeCrsCode(aoiForm.crs);
   const bounds = {
-    xmin: Number(aoiForm.xmin),
-    xmax: Number(aoiForm.xmax),
-    ymin: Number(aoiForm.ymin),
-    ymax: Number(aoiForm.ymax)
+    xmin: parseCoordinate(aoiForm.xmin),
+    xmax: parseCoordinate(aoiForm.xmax),
+    ymin: parseCoordinate(aoiForm.ymin),
+    ymax: parseCoordinate(aoiForm.ymax)
   };
   const boundsAreNumeric = Object.values(bounds).every(Number.isFinite);
   const boundsAreOrdered = boundsAreNumeric && bounds.xmin < bounds.xmax && bounds.ymin < bounds.ymax;
@@ -2405,6 +2951,43 @@ function AoiBuilderPanel({
   const allResolutionChecksPass = resolutionChecks.length > 0 &&
     resolutionChecks.every((check) => check.widthOk && check.heightOk);
   const canCreateAoi = aoiForm.name.trim().length > 0 && aoiForm.crs.trim().length > 0 && boundsAreOrdered && insidePyreneesBuffer;
+  const coordinateLabels: Record<keyof AoiBounds, string> = {
+    xmin: "xmin (W)",
+    xmax: "xmax (E)",
+    ymin: "ymin (S)",
+    ymax: "ymax (N)"
+  };
+
+  function setCoordinate(key: keyof AoiBounds, value: string) {
+    setAoiForm({ ...aoiForm, [key]: sanitizeCoordinateInput(value) });
+  }
+
+  function changeAoiCrs(nextCrsRaw: string) {
+    const nextCrs = normalizeCrsCode(nextCrsRaw);
+    setCrsConversionStatus(null);
+    if (!boundsAreOrdered || !mapProjectionSupported || !canProjectToMap(nextCrs)) {
+      setAoiForm({ ...aoiForm, crs: nextCrs });
+      return;
+    }
+    const footprint = boundsToWgs84(bounds, normalizedAoiCrs);
+    const converted = footprint ? boundsFromWgs84(footprint, nextCrs) : null;
+    if (!converted) {
+      setAoiForm({ ...aoiForm, crs: nextCrs });
+      setCrsConversionStatus("CRS changed, but the current bounds could not be converted automatically.");
+      return;
+    }
+    setAoiForm({
+      ...aoiForm,
+      crs: nextCrs,
+      xmin: String(formatCrsCoord(converted.xmin, nextCrs)),
+      xmax: String(formatCrsCoord(converted.xmax, nextCrs)),
+      ymin: String(formatCrsCoord(converted.ymin, nextCrs)),
+      ymax: String(formatCrsCoord(converted.ymax, nextCrs))
+    });
+    setCrsConversionStatus(
+      `Coordinates converted to the enclosing ${nextCrs} bounding box for the same map footprint.`
+    );
+  }
 
   function applyResolutionRebounding() {
     if (!boundsAreOrdered) return;
@@ -2431,6 +3014,7 @@ function AoiBuilderPanel({
       onAoiCreated(result.aoi);
       setTargetCrs(result.aoi.crs ?? targetCrs);
       setAoiPath(result.aoi.path);
+      setCreatedAoiPath(result.aoi.path);
       setAoiStatus(`Created ${result.aoi.path}`);
     } catch (error) {
       setAoiStatus(error instanceof Error ? error.message : String(error));
@@ -2439,11 +3023,16 @@ function AoiBuilderPanel({
 
   async function submitGrid() {
     setGridStatus(null);
+    const gridAoiPath = createdAoiPath ?? aoiPath;
+    if (!gridAoiPath) {
+      setGridStatus("Create or select an AOI config before creating the target grid.");
+      return;
+    }
     try {
       const result = await createProjectGrid({
         project_config: projectConfig,
-        aoi_config: aoiPath,
-        crs: targetCrs,
+        aoi_config: gridAoiPath,
+        crs: normalizedAoiCrs,
         resolution_m: resolution,
         overwrite: false
       });
@@ -2454,97 +3043,134 @@ function AoiBuilderPanel({
   }
 
   return (
-    <main className="workspace two-col aoi-workspace">
-      <section className="panel">
-        <h2>Create AOI Config</h2>
-        <div className="form-grid">
-          <label>
-            AOI name
-            <input value={aoiForm.name} onChange={(event) => setAoiForm({ ...aoiForm, name: event.target.value })} />
-          </label>
-          <label>
-            AOI CRS
-            <select value={normalizedAoiCrs} onChange={(event) => setAoiForm({ ...aoiForm, crs: event.target.value })}>
-              <option value="EPSG:3035">EPSG:3035</option>
-              <option value="EPSG:4326">EPSG:4326</option>
-            </select>
-          </label>
-          <label>
-            Target grid resolution
-            <select value={resolution} onChange={(event) => setResolution(Number(event.target.value))}>
-              {!resolutions.includes(resolution) && <option value={resolution}>{resolution} m</option>}
-              {resolutions.map((item) => (
-                <option key={item} value={item}>{item} m</option>
-              ))}
-            </select>
-          </label>
-          <label className="span-2">
-            Description
-            <input value={aoiForm.description} onChange={(event) => setAoiForm({ ...aoiForm, description: event.target.value })} />
-          </label>
-          {(["xmin", "xmax", "ymin", "ymax"] as const).map((key) => (
-            <label key={key}>
-              {key}
-              <input type="number" value={aoiForm[key]} onChange={(event) => setAoiForm({ ...aoiForm, [key]: event.target.value })} />
+    <main className="workspace aoi-workspace">
+      <div className="aoi-main-grid">
+        <section className="panel">
+          <h2>Create AOI Config</h2>
+          <div className="form-grid stable-form-grid">
+            <label className="field-shell">
+              <span className="field-label">AOI name</span>
+              <input value={aoiForm.name} onChange={(event) => setAoiForm({ ...aoiForm, name: event.target.value })} />
             </label>
-          ))}
-        </div>
-        {!boundsAreOrdered && <div className="notice info">Bounds must satisfy xmin &lt; xmax and ymin &lt; ymax.</div>}
-        {boundsAreOrdered && !insidePyreneesBuffer && (
-          <div className="notice error">Bounds must stay inside the broad Pyrenees working envelope.</div>
-        )}
-        {boundsAreOrdered && mapProjectionSupported && insidePyreneesBuffer && (
-          <div className="notice success">Bounds are inside the broad Pyrenees working envelope.</div>
-        )}
-        {boundsAreOrdered && (
-          <div className={`resolution-check-panel ${allResolutionChecksPass ? "ok" : "warn"}`}>
-            <div className="resolution-check-head">
-              <strong>Resolution divisibility</strong>
-              <small>{normalizedAoiCrs === "EPSG:4326" ? "Estimated from WGS84 bounds" : `Checked in ${normalizedAoiCrs}`}</small>
+            <label className="field-shell">
+              <span className="field-label">AOI CRS</span>
+              <select value={normalizedAoiCrs} onChange={(event) => changeAoiCrs(event.target.value)}>
+                <option value="EPSG:3035">EPSG:3035</option>
+                <option value="EPSG:4326">EPSG:4326</option>
+              </select>
+              <small className="field-hint">Typed bounds are interpreted in this CRS.</small>
+            </label>
+            <label className="field-shell">
+              <span className="field-label">Target grid resolution</span>
+              <select value={resolution} onChange={(event) => setResolution(Number(event.target.value))}>
+                {!resolutions.includes(resolution) && <option value={resolution}>{resolution} m</option>}
+                {resolutions.map((item) => (
+                  <option key={item} value={item}>{item} m</option>
+                ))}
+              </select>
+            </label>
+            <label className="span-2 field-shell">
+              <span className="field-label">Description</span>
+              <input value={aoiForm.description} onChange={(event) => setAoiForm({ ...aoiForm, description: event.target.value })} />
+            </label>
+            {(["xmin", "xmax", "ymin", "ymax"] as const).map((key) => (
+              <label key={key} className="field-shell">
+                <span className="field-label">{coordinateLabels[key]}</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  aria-label={key}
+                  value={aoiForm[key]}
+                  onChange={(event) => setCoordinate(key, event.target.value)}
+                  placeholder={normalizedAoiCrs === "EPSG:4326" ? "degrees" : "metres"}
+                />
+              </label>
+            ))}
+          </div>
+          {crsConversionStatus && <div className="notice info compact-notice">{crsConversionStatus}</div>}
+          {!boundsAreOrdered && <div className="notice info">Bounds must satisfy xmin &lt; xmax and ymin &lt; ymax.</div>}
+          {boundsAreOrdered && !insidePyreneesBuffer && (
+            <div className="notice error">Bounds must stay inside the broad Pyrenees working envelope.</div>
+          )}
+          {boundsAreOrdered && mapProjectionSupported && insidePyreneesBuffer && (
+            <div className="notice success">Bounds are inside the broad Pyrenees working envelope.</div>
+          )}
+          {boundsAreOrdered && (
+            <div className={`resolution-check-panel ${allResolutionChecksPass ? "ok" : "warn"}`}>
+              <div className="resolution-check-head">
+                <strong>Resolution divisibility</strong>
+                <small>{normalizedAoiCrs === "EPSG:4326" ? "Estimated from WGS84 bounds" : `Checked in ${normalizedAoiCrs}`}</small>
+              </div>
+              <div className="resolution-check-list">
+                {resolutionChecks.map((check) => (
+                  <span key={check.resolution} className={check.widthOk && check.heightOk ? "ok" : "warn"}>
+                    {check.resolution} m {check.widthOk && check.heightOk ? "accepted" : "needs rebounding"}
+                  </span>
+                ))}
+              </div>
             </div>
-            <div className="resolution-check-list">
-              {resolutionChecks.map((check) => (
-                <span key={check.resolution} className={check.widthOk && check.heightOk ? "ok" : "warn"}>
-                  {check.resolution} m {check.widthOk && check.heightOk ? "accepted" : "needs rebounding"}
-                </span>
-              ))}
+          )}
+          <div className="aoi-action-stack">
+            <button className="ghost wide-action" disabled={!boundsAreOrdered || allResolutionChecksPass} onClick={applyResolutionRebounding}>
+              Apply resolution rebounding
+            </button>
+            <div className="button-row aoi-actions">
+              <button className="primary" disabled={!canCreateAoi} onClick={submitAoi}>Create AOI config</button>
+              <button className="primary" disabled={!createdAoiPath} onClick={submitGrid}>Create target grid</button>
             </div>
           </div>
-        )}
-        <div className="button-row aoi-actions">
-          <button className="ghost" disabled={!boundsAreOrdered || allResolutionChecksPass} onClick={applyResolutionRebounding}>
-            Apply resolution rebounding
-          </button>
-          <button className="primary" disabled={!canCreateAoi} onClick={submitAoi}>Create AOI config</button>
-          <button className="ghost" onClick={submitGrid}>Create target grid</button>
-        </div>
-        {aoiStatus && <div className="notice info">{aoiStatus}</div>}
-        {gridStatus && <div className="notice info">{gridStatus}</div>}
-      </section>
-      <section className="panel">
-        <h2>Map Preview</h2>
-        <MapBboxPicker
-          bounds={mapBounds}
-          footprint={mapFootprint}
-          displayCrs={normalizedAoiCrs}
-          onChange={(nextBounds) => {
-            const targetBounds = boundsFromWgs84(nextBounds, normalizedAoiCrs);
-            if (!targetBounds) return;
-            setAoiForm({
-              ...aoiForm,
-              crs: normalizedAoiCrs,
-              xmin: String(formatCrsCoord(targetBounds.xmin, normalizedAoiCrs)),
-              xmax: String(formatCrsCoord(targetBounds.xmax, normalizedAoiCrs)),
-              ymin: String(formatCrsCoord(targetBounds.ymin, normalizedAoiCrs)),
-              ymax: String(formatCrsCoord(targetBounds.ymax, normalizedAoiCrs))
-            });
-          }}
-        />
-        {!mapProjectionSupported && (
+          {aoiStatus && <div className="notice info">{aoiStatus}</div>}
+          {gridStatus && <div className="notice info">{gridStatus}</div>}
+        </section>
+        <section className="panel">
+          <h2>Map Preview</h2>
           <div className="notice info compact-notice">
-            Map drawing currently supports EPSG:4326 and EPSG:3035. Other CRS values can still be typed manually.
+            Map display CRS: Web Mercator tiles. Bounds shown in the readout are WGS84 lon/lat for the map preview;
+            the form values remain in {normalizedAoiCrs}.
           </div>
-        )}
+          <MapBboxPicker
+            bounds={mapBounds}
+            footprint={mapFootprint}
+            displayCrs={normalizedAoiCrs}
+            onChange={(nextBounds) => {
+              const targetBounds = boundsFromWgs84(nextBounds, normalizedAoiCrs);
+              if (!targetBounds) return;
+              setAoiForm({
+                ...aoiForm,
+                crs: normalizedAoiCrs,
+                xmin: String(formatCrsCoord(targetBounds.xmin, normalizedAoiCrs)),
+                xmax: String(formatCrsCoord(targetBounds.xmax, normalizedAoiCrs)),
+                ymin: String(formatCrsCoord(targetBounds.ymin, normalizedAoiCrs)),
+                ymax: String(formatCrsCoord(targetBounds.ymax, normalizedAoiCrs))
+              });
+            }}
+          />
+          {!mapProjectionSupported && (
+            <div className="notice info compact-notice">
+              Map drawing currently supports EPSG:4326 and EPSG:3035. Other CRS values can still be typed manually.
+            </div>
+          )}
+        </section>
+      </div>
+      <section className="panel aoi-warning-panel">
+        <div className="aoi-warning-content">
+          <strong>Coordinate warning</strong>
+          <p>
+            The web map uses slippy-map tiles in Web Mercator for display, while this form stores the AOI bounds
+            in the selected CRS above.
+          </p>
+          <p>
+            If you draw on the map, the drawn WGS84 footprint is converted into the selected CRS. If you change
+            CRS after typing bounds, the UI converts the same footprint to an enclosing bounding box in the new
+            CRS. That box is an approximation because a rectangle in one CRS can become a rotated or curved
+            footprint in another.
+          </p>
+          <p>
+            <strong>Create AOI config</strong> writes the YAML under <code>configs/aoi</code>. <strong>Create target grid</strong>
+            runs the grid builder for that AOI and resolution. From the terminal, the equivalent command is:
+          </p>
+          <code>pirineus-raster make-grid --project-config configs/project.yaml --aoi-config configs/aoi/&lt;name&gt;.yaml --resolution &lt;m&gt;</code>
+        </div>
       </section>
     </main>
   );
@@ -2758,6 +3384,7 @@ function FeatureInputPicker({
   projectName,
   allowExistingFeatures = true,
   allowCategoryFractions = true,
+  nativeTimingContext = false,
   filter,
   onCancel,
   onConfirm
@@ -2767,6 +3394,7 @@ function FeatureInputPicker({
   projectName: string;
   allowExistingFeatures?: boolean;
   allowCategoryFractions?: boolean;
+  nativeTimingContext?: boolean;
   filter?: (variable: VariableCatalog, source: SourceCatalog) => boolean;
   onCancel: () => void;
   onConfirm: (bundle: InputBundle) => void;
@@ -2841,13 +3469,17 @@ function FeatureInputPicker({
     && aggregations.length === 0;
 
   function chooseProjectOutput(feature: DatasetFeatureConfig, outputName: string) {
+    const metadata = featureOutputMetadata(feature, outputName);
     onConfirm({
       label: `${projectName} · ${outputName}`,
       outputs: [{
         name: outputName,
         label: `${feature.title || feature.name} · ${outputName}`,
         input: { kind: "feature", feature: outputName, output: outputName },
-        suffix: outputName
+        suffix: outputName,
+        valueSemantics: metadata.valueSemantics,
+        unit: metadata.unit,
+        outputDtype: metadata.outputDtype
       }]
     });
   }
@@ -2882,7 +3514,10 @@ function FeatureInputPicker({
         suffix: output.suffix,
         temporalKey: output.temporal_key,
         dimensionKey: output.dimension_key,
-        variable
+        variable,
+        valueSemantics: output.value_semantics ?? sourceOutputValueSemantics(variable, output.source?.category_fraction),
+        unit: output.unit ?? sourceOutputUnit(variable, output.source?.category_fraction),
+        outputDtype: output.output_dtype
       }));
     if (options.length === 0) return null;
     return {
@@ -3058,7 +3693,7 @@ function FeatureInputPicker({
                 }}
               >
                 <strong>{item.description || humanizeId(item.name)}</strong>
-                <small>{item.name}{item.unit ? ` · ${item.unit}` : ""}{item.value_semantics ? ` · ${item.value_semantics}` : ""}</small>
+                <small>{item.name}{item.unit ? ` · ${item.unit}` : ""}{item.value_semantics ? ` · ${semanticInfo(item.value_semantics).label}` : ""}</small>
               </button>
             ))}
             {variables.length === 0 && <div className="empty-state">No valid variables for this input.</div>}
@@ -3234,11 +3869,17 @@ function FeatureInputPicker({
                     <div className="mini-form-grid">
                       <label>
                         Start month
-                        <input type="number" min={1} max={12} value={aggregation.months?.[0] ?? 1} onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })} />
+                        <input type="number" min={1} max={12} value={optionalNumberInputValue(aggregation.months?.[0])} onChange={(event) => {
+                          const value = parseOptionalNumberInput(event.target.value);
+                          setAggregation({ ...aggregation, months: [Number.isFinite(value) ? clamp(value, 1, 12) : value, aggregation.months?.[1] ?? 12] });
+                        }} />
                       </label>
                       <label>
                         End month
-                        <input type="number" min={1} max={12} value={aggregation.months?.[1] ?? 12} onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })} />
+                        <input type="number" min={1} max={12} value={optionalNumberInputValue(aggregation.months?.[1])} onChange={(event) => {
+                          const value = parseOptionalNumberInput(event.target.value);
+                          setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, Number.isFinite(value) ? clamp(value, 1, 12) : value] });
+                        }} />
                       </label>
                     </div>
                     {source.temporal.kind === "year_month_series" && (
@@ -3249,14 +3890,16 @@ function FeatureInputPicker({
                             type="number"
                             min={aggregationYearBounds?.[0]}
                             max={aggregationYearBounds?.[1]}
-                            value={aggregation.years?.[0] ?? aggregationYearBounds?.[0] ?? source.temporal.default_years?.[0] ?? ""}
-                            onChange={(event) => setAggregation({
-                              ...aggregation,
-                              years: clampYearRangeToBounds(
-                                [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
-                                aggregationYearBounds
-                              )
-                            })}
+                            value={optionalNumberInputValue(aggregation.years?.[0])}
+                            onChange={(event) => {
+                              const value = parseOptionalNumberInput(event.target.value);
+                              setAggregation({
+                                ...aggregation,
+                                years: Number.isFinite(value)
+                                  ? clampYearRangeToBounds([value, aggregation.years?.[1] ?? value], aggregationYearBounds)
+                                  : [value, aggregation.years?.[1] ?? value]
+                              });
+                            }}
                           />
                         </label>
                         <label>
@@ -3265,14 +3908,16 @@ function FeatureInputPicker({
                             type="number"
                             min={aggregationYearBounds?.[0]}
                             max={aggregationYearBounds?.[1]}
-                            value={aggregation.years?.[1] ?? aggregationYearBounds?.[1] ?? source.temporal.default_years?.[1] ?? ""}
-                            onChange={(event) => setAggregation({
-                              ...aggregation,
-                              years: clampYearRangeToBounds(
-                                [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
-                                aggregationYearBounds
-                              )
-                            })}
+                            value={optionalNumberInputValue(aggregation.years?.[1])}
+                            onChange={(event) => {
+                              const value = parseOptionalNumberInput(event.target.value);
+                              setAggregation({
+                                ...aggregation,
+                                years: Number.isFinite(value)
+                                  ? clampYearRangeToBounds([aggregation.years?.[0] ?? value, value], aggregationYearBounds)
+                                  : [aggregation.years?.[0] ?? value, value]
+                              });
+                            }}
                           />
                         </label>
                       </div>
@@ -3289,7 +3934,7 @@ function FeatureInputPicker({
                     )}
                     <label>
                       Name
-                      <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeToken(event.target.value) })} />
+                      <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeAggregationName(event.target.value) })} />
                     </label>
                     <label>
                       Metric
@@ -3305,14 +3950,16 @@ function FeatureInputPicker({
                             type="number"
                             min={aggregationYearBounds?.[0]}
                             max={aggregationYearBounds?.[1]}
-                            value={aggregation.years[0]}
-                            onChange={(event) => setAggregation({
-                              ...aggregation,
-                              years: clampYearRangeToBounds(
-                                [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
-                                aggregationYearBounds
-                              )
-                            })}
+                            value={optionalNumberInputValue(aggregation.years[0])}
+                            onChange={(event) => {
+                              const value = parseOptionalNumberInput(event.target.value);
+                              setAggregation({
+                                ...aggregation,
+                                years: Number.isFinite(value)
+                                  ? clampYearRangeToBounds([value, aggregation.years?.[1] ?? value], aggregationYearBounds)
+                                  : [value, aggregation.years?.[1] ?? value]
+                              });
+                            }}
                           />
                         </label>
                         <label>
@@ -3321,14 +3968,16 @@ function FeatureInputPicker({
                             type="number"
                             min={aggregationYearBounds?.[0]}
                             max={aggregationYearBounds?.[1]}
-                            value={aggregation.years[1]}
-                            onChange={(event) => setAggregation({
-                              ...aggregation,
-                              years: clampYearRangeToBounds(
-                                [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
-                                aggregationYearBounds
-                              )
-                            })}
+                            value={optionalNumberInputValue(aggregation.years[1])}
+                            onChange={(event) => {
+                              const value = parseOptionalNumberInput(event.target.value);
+                              setAggregation({
+                                ...aggregation,
+                                years: Number.isFinite(value)
+                                  ? clampYearRangeToBounds([aggregation.years?.[0] ?? value, value], aggregationYearBounds)
+                                  : [aggregation.years?.[0] ?? value, value]
+                              });
+                            }}
                           />
                         </label>
                       </div>
@@ -3337,11 +3986,17 @@ function FeatureInputPicker({
                       <div className="mini-form-grid">
                         <label>
                           Start month
-                          <input type="number" min={1} max={12} value={aggregation.months[0]} onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })} />
+                          <input type="number" min={1} max={12} value={optionalNumberInputValue(aggregation.months[0])} onChange={(event) => {
+                            const value = parseOptionalNumberInput(event.target.value);
+                            setAggregation({ ...aggregation, months: [Number.isFinite(value) ? clamp(value, 1, 12) : value, aggregation.months?.[1] ?? 12] });
+                          }} />
                         </label>
                         <label>
                           End month
-                          <input type="number" min={1} max={12} value={aggregation.months[1]} onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })} />
+                          <input type="number" min={1} max={12} value={optionalNumberInputValue(aggregation.months[1])} onChange={(event) => {
+                            const value = parseOptionalNumberInput(event.target.value);
+                            setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, Number.isFinite(value) ? clamp(value, 1, 12) : value] });
+                          }} />
                         </label>
                       </div>
                     )}
@@ -3398,6 +4053,9 @@ function FeatureInputPicker({
             <div className="notice info compact-notice">
               Resampling is applied when source data are aligned to the project target grid. Category fractions
               should normally use average; original categorical codes usually use nearest or mode.
+              {nativeTimingContext && (
+                <> For before-resampling derived features, this source resampling is kept for internal fallback/source previews; the final derived result uses the Evaluation timing final aggregation.</>
+              )}
             </div>
           </div>
         )}
@@ -3498,6 +4156,7 @@ function OfficialLayersBuilder({
       if (!variable) return [];
       const safeName = sanitizeToken(name);
       const resampling = outputResampling(name, variable, false);
+      const valueSemantics = sourceOutputValueSemantics(variable);
       const outputs = activeAggregations.flatMap((item) => buildSourceLayerOutputs({
           featureName: safeName,
           source,
@@ -3515,8 +4174,8 @@ function OfficialLayersBuilder({
         title: variable.description || humanizeId(name),
         description: variable.description,
         unit: variable.unit ?? undefined,
-        value_semantics: variable.value_semantics ?? variable.data_type,
-        output_dtype: "float32",
+        value_semantics: valueSemantics,
+        output_dtype: defaultOutputDtypeForSemantics(valueSemantics, "source_layer"),
         build_type: "source_layer" as const,
         outputs
       }];
@@ -3790,8 +4449,11 @@ function OfficialLayersBuilder({
                     type="number"
                     min={1}
                     max={12}
-                    value={aggregation.months?.[0] ?? 1}
-                    onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })}
+                    value={optionalNumberInputValue(aggregation.months?.[0])}
+                    onChange={(event) => {
+                      const value = parseOptionalNumberInput(event.target.value);
+                      setAggregation({ ...aggregation, months: [Number.isFinite(value) ? clamp(value, 1, 12) : value, aggregation.months?.[1] ?? 12] });
+                    }}
                   />
                 </label>
                 <label>
@@ -3800,8 +4462,11 @@ function OfficialLayersBuilder({
                     type="number"
                     min={1}
                     max={12}
-                    value={aggregation.months?.[1] ?? 12}
-                    onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })}
+                    value={optionalNumberInputValue(aggregation.months?.[1])}
+                    onChange={(event) => {
+                      const value = parseOptionalNumberInput(event.target.value);
+                      setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, Number.isFinite(value) ? clamp(value, 1, 12) : value] });
+                    }}
                   />
                 </label>
               </div>
@@ -3813,14 +4478,16 @@ function OfficialLayersBuilder({
                         type="number"
                         min={aggregationYearBounds?.[0]}
                         max={aggregationYearBounds?.[1]}
-                        value={aggregation.years?.[0] ?? source.temporal.default_years?.[0] ?? ""}
-                        onChange={(event) => setAggregation({
-                          ...aggregation,
-                          years: clampYearRangeToBounds(
-                            [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
-                            aggregationYearBounds
-                          )
-                        })}
+                        value={optionalNumberInputValue(aggregation.years?.[0])}
+                        onChange={(event) => {
+                          const value = parseOptionalNumberInput(event.target.value);
+                          setAggregation({
+                            ...aggregation,
+                            years: Number.isFinite(value)
+                              ? clampYearRangeToBounds([value, aggregation.years?.[1] ?? value], aggregationYearBounds)
+                              : [value, aggregation.years?.[1] ?? value]
+                          });
+                        }}
                       />
                     </label>
                     <label>
@@ -3829,14 +4496,16 @@ function OfficialLayersBuilder({
                         type="number"
                         min={aggregationYearBounds?.[0]}
                         max={aggregationYearBounds?.[1]}
-                        value={aggregation.years?.[1] ?? source.temporal.default_years?.[1] ?? ""}
-                        onChange={(event) => setAggregation({
-                          ...aggregation,
-                          years: clampYearRangeToBounds(
-                            [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
-                            aggregationYearBounds
-                          )
-                        })}
+                        value={optionalNumberInputValue(aggregation.years?.[1])}
+                        onChange={(event) => {
+                          const value = parseOptionalNumberInput(event.target.value);
+                          setAggregation({
+                            ...aggregation,
+                            years: Number.isFinite(value)
+                              ? clampYearRangeToBounds([aggregation.years?.[0] ?? value, value], aggregationYearBounds)
+                              : [aggregation.years?.[0] ?? value, value]
+                          });
+                        }}
                       />
                     </label>
                 </div>
@@ -3853,7 +4522,7 @@ function OfficialLayersBuilder({
               )}
               <label>
                 Name
-                <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeToken(event.target.value) })} />
+                <input value={aggregation.name} onChange={(event) => setAggregation({ ...aggregation, name: sanitizeAggregationName(event.target.value) })} />
               </label>
               <label>
                 Metric
@@ -3871,14 +4540,16 @@ function OfficialLayersBuilder({
                       type="number"
                       min={aggregationYearBounds?.[0]}
                       max={aggregationYearBounds?.[1]}
-                      value={aggregation.years[0]}
-                      onChange={(event) => setAggregation({
-                        ...aggregation,
-                        years: clampYearRangeToBounds(
-                          [Number(event.target.value), aggregation.years?.[1] ?? Number(event.target.value)],
-                          aggregationYearBounds
-                        )
-                      })}
+                      value={optionalNumberInputValue(aggregation.years[0])}
+                      onChange={(event) => {
+                        const value = parseOptionalNumberInput(event.target.value);
+                        setAggregation({
+                          ...aggregation,
+                          years: Number.isFinite(value)
+                            ? clampYearRangeToBounds([value, aggregation.years?.[1] ?? value], aggregationYearBounds)
+                            : [value, aggregation.years?.[1] ?? value]
+                        });
+                      }}
                     />
                   </label>
                   <label>
@@ -3887,14 +4558,16 @@ function OfficialLayersBuilder({
                       type="number"
                       min={aggregationYearBounds?.[0]}
                       max={aggregationYearBounds?.[1]}
-                      value={aggregation.years[1]}
-                      onChange={(event) => setAggregation({
-                        ...aggregation,
-                        years: clampYearRangeToBounds(
-                          [aggregation.years?.[0] ?? Number(event.target.value), Number(event.target.value)],
-                          aggregationYearBounds
-                        )
-                      })}
+                      value={optionalNumberInputValue(aggregation.years[1])}
+                      onChange={(event) => {
+                        const value = parseOptionalNumberInput(event.target.value);
+                        setAggregation({
+                          ...aggregation,
+                          years: Number.isFinite(value)
+                            ? clampYearRangeToBounds([aggregation.years?.[0] ?? value, value], aggregationYearBounds)
+                            : [aggregation.years?.[0] ?? value, value]
+                        });
+                      }}
                     />
                   </label>
                 </div>
@@ -3907,8 +4580,11 @@ function OfficialLayersBuilder({
                       type="number"
                       min={1}
                       max={12}
-                      value={aggregation.months[0]}
-                      onChange={(event) => setAggregation({ ...aggregation, months: [clamp(Number(event.target.value), 1, 12), aggregation.months?.[1] ?? 12] })}
+                      value={optionalNumberInputValue(aggregation.months[0])}
+                      onChange={(event) => {
+                        const value = parseOptionalNumberInput(event.target.value);
+                        setAggregation({ ...aggregation, months: [Number.isFinite(value) ? clamp(value, 1, 12) : value, aggregation.months?.[1] ?? 12] });
+                      }}
                     />
                   </label>
                   <label>
@@ -3917,8 +4593,11 @@ function OfficialLayersBuilder({
                       type="number"
                       min={1}
                       max={12}
-                      value={aggregation.months[1]}
-                      onChange={(event) => setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, clamp(Number(event.target.value), 1, 12)] })}
+                      value={optionalNumberInputValue(aggregation.months[1])}
+                      onChange={(event) => {
+                        const value = parseOptionalNumberInput(event.target.value);
+                        setAggregation({ ...aggregation, months: [aggregation.months?.[0] ?? 1, Number.isFinite(value) ? clamp(value, 1, 12) : value] });
+                      }}
                     />
                   </label>
                 </div>
@@ -3982,7 +4661,8 @@ function CustomFeatureBuilder({
   const [title, setTitle] = useState(editing?.title ?? "");
   const [description, setDescription] = useState(editing?.description ?? "");
   const [unit, setUnit] = useState(editing?.unit ?? "");
-  const [semantics, setSemantics] = useState(editing?.value_semantics ?? "intensive");
+  const [unitMode, setUnitMode] = useState(editing?.unit ? "manual" : "auto");
+  const [semanticsOverride, setSemanticsOverride] = useState("auto");
   const [buildType, setBuildType] = useState<DatasetFeatureConfig["build_type"]>(editing?.build_type ?? "expression");
   const [operation, setOperation] = useState(editing?.operation ?? "terrain");
 	  const [method, setMethod] = useState(editing?.method ?? "slope");
@@ -3991,14 +4671,21 @@ function CustomFeatureBuilder({
 	  const [parametersText, setParametersText] = useState(JSON.stringify(editing?.parameters ?? {}, null, 2));
 	  const [inputBundles, setInputBundles] = useState<Record<string, InputBundle>>(bundlesFromInputs(editing?.inputs));
 	  const [pickingAlias, setPickingAlias] = useState<string | null>(null);
+	  const [evaluationStage, setEvaluationStage] = useState(
+	    editing?.evaluation_stage ?? (editing?.build_type === "spatial" ? "native_then_resample" : "target_grid")
+	  );
+	  const [evaluationResolution, setEvaluationResolution] = useState<string>(
+	    editing?.evaluation_resolution_m !== undefined ? String(editing.evaluation_resolution_m) : "native"
+	  );
+	  const [postResampling, setPostResampling] = useState(editing?.post_resampling ?? "average");
 	  const [thresholdValue, setThresholdValue] = useState<string>(
 	    editing?.parameters?.threshold !== undefined ? String(editing.parameters.threshold) : ""
 	  );
 	  const [classValue, setClassValue] = useState<string>(
 	    editing?.parameters?.class_value !== undefined ? String(editing.parameters.class_value) : ""
 	  );
-	  const [radius, setRadius] = useState<number>(
-	    Number(editing?.parameters?.radius ?? 1)
+	  const [radiusText, setRadiusText] = useState<string>(
+	    String(editing?.parameters?.radius ?? 1)
 	  );
 	  const [reclassText, setReclassText] = useState(
 	    JSON.stringify(editing?.parameters?.classes ?? {}, null, 2)
@@ -4030,7 +4717,8 @@ function CustomFeatureBuilder({
     setTitle(editing.title ?? "");
     setDescription(editing.description ?? "");
     setUnit(editing.unit ?? "");
-    setSemantics(editing.value_semantics ?? "intensive");
+    setUnitMode(editing.unit ? "manual" : "auto");
+    setSemanticsOverride("auto");
     setBuildType(editing.build_type);
     setOperation(editing.operation ?? "terrain");
     setMethod(editing.method ?? "slope");
@@ -4038,9 +4726,12 @@ function CustomFeatureBuilder({
 	    setExpression(editing.expression ?? "x");
 	    setParametersText(JSON.stringify(editing.parameters ?? {}, null, 2));
 	    setInputBundles(bundlesFromInputs(editing.inputs));
+	    setEvaluationStage(editing.evaluation_stage ?? (editing.build_type === "spatial" ? "native_then_resample" : "target_grid"));
+	    setEvaluationResolution(editing.evaluation_resolution_m !== undefined ? String(editing.evaluation_resolution_m) : "native");
+	    setPostResampling(editing.post_resampling ?? "average");
 	    setThresholdValue(editing.parameters?.threshold !== undefined ? String(editing.parameters.threshold) : "");
 	    setClassValue(editing.parameters?.class_value !== undefined ? String(editing.parameters.class_value) : "");
-	    setRadius(Number(editing.parameters?.radius ?? 1));
+	    setRadiusText(String(editing.parameters?.radius ?? 1));
 	    setReclassText(JSON.stringify(editing.parameters?.classes ?? {}, null, 2));
 	  }, [editing]);
 
@@ -4058,6 +4749,35 @@ function CustomFeatureBuilder({
 	    if (operation === "focal" && !focalMethods.includes(method)) setMethod("mean");
 	    if (operation === "distance" && !distanceMethods.includes(method)) setMethod("distance_to_mask");
 	  }, [operation]);
+
+	  function recommendedEvaluationStage() {
+	    if (buildType === "spatial") return "native_then_resample";
+	    return "target_grid";
+	  }
+
+	  function recommendedPostResampling() {
+	    if (buildType === "masking" || (buildType === "recipe" && ["binary_threshold_mask", "class_mask", "reclassification"].includes(recipe))) {
+	      return "nearest";
+	    }
+	    if (buildType === "spatial" && operation === "focal" && method === "majority") return "mode";
+	    return "average";
+	  }
+
+	  function timingRecommendationText() {
+	    if (buildType === "spatial") {
+	      return "Native first is recommended for spatial processing because slope, focal windows and distances preserve sub-cell structure before the final aggregation.";
+	    }
+	    if (buildType === "masking") {
+	      return "Target grid is recommended for binary masks. Use category fractions instead when you want target-cell percentages from categorical classes.";
+	    }
+	    return "Target grid is recommended here because it is faster and avoids combining differently gridded inputs unless you explicitly need native-scale nonlinear processing.";
+	  }
+
+	  useEffect(() => {
+	    setEvaluationStage(recommendedEvaluationStage());
+	    setPostResampling(recommendedPostResampling());
+	    setEvaluationResolution("native");
+	  }, [buildType, operation, method, recipe]);
 
 	  const aliases = buildType === "recipe"
 	    ? recipe === "thermal_range"
@@ -4124,12 +4844,200 @@ function CustomFeatureBuilder({
 	    return inputBundles[alias]?.outputs[0]?.variable;
 	  }
 
+	  function inputOption(alias: string) {
+	    return inputBundles[alias]?.outputs[0];
+	  }
+
+	  function inputValueSemantics(alias: string) {
+	    const option = inputOption(alias);
+	    if (!option) return undefined;
+	    return option.valueSemantics ?? sourceOutputValueSemantics(option.variable);
+	  }
+
+	  function inputUnit(alias: string) {
+	    const option = inputOption(alias);
+	    if (!option) return undefined;
+	    return option.unit ?? sourceOutputUnit(option.variable);
+	  }
+
+	  function inferCustomFeatureSemantics() {
+	    if (buildType === "source_layer") return inputValueSemantics("x");
+	    if (buildType === "masking") {
+	      if (recipe === "binary_threshold_mask" || recipe === "class_mask") return "binary";
+	      return inputValueSemantics("x") ?? "categorical";
+	    }
+	    if (buildType === "recipe") {
+	      if (recipe === "thermal_range") return "intensive";
+	      if (recipe === "water_balance") return "intensive_depth";
+	      if (recipe === "aridity_index") return "ratio";
+	      if (recipe === "snow_persistence_ratio") return "fraction";
+	      if (recipe === "seasonal_contrast") return inputValueSemantics("a") ?? "intensive";
+	    }
+	    if (buildType === "spatial") {
+	      if (operation === "distance") return "intensive";
+	      if (operation === "terrain") return method === "aspect" ? "circular" : "intensive";
+	      if (operation === "focal") {
+	        const sourceSemantics = inputValueSemantics("x");
+	        if (method === "majority") return sourceSemantics ?? "categorical";
+	        if (method === "diversity") return "count";
+	        if (method === "mean" && (sourceSemantics === "binary" || sourceSemantics === "fraction")) return "fraction";
+	        if ((method === "min" || method === "max") && sourceSemantics) return sourceSemantics;
+	        if (method === "sum" && (sourceSemantics === "count" || sourceSemantics === "extensive")) return sourceSemantics;
+	        return "intensive";
+	      }
+	    }
+	    if (buildType === "expression") {
+	      return inferExpressionValueSemantics(expression, {
+	        x: inputValueSemantics("x"),
+	        y: inputValueSemantics("y"),
+	        z: inputValueSemantics("z")
+	      });
+	    }
+	    return "intensive";
+	  }
+
+	  const inferredSemantics = inferCustomFeatureSemantics();
+	  const effectiveSemantics = semanticsOverride === "auto"
+	    ? inferredSemantics ?? "intensive"
+	    : semanticsOverride;
+	  const effectiveOutputDtype = defaultOutputDtypeForSemantics(effectiveSemantics, buildType, recipe);
+
+	  function inferCustomFeatureUnit() {
+	    if (buildType === "source_layer") return inputUnit("x");
+	    if (buildType === "masking") {
+	      if (recipe === "binary_threshold_mask" || recipe === "class_mask") return "binary";
+	      return inputUnit("x");
+	    }
+	    if (buildType === "recipe") {
+	      if (recipe === "thermal_range") {
+	        const tmax = inputUnit("tmax");
+	        const tmin = inputUnit("tmin");
+	        return tmax && tmax === tmin ? tmax : "degrees";
+	      }
+	      if (recipe === "water_balance") {
+	        const prec = inputUnit("prec");
+	        const pet = inputUnit("pet");
+	        return prec && prec === pet ? prec : "mm";
+	      }
+	      if (recipe === "aridity_index" || recipe === "snow_persistence_ratio") return "ratio";
+	      if (recipe === "seasonal_contrast") {
+	        const a = inputUnit("a");
+	        const b = inputUnit("b");
+	        return a && a === b ? a : undefined;
+	      }
+	    }
+	    if (buildType === "spatial") {
+	      if (operation === "distance") return "m";
+	      if (operation === "terrain") {
+	        if (method === "slope" || method === "aspect") return "degrees";
+	        return inputUnit("dem") ?? "m";
+	      }
+	      if (operation === "focal") {
+	        if (method === "diversity") return "count";
+	        return inputUnit("x");
+	      }
+	    }
+	    if (buildType === "expression") {
+	      return inferExpressionUnit(expression, {
+	        x: inputUnit("x"),
+	        y: inputUnit("y"),
+	        z: inputUnit("z")
+	      });
+	    }
+	    return undefined;
+	  }
+
+	  const inferredUnit = inferCustomFeatureUnit();
+	  const effectiveUnit = unitMode === "auto" ? inferredUnit : unit.trim() || undefined;
+
 	  function requiredAliases() {
 	    if (buildType === "expression") {
 	      return aliases.filter((alias) => alias === "x" || new RegExp(`\\b${alias}\\b`).test(expression));
 	    }
 	    return aliases;
 	  }
+
+	  function expressionAliasesUsed() {
+	    return aliases.filter((alias) => new RegExp(`\\b${alias}\\b`).test(expression));
+	  }
+
+	  function temporalAlignmentReport(activeAliases: string[]) {
+	    const temporalBundles = activeAliases
+	      .map((alias) => ({ alias, bundle: inputBundles[alias] }))
+	      .filter(({ bundle }) => bundle?.outputs.some((output) => output.temporalKey));
+	    if (temporalBundles.length < 2) {
+	      return { ok: true, warnings: [] as string[], errors: [] as string[] };
+	    }
+
+	    const keySets = temporalBundles.map(({ bundle }) =>
+	      new Set(bundle.outputs.map((output) => output.temporalKey).filter(Boolean) as string[])
+	    );
+	    const [firstSet, ...restSets] = keySets;
+	    const common = [...restSets.reduce(
+	      (current, next) => new Set([...current].filter((key) => next.has(key))),
+	      new Set(firstSet ?? [])
+	    )].filter((key): key is string => Boolean(key));
+	    if (common.length === 0) {
+	      return {
+	        ok: false,
+	        warnings: [] as string[],
+	        errors: ["These inputs have no shared temporal outputs, so this operation cannot produce any final raster."]
+	      };
+	    }
+	    const warnings = temporalBundles.flatMap(({ alias, bundle }) => {
+	      const dropped = bundle.outputs
+	        .map((output) => output.temporalKey)
+	        .filter((key): key is string => Boolean(key))
+	        .filter((key) => !common.includes(key));
+	      return dropped.length > 0
+	        ? [`Input ${alias} has temporal outputs that will be skipped: ${[...new Set(dropped)].join(", ")}.`]
+	        : [];
+	    });
+	    return { ok: true, warnings, errors: [] as string[] };
+	  }
+
+	  function validateExpressionDraft() {
+	    if (buildType !== "expression") {
+	      return { ok: true, errors: [] as string[], warnings: [] as string[] };
+	    }
+	    const errors: string[] = [];
+	    const warnings: string[] = [];
+	    const text = expression.trim();
+	    if (!text) errors.push("Expression is required.");
+	    let depth = 0;
+	    for (const char of text) {
+	      if (char === "(") depth += 1;
+	      if (char === ")") depth -= 1;
+	      if (depth < 0) break;
+	    }
+	    if (depth !== 0) errors.push("Parentheses are not balanced.");
+	    const allowed = new Set([
+	      ...aliases,
+	      ...EXPRESSION_FUNCTION_NAMES,
+	      ...EXPRESSION_CONSTANT_NAMES,
+	      "and",
+	      "or",
+	      "not"
+	    ]);
+	    const identifiers = [...text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)].map((match) => match[0]);
+	    const unknown = [...new Set(identifiers.filter((item) => !allowed.has(item)))];
+	    if (unknown.length > 0) errors.push(`Unknown expression name(s): ${unknown.join(", ")}.`);
+	    errors.push(...validateExpressionFunctionCalls(text));
+	    const usedAliases = expressionAliasesUsed();
+	    for (const alias of usedAliases) {
+	      if (!inputBundles[alias]?.outputs.length) {
+	        errors.push(`Expression references ${alias}, but no input is selected for ${alias}.`);
+	      }
+	    }
+	    const alignment = temporalAlignmentReport(
+	      usedAliases.filter((alias) => inputBundles[alias]?.outputs.length)
+	    );
+	    errors.push(...alignment.errors);
+	    warnings.push(...alignment.warnings);
+	    return { ok: errors.length === 0, errors, warnings };
+	  }
+
+	  const expressionValidation = validateExpressionDraft();
 
 	  function classOptionsForAlias(alias: string) {
 	    return inputVariable(alias)?.category_classes ?? [];
@@ -4175,7 +5083,17 @@ function CustomFeatureBuilder({
 	  }
 
 	  function radiusIsValid() {
-	    return !radiusIsRequired() || (Number.isFinite(radius) && radius >= 1);
+	    if (!radiusIsRequired()) return true;
+	    const radius = Number(radiusText);
+	    return radiusText.trim().length > 0 && Number.isFinite(radius) && radius >= 1;
+	  }
+
+	  function evaluationIsValid() {
+	    if (buildType === "source_layer" || evaluationStage !== "native_then_resample") return true;
+	    const text = evaluationResolution.trim();
+	    if (!text || text === "native") return true;
+	    const value = Number(text);
+	    return Number.isFinite(value) && value > 0;
 	  }
 
 	  function canAddFeature() {
@@ -4185,7 +5103,9 @@ function CustomFeatureBuilder({
 	      && thresholdIsValid()
 	      && classValueIsValid()
 	      && reclassificationIsValid()
-	      && radiusIsValid();
+	      && radiusIsValid()
+	      && evaluationIsValid()
+	      && expressionValidation.ok;
 	  }
 
 	  function operationParameters(extra: Record<string, unknown>) {
@@ -4204,9 +5124,22 @@ function CustomFeatureBuilder({
 	      parameters.class_value = Number.isNaN(Number(classValue)) ? classValue : Number(classValue);
 	    }
 	    if (radiusIsRequired()) {
+	      const radius = Number(radiusText);
 	      parameters.radius = Math.max(1, Math.round(radius));
 	    }
 	    return parameters;
+	  }
+
+	  function evaluationOptions() {
+	    if (buildType === "source_layer") return {};
+	    const resolution = evaluationResolution.trim();
+	    return {
+	      evaluation_stage: evaluationStage,
+	      evaluation_resolution_m: evaluationStage === "native_then_resample"
+	        ? (resolution && resolution !== "native" ? Number(resolution) : "native")
+	        : undefined,
+	      post_resampling: evaluationStage === "native_then_resample" ? postResampling : undefined
+	    };
 	  }
 
 	  function add() {
@@ -4223,6 +5156,7 @@ function CustomFeatureBuilder({
 	      return;
 	    }
 	    const parameters = operationParameters(extraParameters);
+	    const evaluation = evaluationOptions();
 	    const activeAliases = requiredAliases();
 	    const bundles = activeAliases.map((alias) => ({ alias, bundle: inputBundles[alias] }));
     const temporalBundles = bundles.filter(({ bundle }) => bundle.outputs.some((output) => output.temporalKey));
@@ -4255,40 +5189,48 @@ function CustomFeatureBuilder({
       return {
         name: suffix ? `${safeName}_${sanitizeToken(suffix)}` : combinations.length > 1 ? `${safeName}_${index + 1}` : safeName,
         suffix,
+        unit: effectiveUnit,
+        value_semantics: effectiveSemantics,
+        output_dtype: effectiveOutputDtype,
         inputs: Object.fromEntries(combo.map(({ alias, option }) => [alias, option.input])),
         expression: buildType === "expression" ? expression : undefined,
         recipe: buildType === "recipe" || buildType === "masking" ? recipe : undefined,
-        operation: buildType === "spatial" ? operation : undefined,
-        method: buildType === "spatial" ? method : undefined,
-        parameters
-      };
-    });
+	        operation: buildType === "spatial" ? operation : undefined,
+	        method: buildType === "spatial" ? method : undefined,
+	        parameters,
+	        ...evaluation
+	      };
+	    });
     const firstInputs = outputs[0]?.inputs ?? {};
     const feature: DatasetFeatureConfig = {
       name: safeName,
       title: title || humanizeId(safeName),
       description,
-	      unit: unit || undefined,
-	      value_semantics: buildType === "masking" && recipe !== "reclassification" ? "binary" : semantics,
-	      output_dtype: buildType === "masking" && recipe !== "reclassification" ? "uint8" : "float32",
+	      unit: effectiveUnit,
+	      value_semantics: effectiveSemantics,
+	      output_dtype: effectiveOutputDtype,
       build_type: buildType,
       inputs: firstInputs,
       expression: buildType === "expression" ? expression : undefined,
       recipe: buildType === "recipe" || buildType === "masking" ? recipe : undefined,
-      operation: buildType === "spatial" ? operation : undefined,
-      method: buildType === "spatial" ? method : undefined,
-      parameters,
-      outputs
-    };
+	      operation: buildType === "spatial" ? operation : undefined,
+	      method: buildType === "spatial" ? method : undefined,
+	      parameters,
+	      ...evaluation,
+	      outputs
+	    };
     addFeature(feature);
     clearEditing?.();
     setName("custom_feature");
 	    setTitle("");
 	    setDescription("");
+	    setUnit("");
+	    setUnitMode("auto");
+	    setSemanticsOverride("auto");
 	    setInputBundles({});
 	    setThresholdValue("");
 	    setClassValue("");
-	    setRadius(1);
+	    setRadiusText("1");
 	    setReclassText("{}");
 	  }
 
@@ -4366,17 +5308,38 @@ function CustomFeatureBuilder({
         </label>
         <label>
           Unit
-          <input value={unit} onChange={(event) => setUnit(event.target.value)} />
-          <small className="field-hint">Leave empty if unitless or inherited from the source.</small>
+          <select value={unitMode} onChange={(event) => setUnitMode(event.target.value)}>
+            <option value="auto">Auto (recommended)</option>
+            <option value="manual">Manual override</option>
+          </select>
+          {unitMode === "manual" && (
+            <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="m, degrees, fraction, Mg/ha..." />
+          )}
+          <small className="field-hint">
+            {unitMode === "auto"
+              ? inferredUnit
+                ? `Inferred as ${inferredUnit}.`
+                : "Unit will be left blank/unknown until inputs and operation make it inferable."
+              : "Manual units are written directly to the final metadata."}
+          </small>
         </label>
         <label>
-          Value semantics
-          <select value={semantics} onChange={(event) => setSemantics(event.target.value)}>
-            {(catalog.value_semantics ?? ["intensive", "percentage", "fraction", "categorical", "binary", "ratio"]).map((item) => (
-              <option key={item} value={item}>{item}</option>
+          <span className="label-line">
+            Value semantics <InfoTip text="Auto is recommended. Pirineus Raster infers this from the selected source variables and operation, then stores the inferred metadata in the YAML. Override only when the expression is genuinely ambiguous." />
+          </span>
+          <select value={semanticsOverride} onChange={(event) => setSemanticsOverride(event.target.value)}>
+            <option value="auto">Auto (recommended)</option>
+            {(catalog.value_semantics ?? ["categorical", "ordinal", "binary", "intensive", "intensive_depth", "percentage", "fraction", "ratio", "extensive", "count", "circular"]).map((item) => (
+              <option key={item} value={item}>{semanticLabel(item)}</option>
             ))}
           </select>
-          <small className="field-hint">How the final raster values should be interpreted.</small>
+          <small className="field-hint">
+            {semanticsOverride === "auto"
+              ? inferredSemantics
+                ? `Inferred as ${semanticLabel(effectiveSemantics)}. ${semanticInfo(effectiveSemantics).description}`
+                : "Select the required inputs and operation so the workbench can infer the output semantics."
+              : `Manual override: ${semanticInfo(effectiveSemantics).description}`}
+          </small>
         </label>
         <label className="span-4">
           Description
@@ -4444,6 +5407,61 @@ function CustomFeatureBuilder({
         </>
       )}
 
+      {buildType !== "source_layer" && (
+        <section className="feature-work-area evaluation-timing-panel">
+          <div className="panel-head compact-head">
+            <h3>Evaluation timing</h3>
+            <span className="field-hint">{timingRecommendationText()}</span>
+          </div>
+          <div className="feature-option-row two-options">
+            {[
+              ["target_grid", "After resampling", "Fastest. The operation uses rasters already aligned to the final project grid."],
+              ["native_then_resample", "Before resampling", "More detailed. Inputs are evaluated on a native/intermediate grid, then aggregated to the final grid."]
+            ].map(([value, label, help]) => (
+              <button
+                key={value}
+                className={`operation-card compact ${evaluationStage === value ? "active" : ""}`}
+                onClick={() => setEvaluationStage(value)}
+              >
+                <strong>{label}</strong>
+                <small>
+                  {help} {recommendedEvaluationStage() === value ? "Recommended for this processing type." : ""}
+                </small>
+              </button>
+            ))}
+          </div>
+          {evaluationStage === "native_then_resample" && (
+            <div className="parameter-grid">
+              <label>
+                Evaluation resolution
+                <input
+                  value={evaluationResolution}
+                  onChange={(event) => setEvaluationResolution(event.target.value)}
+                  placeholder="native"
+                />
+                <small className="field-hint">Use native to choose the finest native input resolution available, or type a metre value such as 30.</small>
+              </label>
+              <label>
+                Final aggregation
+                <select value={postResampling} onChange={(event) => setPostResampling(event.target.value)}>
+                  {["average", "nearest", "bilinear", "mode", "min", "max", "sum"].map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+                <small className="field-hint">How the native-scale result is transferred to the final target grid. Aspect uses circular mean when average-like aggregation is selected.</small>
+              </label>
+            </div>
+          )}
+          {evaluationStage === "native_then_resample" && (
+            <div className="notice info compact-notice">
+              Input-picker resampling does not decide the final value of this derived feature. Native-first
+              evaluation computes the operation before final grid alignment, then uses the Final aggregation
+              selected here to transfer the derived result to the target grid.
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="feature-work-area">
         {buildType === "expression" && (
           <>
@@ -4452,9 +5470,17 @@ function CustomFeatureBuilder({
               <input value={expression} onChange={(event) => setExpression(event.target.value)} />
               <small className="field-hint">Use x, y and z as selected input layers. Inputs y/z become required when the expression references them.</small>
               <div className="expression-keypad">
-                {["where(", "maximum(", "minimum(", "log10(", "sqrt(", "nan", "+", "-", "*", "/"].map((token) => (
+                {EXPRESSION_KEYPAD_TOKENS.map((token) => (
                   <button key={token} className="ghost" onClick={() => setExpression(`${expression}${token}`)}>{token}</button>
                 ))}
+              </div>
+              <div className={`expression-validation-box ${expressionValidation.ok ? "ok" : "bad"}`}>
+                {expressionValidation.ok ? (
+                  <span>Expression syntax looks valid for the selected inputs.</span>
+                ) : (
+                  expressionValidation.errors.map((item) => <span key={item}>{item}</span>)
+                )}
+                {expressionValidation.warnings.map((item) => <span key={item} className="warning-text">{item}</span>)}
               </div>
             </label>
             <div className="input-grid three-inputs">
@@ -4537,8 +5563,14 @@ function CustomFeatureBuilder({
                 {radiusIsRequired() && (
                   <label>
                     Radius in cells *
-                    <input type="number" min={1} value={radius} onChange={(event) => setRadius(Math.max(1, Number(event.target.value)))} />
-                    <small className="field-hint">Used by focal windows and terrain neighbourhood metrics such as TPI, ruggedness and roughness.</small>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={radiusText}
+                      onChange={(event) => setRadiusText(event.target.value.replace(/[^0-9]/g, ""))}
+                      placeholder="1"
+                    />
+                    <small className={`field-hint ${radiusIsValid() ? "" : "error-text"}`}>Used by focal windows and terrain neighbourhood metrics such as TPI, ruggedness and roughness.</small>
                   </label>
                 )}
                 {operation === "distance" && method === "distance_to_class" && (
@@ -4582,6 +5614,7 @@ function CustomFeatureBuilder({
           existingFeatures={existingFeatures}
           projectName={projectName}
           allowCategoryFractions={!(buildType === "masking" && recipe === "class_mask")}
+          nativeTimingContext={evaluationStage === "native_then_resample"}
           filter={(variable) => variableFilter(variable, pickingAlias ?? undefined)}
           onCancel={() => setPickingAlias(null)}
           onConfirm={(bundle) => {
@@ -4790,7 +5823,616 @@ function FeatureReviewPanel({
   );
 }
 
+type InfoCategoryId =
+  | "project"
+  | "workflow"
+  | "feature_builder"
+  | "technical"
+  | "data"
+  | "examples"
+  | "troubleshooting";
+
+type InfoArticle = {
+  id: string;
+  category: InfoCategoryId;
+  title: string;
+  summary: string;
+  paragraphs?: string[];
+  bullets?: Array<{ title: string; text: string }>;
+  steps?: string[];
+  examples?: Array<{ title: string; text: string; code?: string }>;
+  warnings?: string[];
+  tags?: string[];
+};
+
+const INFO_CATEGORIES: Array<{ id: "all" | InfoCategoryId; label: string; description: string }> = [
+  { id: "all", label: "All", description: "Search every guide, concept, example and source." },
+  { id: "project", label: "Project", description: "Purpose, architecture and final-feature logic." },
+  { id: "workflow", label: "UI workflow", description: "Home, AOI, project setup, review and YAML." },
+  { id: "feature_builder", label: "Feature builder", description: "Single features, official layers and operations." },
+  { id: "technical", label: "Technical reference", description: "Semantics, resampling, temporal logic, expressions and grids." },
+  { id: "data", label: "Official data", description: "Providers, products, variables and metadata." },
+  { id: "examples", label: "Examples", description: "Practical recipes for habitat modelling." },
+  { id: "troubleshooting", label: "Troubleshooting", description: "Common warnings, failures and interpretation traps." }
+];
+
+const INFO_ARTICLES: InfoArticle[] = [
+  {
+    id: "project_mission",
+    category: "project",
+    title: "Why Pirineus Raster exists",
+    summary: "A reproducible workbench for building aligned environmental raster datasets for the Pyrenees.",
+    paragraphs: [
+      "Pirineus Raster turns heterogeneous environmental data into a modelling-ready raster dataset. The tool handles official source metadata, downloads, clipping, reprojection, resampling, temporal selection, derived features and final manifests from one run configuration.",
+      "The core design choice is final-feature orientation: the user should think in final dataset variables, not in raw files. A DEM, land-cover map or snow product can be used internally, but the final manifest should contain only the variables that will be analysed or modelled."
+    ],
+    bullets: [
+      { title: "Spatial consistency", text: "Every final raster is aligned to one AOI, CRS, resolution, transform, width and height." },
+      { title: "Reproducibility", text: "The YAML records the final feature definitions, source inputs, temporal choices, resampling and output metadata." },
+      { title: "Ecological modelling", text: "The interface is designed for datasets such as habitat suitability, species distribution, risk mapping and environmental covariates." }
+    ],
+    examples: [
+      { title: "Internal source, final derivative", text: "Use a DEM as an input, but keep only slope, ruggedness and relative altitude in the final dataset." },
+      { title: "Internal categorical map, final fractions", text: "Use a land-cover product internally, but keep only broadleaf, conifer, grassland or shrubland coverage fractions." }
+    ],
+    tags: ["motivation", "final features", "manifest", "dataset"]
+  },
+  {
+    id: "architecture",
+    category: "project",
+    title: "How the repository is organised",
+    summary: "Configs describe data; source modules execute provider-specific work; the workbench compiler translates final features into a run plan.",
+    paragraphs: [
+      "Source YAML files under configs/sources describe provider metadata, variables, dimensions, temporal capabilities and download/build options. AOI configs describe bounds. Run configs describe a final dataset.",
+      "The UI reads the workbench catalog exposed by the Python package. When a run is validated or saved, the feature-oriented YAML is compiled internally into source requirements, derived feature definitions and output rules."
+    ],
+    bullets: [
+      { title: "configs/sources", text: "Official source definitions: provider, product, variables, categories, temporal modes, dimensions and URLs." },
+      { title: "configs/aoi", text: "Study-area definitions with CRS and bounding boxes." },
+      { title: "configs/runs", text: "Dataset recipes. In the new format, features are the source of truth." },
+      { title: "src/sources", text: "Provider-specific download, clip or build adapters." },
+      { title: "src/workbench", text: "Catalog and compiler logic used by the UI and CLI." },
+      { title: "src/pipeline", text: "Validation, resampling, derived raster operations and the run engine." }
+    ],
+    tags: ["repository", "configs", "compiler", "pipeline"]
+  },
+  {
+    id: "home_sections",
+    category: "workflow",
+    title: "Home page sections",
+    summary: "The first page separates dataset creation, AOI creation, saved projects and the complete workbench guide.",
+    bullets: [
+      { title: "Start new project", text: "Build a complete run YAML by defining the project envelope and adding final features." },
+      { title: "New AOI", text: "Create an area-of-interest config from bounds or from the map, validate it against the Pyrenees envelope and create a target grid." },
+      { title: "My projects", text: "List saved run YAMLs under configs/runs, inspect final features and validation messages, edit a project or delete old configs." },
+      { title: "Workbench guide", text: "A searchable documentation repository plus the live source catalog, examples, operations, temporal logic and technical reference." }
+    ],
+    tags: ["home", "navigation", "start"]
+  },
+  {
+    id: "new_aoi",
+    category: "workflow",
+    title: "New AOI: bounds, CRS and grid",
+    summary: "Create an AOI config and an aligned target grid before long dataset runs.",
+    paragraphs: [
+      "The AOI form stores bounds in the CRS selected by the user. The map display reprojects those bounds for visualisation, so EPSG:4326 and EPSG:3035 coordinates are not interchangeable.",
+      "Resolution checks test whether the bounding box is divisible by the project resolutions. Reboundary expands the bounds minimally so the target grid can be created without partial cells."
+    ],
+    bullets: [
+      { title: "CRS", text: "Always enter coordinates in the CRS shown in the AOI form. EPSG:3035 uses metres; EPSG:4326 uses degrees." },
+      { title: "Map drawing", text: "The rectangle tool edits the bounding box visually; pan and zoom only move the map." },
+      { title: "Validation", text: "The UI checks a broad Pyrenees envelope and warns when bounds or divisibility look suspicious." },
+      { title: "Target grid", text: "The grid is the exact spatial template used by final rasters during build." }
+    ],
+    warnings: [
+      "A projected bounding box can look rotated or curved on a web map because the web map is displayed in a different projection.",
+      "A grid can be valid in EPSG:3035 even if its visual footprint does not look like a perfect rectangle on a north-up web map."
+    ],
+    tags: ["AOI", "CRS", "EPSG:3035", "bounds", "grid", "reboundary"]
+  },
+  {
+    id: "project_setup",
+    category: "workflow",
+    title: "Project Setup",
+    summary: "Define the spatial and execution envelope before adding features.",
+    bullets: [
+      { title: "Run name", text: "Stable identifier used for the YAML file, logs and output naming." },
+      { title: "Description", text: "Human explanation of the dataset purpose. It is stored in the run config." },
+      { title: "AOI", text: "The configured study area. It controls tile filtering, clipping and the output grid." },
+      { title: "Output CRS", text: "Final raster CRS. Native source CRS is handled internally and recorded where metadata exists." },
+      { title: "Resolution", text: "Final cell size in metres for projected grids, for example 100 m." },
+      { title: "Stages", text: "Use all for normal runs. Split download, clip and build only for debugging or reruns." },
+      { title: "Dataset directory", text: "Where final rasters, metadata and manifests are written." }
+    ],
+    examples: [
+      { title: "Bear habitat dataset", text: "Use EPSG:3035 and 100 m when matching an existing European equal-area reference grid." }
+    ],
+    tags: ["project setup", "stages", "resolution", "dataset directory"]
+  },
+  {
+    id: "feature_builder_overview",
+    category: "feature_builder",
+    title: "Feature Builder overview",
+    summary: "The right column is the dataset; the left column is a workshop for creating final features.",
+    paragraphs: [
+      "Every confirmed feature appears in the right sidebar. That list is the clearest preview of the final dataset. Features can be edited or removed, and existing features can be used as inputs for later derived features.",
+      "The builder has two main paths: build one custom feature with processing, or add several official source layers without additional derived operations."
+    ],
+    bullets: [
+      { title: "Build custom feature", text: "Best for slope, masks, ratios, formulas, distances, focal summaries, category-fraction chains and named ecological variables." },
+      { title: "Add official source layers", text: "Best when several raw provider variables should be kept as final outputs with dimensions, temporal selections and resampling only." },
+      { title: "Feature dependencies", text: "A derived feature can depend on official inputs or on a feature already created earlier in the same project." },
+      { title: "Output preview", text: "Dimension and temporal selections can expand one feature definition into multiple output rasters." }
+    ],
+    warnings: [
+      "If an official raster is only needed as an input, do not add it as an official final layer. Select it inside the custom feature instead.",
+      "Removing a feature that other features depend on should also remove or invalidate dependent features."
+    ],
+    tags: ["feature builder", "final feature", "dependency", "sidebar"]
+  },
+  {
+    id: "single_feature",
+    category: "feature_builder",
+    title: "Build custom feature",
+    summary: "Create one named final variable with metadata, inputs, processing and output expansion.",
+    steps: [
+      "Fill feature metadata: name, title, unit and description. Value semantics and dtype are inferred automatically unless you choose an advanced override.",
+      "Choose the operation family: official source layer, guided recipe, masking, spatial operation or advanced expression.",
+      "Select the required input variables through the input picker. The picker filters incompatible variables whenever possible.",
+      "Complete dimensions, temporal processing and resampling for every official input.",
+      "Confirm the feature only when required inputs and parameters are complete."
+    ],
+    bullets: [
+      { title: "Name", text: "Machine-friendly identifier. It should be stable, lowercase-friendly and unique after expansion." },
+      { title: "Title", text: "Human-friendly label shown in cards and manifests." },
+      { title: "Unit", text: "Examples: m, degrees, fraction, percent, Mg/ha, people, unitless." },
+      { title: "Value semantics", text: "Meaning of the stored values. It is inferred from the input source and operation, then used for resampling, filtering and validation." },
+      { title: "Output dtype", text: "Storage type. It is inferred from semantics and operation: most continuous outputs are float32; masks are usually uint8." }
+    ],
+    tags: ["single feature", "metadata", "operation family"]
+  },
+  {
+    id: "input_picker",
+    category: "feature_builder",
+    title: "Input picker",
+    summary: "The modal walks from origin to source, variable, category, dimensions, temporal processing and resampling.",
+    paragraphs: [
+      "The input picker is deliberately staged so the user cannot accidentally select a vague source without defining which variable, dimensions and temporal outputs are meant.",
+      "Official inputs can come from providers such as Copernicus, ESA, GHSL, WorldClim, PDCA, OpenStreetMap and geology products. Project inputs come from features already created in the current run."
+    ],
+    steps: [
+      "Origin: choose official sources or an already-created project feature.",
+      "Provider: choose the global source family.",
+      "Product: choose the subsource/product inside that provider.",
+      "Variable: choose one variable or layer compatible with the current operation.",
+      "Category: optionally convert categorical classes into category fractions.",
+      "Dimensions: select non-temporal variants such as GCM, SSP, period, product year or season dimension.",
+      "Temporal: keep supplied layers, add one or more named aggregations, or choose raw slices where supported.",
+      "Resampling: choose how the selected output is transferred to the project grid."
+    ],
+    warnings: [
+      "Dimensions and temporal selections are different concepts. A CMIP6 period such as 2021-2040 is a scenario dimension; a monthly or yearly slice is temporal output selection.",
+      "When the provider has multiple native resolutions, choose the source resolution before confirming the input."
+    ],
+    tags: ["input picker", "dimensions", "temporal", "resampling", "source resolution"]
+  },
+  {
+    id: "official_layers",
+    category: "feature_builder",
+    title: "Add official source layers",
+    summary: "Bulk-add provider variables as final outputs without derived processing.",
+    paragraphs: [
+      "This path is for source variables that are already meaningful final covariates. It still lets the user choose category fractions, dimensions, temporal mode, original source resolution and final resampling.",
+      "It is not the right path for slope, formulas, masks, focal windows or distance features. Use Build custom feature for those."
+    ],
+    bullets: [
+      { title: "Multiple variables", text: "Select several variables from the same product and add them together." },
+      { title: "Category fractions", text: "For categorical variables, select classes or class groups that should become separate fraction outputs." },
+      { title: "Temporal processing", text: "For temporal products, use supplied layers or add named aggregations before confirming." },
+      { title: "Resampling", text: "Every selected original variable or category fraction can have its own final resampling method." }
+    ],
+    examples: [
+      { title: "Climate covariates", text: "Add monthly WorldClim variables as supplied layers or named seasonal aggregates." },
+      { title: "Tree-cover density", text: "Add a continuous Copernicus tree-cover variable and choose average resampling to 100 m." }
+    ],
+    tags: ["official layers", "bulk", "source layer"]
+  },
+  {
+    id: "guided_recipes",
+    category: "feature_builder",
+    title: "Guided recipes",
+    summary: "Predefined formulas with stricter input expectations than free expressions.",
+    paragraphs: [
+      "Guided recipes exist for common ecological variables where the formula is known and inputs should be constrained. They are safer than free expressions for standard operations because the UI can filter inputs and the backend can validate recipes."
+    ],
+    bullets: [
+      { title: "Thermal range", text: "Requires maximum temperature and minimum temperature. Formula: tmax - tmin." },
+      { title: "Water balance", text: "Requires precipitation and potential evapotranspiration. Formula: prec - pet." },
+      { title: "Aridity index", text: "Requires precipitation and PET. Convention can be prec/pet or pet/prec depending on parameters." },
+      { title: "Snow persistence ratio", text: "Requires snow-days and valid-days inputs. Formula: snow_days / valid_days, with division protected against invalid denominators." },
+      { title: "Seasonal contrast", text: "Compares two numeric inputs by difference or ratio depending on parameters." }
+    ],
+    warnings: [
+      "For multi-input temporal features, only matching temporal labels are combined. If one input has winter_2018 and the other does not, that output is skipped.",
+      "Valid-days in the snow recipe means the number of observations that were usable for the same period as the snow-days layer. It is the denominator that prevents cloudy/no-data periods from looking snow-free."
+    ],
+    examples: [
+      { title: "Annual thermal range", text: "Select annual or aggregate tmax and tmin outputs with matching temporal keys, then build thermal range." },
+      { title: "Snow persistence", text: "Create snow-days and valid-days winter aggregations from HRSI snow, then build the ratio." }
+    ],
+    tags: ["recipe", "thermal range", "water balance", "aridity", "snow persistence", "valid days"]
+  },
+  {
+    id: "masking",
+    category: "feature_builder",
+    title: "Masking, class masks and category fractions",
+    summary: "Masks create binary final rasters; category fractions preserve sub-cell class composition.",
+    paragraphs: [
+      "Masking and category fractions are related but not the same. A class mask tests a class after the source has been aligned to the final grid. A category fraction converts native categorical pixels to 0/1 before resampling, so average resampling can preserve coverage proportions.",
+      "For habitat percentage variables, category fractions are usually the right choice. For distance-to-road, distance-to-urban or other presence/absence workflows, a binary mask is usually the right choice."
+    ],
+    bullets: [
+      { title: "Binary threshold mask", text: "Numeric input becomes 1 where it passes a threshold and 0 elsewhere." },
+      { title: "Class mask", text: "Categorical input becomes 1 where the final aligned class code equals the chosen class and 0 elsewhere." },
+      { title: "Reclassification", text: "Categorical or ordinal codes are mapped to new class values." },
+      { title: "Category fraction", text: "Native categorical pixels are sliced before resampling. With average, the final value is a 0-1 coverage fraction." }
+    ],
+    examples: [
+      { title: "Broadleaf cover at 100 m", text: "Use a land-cover product at native resolution, select broadleaf category fraction, choose average resampling, and store the output as fraction." },
+      { title: "Distance to settlements", text: "Use a settlement presence mask, then spatial distance_to_mask." }
+    ],
+    warnings: [
+      "Do not build a class mask from a resampled categorical map if the goal is percent cover. That loses minority classes before the mask is created.",
+      "Averaging a binary mask intentionally changes the meaning from binary to fraction."
+    ],
+    tags: ["mask", "class mask", "category fraction", "binary threshold", "reclassification"]
+  },
+  {
+    id: "spatial_operations",
+    category: "feature_builder",
+    title: "Spatial operations",
+    summary: "Terrain, focal and distance operations add spatial context beyond per-cell source values.",
+    bullets: [
+      { title: "DEM terrain", text: "Requires an elevation/DEM layer. Methods: slope, aspect, ruggedness, TPI and roughness." },
+      { title: "Focal window", text: "Neighbourhood statistics around each cell. Numeric methods include mean, std, min, max and sum; categorical methods include majority and diversity." },
+      { title: "Distance", text: "Distance in metres to positive mask pixels or to cells with a selected class." },
+      { title: "Radius", text: "Focal and neighbourhood terrain methods use radius in the grid where the operation is evaluated. At target-grid 100 m, radius 5 means roughly 500 m; with native-first 30 m evaluation, radius 5 means roughly 150 m before final aggregation." },
+      { title: "Evaluation timing", text: "After resampling computes the operation on the final project grid and is faster. Before resampling computes on a native/intermediate metric grid and then aggregates to the final grid, which is recommended for slope, ruggedness, focal summaries and distance surfaces when native detail matters." }
+    ],
+    examples: [
+      { title: "Relative altitude", text: "Build focal mean elevation with a radius matching the ecological neighbourhood, preferably native-first if the DEM is finer than the target grid, then advanced expression x - y." },
+      { title: "Road accessibility", text: "Build or select a road/track mask, then spatial distance_to_mask." },
+      { title: "Terrain complexity", text: "Use DEM terrain ruggedness or roughness with a radius selected for the target scale." }
+    ],
+    tags: ["terrain", "slope", "aspect", "ruggedness", "TPI", "focal", "distance"]
+  },
+  {
+    id: "advanced_expression",
+    category: "feature_builder",
+    title: "Advanced expression",
+    summary: "A safe map-algebra engine for formulas with x, y, z and a small set of approved functions.",
+    paragraphs: [
+      "Advanced expression is for formulas that are not covered by guided recipes. Inputs are named x, y and z. The expression is parsed with a restricted AST evaluator; it is not arbitrary Python and cannot import modules, call unknown functions or use keyword arguments.",
+      "Use expressions for ratios, normalised differences, protected division, simple transformations and chained derived features. Use guided recipes when a standard ecological formula already exists."
+    ],
+    bullets: [
+      { title: "Allowed variables", text: "x is required. y and z are optional until the expression references them." },
+      { title: "Allowed operators", text: "+, -, *, /, **, comparisons, and/or/not, unary plus and unary minus." },
+      { title: "Allowed constants", text: "Numeric constants and nan are accepted." },
+      { title: "Allowed functions", text: "abs, sqrt, log, log10, exp, minimum, maximum, where, clip and isfinite." },
+      { title: "Output", text: "The backend writes a raster expression output using aligned inputs. Non-finite results are treated as nodata/nan where appropriate." }
+    ],
+    examples: [
+      { title: "Protected ratio", text: "Divide x by y but avoid division by zero.", code: "where(y > 0, x / y, nan)" },
+      { title: "Log distance", text: "Compress a distance raster.", code: "log10(x + 1)" },
+      { title: "Normalised difference", text: "Scale the difference between two inputs.", code: "(x - y) / maximum(x + y, 1)" },
+      { title: "Bounded anomaly", text: "Clip a standardised difference.", code: "clip((x - y) / maximum(z, 1), -5, 5)" }
+    ],
+    warnings: [
+      "Do not use Python functions that are not listed here. They will fail validation.",
+      "Boolean logic is evaluated as raster logic, but each condition must still be meaningful for arrays."
+    ],
+    tags: ["advanced expression", "map algebra", "where", "nan", "clip", "log10"]
+  },
+  {
+    id: "dimensions_temporal",
+    category: "technical",
+    title: "Dimensions versus temporal outputs",
+    summary: "Dimensions describe product variants; temporal outputs describe time selections or aggregations.",
+    paragraphs: [
+      "A dimension is a non-temporal or product-axis choice such as GCM, SSP, CMIP6 period, HR-VPP growth season or product-year dimension. Temporal output is the actual time slice or named aggregate that becomes an output label.",
+      "The compiler expands non-temporal dimensions as combinations. For multi-input derived features, temporal labels are intersected so mismatched time periods are not silently combined."
+    ],
+    bullets: [
+      { title: "Supplied layers", text: "Keep source-provided years, months, seasons or index layers." },
+      { title: "Aggregate", text: "Create one or more named summaries over available source time steps." },
+      { title: "Raw slices", text: "Keep smaller source time steps when the source supports them." },
+      { title: "Postprocess aggregate", text: "Used when a heavy source should aggregate during download/postprocess, such as snow products." }
+    ],
+    examples: [
+      { title: "WorldClim CMIP6", text: "GCM, SSP and period are dimensions. Monthly outputs are temporal layers." },
+      { title: "ESA biomass", text: "Available years are temporal choices; aggregation years must exist in the source availability." },
+      { title: "Two-input recipe", text: "If tmax has annual_2020 and annual_2021 but tmin only has annual_2020, the recipe keeps annual_2020 only." }
+    ],
+    warnings: [
+      "Selecting a dimension does not automatically select all temporal outputs inside it.",
+      "Aggregating categorical class codes with mean is not meaningful; use supplied layers, mode-like treatment or category fractions."
+    ],
+    tags: ["dimensions", "temporal", "aggregate", "supplied layers", "raw slices", "intersection"]
+  },
+  {
+    id: "value_semantics_article",
+    category: "technical",
+    title: "Value semantics",
+    summary: "Project metadata describing what raster values mean and which operations are safe.",
+    paragraphs: [
+      "Value semantics is not a strict GeoTIFF standard. It is a Pirineus Raster convention based on common GIS and statistical concepts. It makes the UI and compiler more honest about whether a variable is a class, a continuous field, a coverage ratio, a count, a total or an angle.",
+      "In normal use this field is inferred automatically from the official source metadata and the processing operation. The user should only override it when an advanced expression creates an output whose meaning cannot be inferred safely.",
+      "The key distinction is not only categorical versus numeric. Numeric values can still mean very different things: a temperature, a precipitation depth, a population count, a ratio and a built-up area total should not be resampled or aggregated in the same way."
+    ],
+    bullets: [
+      { title: "Categorical", text: "Codes are labels. Use nearest/mode for class maps; do not calculate means over class codes." },
+      { title: "Binary", text: "0/1 presence masks. Keep as masks with nearest/mode or turn into fractions with average intentionally." },
+      { title: "Intensive", text: "Local continuous fields such as elevation, temperature, slope, biomass density or distance." },
+      { title: "Percentage/fraction", text: "Coverage or proportion fields. Use average for coarser grids." },
+      { title: "Ratio", text: "Unitless x/y-style values that are not necessarily limited to 0-1, such as aridity indexes." },
+      { title: "Extensive/count", text: "Totals or counts where conservation matters when changing cell size." },
+      { title: "Circular", text: "Angles such as aspect where 0 and 360 are neighbours." }
+    ],
+    tags: ["value semantics", "categorical", "binary", "fraction", "ratio", "extensive", "circular", "auto"]
+  },
+  {
+    id: "resampling_article",
+    category: "technical",
+    title: "Resampling and source resolution",
+    summary: "Resampling decides how native data becomes the target grid.",
+    paragraphs: [
+      "Each source has a native resolution and CRS. The project has a target CRS and resolution. Resampling is the rule used when values are transferred from the source grid to the target grid.",
+      "A good resampling choice depends on value semantics. There is no universal best method."
+    ],
+    bullets: [
+      { title: "nearest", text: "Keeps one source value. Useful for class codes and masks when the output must remain a code." },
+      { title: "mode", text: "Keeps the most frequent class. Useful for categorical dominant-class outputs." },
+      { title: "average", text: "Good for continuous fields and category fractions. It preserves coverage proportions when averaging 0/1 native slices." },
+      { title: "bilinear/cubic", text: "Smooth interpolation for continuous fields. Avoid for class codes." },
+      { title: "sum/conservative_sum", text: "Use for totals or counts where the total amount should be conserved across cell-size changes." }
+    ],
+    examples: [
+      { title: "Land-cover class at 100 m", text: "Use mode or nearest if the final output is one class code." },
+      { title: "Broadleaf fraction at 100 m", text: "Use category fraction plus average." },
+      { title: "Population count", text: "Use conservative handling when changing grid size if the value is a count per cell." }
+    ],
+    tags: ["resampling", "nearest", "mode", "average", "bilinear", "conservative_sum"]
+  },
+  {
+    id: "yaml_runner",
+    category: "technical",
+    title: "YAML, compiler and runner",
+    summary: "The saved YAML is feature-oriented; the compiler derives the internal source plan.",
+    paragraphs: [
+      "The new run format stores run metadata, final features and output options. It does not require the user to maintain top-level source shopping lists or separate derived feature blocks.",
+      "During validation or run execution, the compiler reads final features, calculates source requirements, expands dimensions and temporal outputs, builds internal aliases and produces the execution plan used by the runner."
+    ],
+    bullets: [
+      { title: "Validation", text: "Checks missing metadata, unsupported operations, incompatible inputs, duplicate expanded outputs and temporal mismatches." },
+      { title: "Rendering", text: "Shows the YAML that will be saved or downloaded." },
+      { title: "Save YAML", text: "Writes the run config into configs/runs so the CLI can execute it." },
+      { title: "Runner", text: "Downloads, clips, builds and derives outputs, then writes the final manifest." },
+      { title: "Intermediate rasters", text: "May exist while the run executes, but final outputs should contain only confirmed features." }
+    ],
+    tags: ["YAML", "compiler", "runner", "validate", "manifest", "intermediate"]
+  },
+  {
+    id: "official_data_article",
+    category: "data",
+    title: "Official data catalog",
+    summary: "The catalog below is live metadata from the repository, grouped by provider and product.",
+    paragraphs: [
+      "Each configured source can expose variables, vector layers, indexes, category classes, dimensions, source resolution choices and temporal capabilities. The source browser below is generated from the same catalog used by the New Project workflow.",
+      "Official URLs and citations are included when the source config provides them. Use them to check provider documentation, licensing, definitions and availability."
+    ],
+    bullets: [
+      { title: "Provider", text: "The global data family, for example Copernicus, ESA, GHSL, WorldClim, OSM or geology products." },
+      { title: "Product/subsource", text: "A configured dataset inside the provider, with its own variables, CRS, temporal model and download logic." },
+      { title: "Variable", text: "A raster band, index, vector-derived layer or category fraction candidate that can become an input or final output." }
+    ],
+    tags: ["sources", "catalog", "provider", "variables", "metadata"]
+  },
+  {
+    id: "bear_dataset_examples",
+    category: "examples",
+    title: "Brown bear dataset examples",
+    summary: "How to translate common habitat variables into Pirineus Raster features.",
+    bullets: [
+      { title: "Digital elevation model", text: "Add the official DEM/elevation layer as a final feature or use it internally for terrain derivatives." },
+      { title: "Slope", text: "Build custom feature -> spatial operation -> DEM terrain -> slope." },
+      { title: "Ruggedness", text: "Build custom feature -> spatial operation -> DEM terrain -> ruggedness or roughness; choose a radius in cells." },
+      { title: "Relative altitude", text: "Create focal mean elevation, then advanced expression x - y where x is elevation and y is the focal mean." },
+      { title: "Tree-cover density", text: "Use a continuous Copernicus tree-cover/forest-density layer with average resampling." },
+      { title: "Broadleaf, conifer, mixed forest, grassland, shrubland, rock", text: "Use category fractions from the best land-cover product and average resampling to 100 m." },
+      { title: "Biomass", text: "Use ESA CCI biomass AGB or another biomass source, selecting year or temporal aggregate." },
+      { title: "Distance to roads/tracks/settlements", text: "Use OpenStreetMap or settlement layers as masks, then spatial distance_to_mask, optionally log10(x + 1)." },
+      { title: "Population density", text: "Use GHSL population or derived density fields with the appropriate temporal selection." }
+    ],
+    examples: [
+      { title: "Log distance", text: "After building distance to tracks, use advanced expression to compress the long tail.", code: "log10(x + 1)" },
+      { title: "Forest availability", text: "Combine several forest fractions in an expression.", code: "minimum(x + y + z, 1)" }
+    ],
+    tags: ["bear", "ursus", "habitat", "topography", "forest", "roads", "population"]
+  },
+  {
+    id: "example_category_fraction",
+    category: "examples",
+    title: "Example: percent cover from a categorical map",
+    summary: "Use category fractions, not class masks, when the final value should be a coverage ratio.",
+    steps: [
+      "Choose Build custom feature or Add official source layers.",
+      "Select the categorical land-cover source and variable.",
+      "In the category step, select the class or class group, for example broadleaf forest.",
+      "Confirm the inferred semantics as fraction and keep average resampling.",
+      "Do not add the original categorical variable unless you also need the dominant/code raster.",
+      "At 100 m, the final raster stores values such as 0.65, meaning 65% of the cell is that class."
+    ],
+    warnings: [
+      "If the source native resolution is already 100 m and the target grid is also 100 m, fractions may be mostly 0 or 1 unless the source product itself stores sub-cell composition.",
+      "For very fine habitat percentages, prefer the highest-quality finer-resolution source available."
+    ],
+    tags: ["category fraction", "percentage", "land cover", "habitat", "resampling"]
+  },
+  {
+    id: "troubleshooting_validation",
+    category: "troubleshooting",
+    title: "Common validation and run issues",
+    summary: "Most failures come from missing dimensions, unsupported source combinations, temporal mismatch or unsafe categorical operations.",
+    bullets: [
+      { title: "Temporal output_mode static is not supported", text: "The selected source is temporal. Choose supplied layers, aggregate, raw slices or postprocess aggregate if the source supports them." },
+      { title: "No temporal overlap", text: "Two or more inputs have different temporal labels. Align their supplied layers or give aggregations the same name." },
+      { title: "404 or missing download", text: "The provider may not publish that exact combination of model, scenario, period, year or resolution. Narrow the dimensions or check the official product page." },
+      { title: "Categorical aggregation rejected", text: "Do not aggregate class codes with numeric means. Use supplied layers, category fractions or masks." },
+      { title: "Too many outputs", text: "Using All on several dimensions creates a product of combinations. Reduce GCMs, SSPs, periods, years or categories." },
+      { title: "CRS looks wrong on the map", text: "Check that coordinates were entered in the selected CRS and remember that web maps render projected AOIs through another projection." },
+      { title: "Background or UI not updating", text: "Restart the Vite dev server or hard-refresh the browser if cached frontend assets are stale." }
+    ],
+    tags: ["validation", "404", "temporal overlap", "categorical aggregation", "CRS", "debug"]
+  }
+];
+
+const EXPRESSION_FUNCTION_REFERENCE = [
+  { name: "abs(x)", description: "Absolute value.", example: "abs(x)" },
+  { name: "sqrt(x)", description: "Square root. Inputs below zero become nan.", example: "sqrt(maximum(x, 0))" },
+  { name: "log(x)", description: "Natural logarithm.", example: "log(x + 1)" },
+  { name: "log10(x)", description: "Base-10 logarithm, often useful for distances.", example: "log10(x + 1)" },
+  { name: "exp(x)", description: "Exponential function.", example: "exp(x)" },
+  { name: "minimum(x, y)", description: "Cell-wise minimum between two rasters or values.", example: "minimum(x, 1)" },
+  { name: "maximum(x, y)", description: "Cell-wise maximum between two rasters or values.", example: "maximum(y, 1)" },
+  { name: "where(condition, a, b)", description: "Cell-wise conditional selection.", example: "where(x > 0, x, nan)" },
+  { name: "clip(x, min, max)", description: "Limit values to a numeric range.", example: "clip(x, 0, 1)" },
+  { name: "isfinite(x)", description: "True where values are neither nan nor infinite.", example: "where(isfinite(x), x, nan)" },
+  { name: "nan", description: "Allowed nodata-like constant for invalid or intentionally missing outputs.", example: "where(y > 0, x / y, nan)" }
+];
+
+const OPERATION_REFERENCE = [
+  {
+    group: "Guided recipe",
+    items: [
+      ["thermal_range", "Maximum temperature minus minimum temperature."],
+      ["water_balance", "Precipitation minus potential evapotranspiration."],
+      ["aridity_index", "Precipitation/PET or PET/precipitation depending on the configured convention."],
+      ["seasonal_contrast", "Difference or ratio between two numeric seasonal/period inputs."],
+      ["snow_persistence_ratio", "Snow-days divided by valid-days for matching periods."]
+    ]
+  },
+  {
+    group: "Masking",
+    items: [
+      ["binary_threshold_mask", "0/1 mask from a numeric threshold."],
+      ["class_mask", "0/1 mask from one final-grid categorical class."],
+      ["reclassification", "Map categorical or ordinal class codes to new values."]
+    ]
+  },
+  {
+    group: "DEM terrain",
+    items: [
+      ["slope", "Slope from DEM/elevation."],
+      ["aspect", "Downslope bearing; circular semantics are appropriate."],
+      ["ruggedness", "Neighbourhood terrain variability."],
+      ["tpi", "Topographic position index: elevation relative to local neighbourhood."],
+      ["roughness", "Local elevation range/roughness metric."]
+    ]
+  },
+  {
+    group: "Focal window",
+    items: [
+      ["mean", "Neighbourhood mean."],
+      ["std", "Neighbourhood standard deviation."],
+      ["min", "Neighbourhood minimum."],
+      ["max", "Neighbourhood maximum."],
+      ["sum", "Neighbourhood sum."],
+      ["majority", "Most frequent class in a neighbourhood."],
+      ["diversity", "Number/diversity of classes in a neighbourhood."]
+    ]
+  },
+  {
+    group: "Distance",
+    items: [
+      ["distance_to_mask", "Distance in metres to the nearest positive mask cell."],
+      ["distance_to_class", "Distance in metres to the nearest cell with the selected categorical class."]
+    ]
+  }
+];
+
+function normalizeSearch(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function matchesQuery(query: string, ...parts: Array<unknown>) {
+  if (!query) return true;
+  return parts
+    .flatMap((part) => Array.isArray(part) ? part : [part])
+    .filter((part) => part !== undefined && part !== null)
+    .join(" ")
+    .toLowerCase()
+    .includes(query);
+}
+
+function infoArticleSearchText(article: InfoArticle) {
+  return [
+    article.title,
+    article.summary,
+    article.paragraphs,
+    article.bullets?.map((item) => `${item.title} ${item.text}`).join(" "),
+    article.steps,
+    article.examples?.map((item) => `${item.title} ${item.text} ${item.code ?? ""}`).join(" "),
+    article.warnings,
+    article.tags
+  ].join(" ");
+}
+
+function expressionReferenceSearchText() {
+  return EXPRESSION_FUNCTION_REFERENCE
+    .map((item) => `${item.name} ${item.description} ${item.example}`)
+    .join(" ");
+}
+
+function operationReferenceSearchText() {
+  return OPERATION_REFERENCE
+    .map((group) => `${group.group} ${group.items.map((item) => item.join(" ")).join(" ")}`)
+    .join(" ");
+}
+
+function variableSearchText(variable: VariableCatalog) {
+  return [
+    variable.name,
+    variable.description,
+    variable.kind,
+    variable.unit,
+    variable.data_type,
+    variable.value_semantics,
+    semanticLabel(variable.value_semantics),
+    semanticInfo(variable.value_semantics).description,
+    variable.category_classes?.map((item) => `${item.name ?? ""} ${item.label ?? ""} ${categoryClassValues(item).join(" ")}`).join(" ")
+  ].join(" ");
+}
+
+function sourceSearchText(source: SourceCatalog) {
+  return [
+    source.id,
+    sourceDisplayName(source),
+    sourceShortName(source),
+    providerDisplayName(source),
+    source.description,
+    source.long_description,
+    source.summary,
+    source.temporal?.label,
+    source.temporal?.kind,
+    sourceVariables(source).map(variableSearchText).join(" ")
+  ].join(" ");
+}
+
 function SourcesInfoPanel({ catalog }: { catalog: WorkbenchCatalog }) {
+  const [query, setQuery] = useState("");
+  const [activeCategory, setActiveCategory] = useState<"all" | InfoCategoryId>("all");
+  const search = normalizeSearch(query);
   const groupedSources = useMemo(() => {
     const groupMap = new Map<string, SourceCatalog[]>();
     for (const source of catalog.sources) {
@@ -4812,85 +6454,344 @@ function SourcesInfoPanel({ catalog }: { catalog: WorkbenchCatalog }) {
       }));
   }, [catalog.source_groups, catalog.sources]);
 
+  const semanticEntries = (catalog.value_semantics ?? Object.keys(VALUE_SEMANTIC_INFO))
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .map((value) => ({ value, info: semanticInfo(value) }));
+
+  const visibleArticles = INFO_ARTICLES.filter((article) =>
+    (activeCategory === "all" || article.category === activeCategory) &&
+    matchesQuery(search, infoArticleSearchText(article))
+  );
+  const visibleSemanticEntries = semanticEntries.filter(({ value, info }) =>
+    (activeCategory === "all" || activeCategory === "technical") &&
+    matchesQuery(search, value, info.label, info.group, info.description, info.examples, info.resampling, info.caveat)
+  );
+  const showExpressionReference =
+    (activeCategory === "all" || activeCategory === "feature_builder" || activeCategory === "technical") &&
+    matchesQuery(search, "advanced expression functions operators where nan map algebra", expressionReferenceSearchText());
+  const showOperationReference =
+    (activeCategory === "all" || activeCategory === "feature_builder" || activeCategory === "technical") &&
+    matchesQuery(search, "operations recipes spatial masking terrain focal distance", operationReferenceSearchText());
+  const showSources = activeCategory === "all" || activeCategory === "data";
+
+  const visibleGroups = groupedSources
+    .map((group) => {
+      const groupMatches = matchesQuery(
+        search,
+        group.provider,
+        group.meta?.title,
+        group.meta?.summary,
+        group.meta?.long_description
+      );
+      const sources = group.sources.filter((source) =>
+        showSources && (groupMatches || matchesQuery(search, sourceSearchText(source)))
+      );
+      return { ...group, sources, groupMatches };
+    })
+    .filter((group) => group.sources.length > 0);
+
+  const totalVariables = catalog.sources.reduce((total, source) => total + sourceVariables(source).length, 0);
+  const visibleArticleCount = visibleArticles.length;
+  const hasResults =
+    visibleGroups.length > 0 ||
+    visibleArticleCount > 0 ||
+    visibleSemanticEntries.length > 0 ||
+    showExpressionReference ||
+    showOperationReference;
+
   return (
-    <main className="workspace sources-info-workspace">
-      <section className="panel sources-overview-panel">
-        <h2>Available Sources</h2>
+    <main className="workspace sources-info-workspace info-repository-workspace">
+      <section className="panel sources-overview-panel info-repository-hero">
+        <span className="eyebrow">Pirineus Raster reference</span>
+        <h2>Project information repository</h2>
         <p className="builder-copy">
-          Browse source families first, then open each configured sub-source to inspect variables,
-          temporal behaviour, units and links.
+          Search the practical and technical documentation for the whole workbench: project logic, UI sections,
+          feature construction, temporal processing, resampling, advanced expressions, source metadata and examples.
         </p>
+        <div className="info-stat-strip">
+          <span><strong>{INFO_ARTICLES.length}</strong> guide articles</span>
+          <span><strong>{catalog.source_groups?.length ?? 0}</strong> source families</span>
+          <span><strong>{catalog.sources.length}</strong> configured products</span>
+          <span><strong>{totalVariables}</strong> variables/layers</span>
+        </div>
+        <label className="info-search-field">
+          Search anything in the repository
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Try: category fraction, snow, resampling, CRS, advanced expression, GHSL, bear..."
+          />
+        </label>
+        <div className="info-category-tabs" aria-label="Information categories">
+          {INFO_CATEGORIES.map((category) => (
+            <button
+              key={category.id}
+              className={activeCategory === category.id ? "active" : ""}
+              onClick={() => setActiveCategory(category.id)}
+              title={category.description}
+            >
+              {category.label}
+            </button>
+          ))}
+        </div>
       </section>
-      <section className="source-info-tree">
-        {groupedSources.map((group) => (
-          <details key={group.provider} className="source-group source-family">
-            <summary>
-              <span>
-                <strong>{group.meta?.title ?? humanizeId(group.provider)}</strong>
-                <small>{group.meta?.summary ?? `${group.sources.length} configured sub-sources`}</small>
-              </span>
-              {group.meta?.official_url && (
-                <a href={group.meta.official_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-                  Official site
-                </a>
-              )}
-            </summary>
-            {group.meta?.long_description && <p className="source-group-description">{group.meta.long_description}</p>}
-            {group.meta?.references && group.meta.references.length > 0 && (
-              <div className="reference-links">
-                {group.meta.references.map((reference) => (
-                  <a key={reference.url} href={reference.url} target="_blank" rel="noreferrer">{reference.label}</a>
-                ))}
-              </div>
-            )}
-            <div className="source-stack nested-source-stack">
-              {group.sources.map((source) => (
-                <details key={source.id} className="source-card detailed subsource-card">
+
+      {!hasResults && (
+        <section className="notice info">No information matches "{query}". Try a broader word.</section>
+      )}
+
+      <section className="panel info-library-panel">
+        <div className="panel-head">
+          <h2>Guides and concepts</h2>
+          <span className="field-hint">{visibleArticleCount} matching articles</span>
+        </div>
+        <div className="info-article-list">
+          {visibleArticles.map((article, index) => (
+            <details
+              key={article.id}
+              className="info-article-card"
+              open={search ? true : index < 2 && activeCategory === "all" ? true : undefined}
+            >
               <summary>
                 <span>
-                  <strong>{sourceDisplayName(source)}</strong>
-                  <small>{sourceShortName(source)} · {providerDisplayName(source)}</small>
+                  <em>{INFO_CATEGORIES.find((item) => item.id === article.category)?.label ?? humanizeId(article.category)}</em>
+                  <strong>{article.title}</strong>
+                  <small>{article.summary}</small>
                 </span>
-                {sourceOfficialUrl(source) && <a href={sourceOfficialUrl(source)} target="_blank" rel="noreferrer">Official site</a>}
               </summary>
-              <p className="source-group-description">{source.long_description ?? source.description ?? source.summary ?? "No extended description available."}</p>
-              <div className="source-stack">
-                {sourceDimensionEntries(source).length > 0 && (
-                  <div className="mini-list">
-                    {sourceDimensionEntries(source).map(([key, values]) => (
-                      <span key={key}>{key}: {values.length} values</span>
+              <div className="info-article-body">
+                {article.paragraphs?.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
+                {article.steps && (
+                  <ol className="info-step-list">
+                    {article.steps.map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                )}
+                {article.bullets && (
+                  <div className="info-term-grid">
+                    {article.bullets.map((item) => (
+                      <article key={`${article.id}-${item.title}`}>
+                        <strong>{item.title}</strong>
+                        <span>{item.text}</span>
+                      </article>
                     ))}
                   </div>
                 )}
-                {source.temporal && (
-                  <div className="notice info compact-notice">
-                    Temporal model: {source.temporal.label ?? source.temporal.kind}
+                {article.examples && (
+                  <div className="info-example-grid">
+                    {article.examples.map((example) => (
+                      <article key={`${article.id}-${example.title}`}>
+                        <strong>{example.title}</strong>
+                        <span>{example.text}</span>
+                        {example.code && <code>{example.code}</code>}
+                      </article>
+                    ))}
                   </div>
                 )}
-                {sourceVariables(source).map((variable) => (
-                  <details key={variable.name} className="variable-card detailed">
-                    <summary className="source-head">
-                      <span className="source-title-row">
-                        <strong>{variable.description ?? humanizeId(variable.name)}</strong>
-                        <small>{variable.name} · {variable.kind}</small>
+                {article.warnings && (
+                  <div className="info-warning-list">
+                    {article.warnings.map((warning) => <span key={warning}>{warning}</span>)}
+                  </div>
+                )}
+              </div>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      {showOperationReference && (
+        <section className="panel operation-reference-panel">
+          <div className="panel-head">
+            <h2>Operation reference</h2>
+            <span className="field-hint">What each builder operation means</span>
+          </div>
+          <div className="operation-reference-grid">
+            {OPERATION_REFERENCE.map((group) => (
+              <article key={group.group} className="operation-reference-card">
+                <h3>{group.group}</h3>
+                <dl>
+                  {group.items.map(([name, description]) => (
+                    <div key={name}>
+                      <dt>{name}</dt>
+                      <dd>{description}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {showExpressionReference && (
+        <section className="panel expression-reference-panel">
+          <div className="panel-head">
+            <h2>Advanced expression language</h2>
+            <span className="field-hint">Safe map algebra accepted by the backend</span>
+          </div>
+          <div className="expression-reference-layout">
+            <div className="notice info compact-notice">
+              Expressions can use x, y and z, numeric constants, nan, arithmetic operators, comparisons,
+              and/or/not, and only the functions listed here. Imports, unknown function calls and keyword
+              arguments are rejected during validation.
+            </div>
+            <div className="expression-function-grid">
+              {EXPRESSION_FUNCTION_REFERENCE.map((item) => (
+                <article key={item.name}>
+                  <strong>{item.name}</strong>
+                  <span>{item.description}</span>
+                  <code>{item.example}</code>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {visibleSemanticEntries.length > 0 && (
+        <section className="panel technical-reference-panel">
+          <div className="panel-head">
+            <h2>Value semantics reference</h2>
+            <span className="field-hint">Meaning of raster values and safe resampling</span>
+          </div>
+        {visibleSemanticEntries.length > 0 && (
+          <div className="semantic-card-grid">
+            {visibleSemanticEntries.map(({ value, info }) => (
+              <article key={value} className="semantic-card">
+                <span className="semantic-card-head">
+                  <strong>{info.label}</strong>
+                  <em>{value}</em>
+                </span>
+                <small>{info.group}</small>
+                <p>{info.description}</p>
+                <dl>
+                  <div>
+                    <dt>Examples</dt>
+                    <dd>{info.examples.join(", ") || "Project-specific values"}</dd>
+                  </div>
+                  <div>
+                    <dt>Resampling</dt>
+                    <dd>{info.resampling}</dd>
+                  </div>
+                  <div>
+                    <dt>Watch out</dt>
+                    <dd>{info.caveat}</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      )}
+
+      {showSources && (
+        <section className="source-info-tree">
+          <div className="panel source-catalog-heading">
+            <div className="panel-head">
+              <h2>Official data catalog</h2>
+              <span className="field-hint">{visibleGroups.length} matching source families</span>
+            </div>
+            <p className="builder-copy">
+              This live catalog is generated from the repository source configs. Open a family, product and variable
+              to inspect meaning, units, dimensions, temporal model, source resolution and resampling guidance.
+            </p>
+          </div>
+          {visibleGroups.map((group) => (
+            <details key={group.provider} className="source-group source-family">
+              <summary>
+                <span>
+                  <strong>{group.meta?.title ?? humanizeId(group.provider)}</strong>
+                  <small>{group.meta?.summary ?? `${group.sources.length} configured sub-sources`}</small>
+                </span>
+                {group.meta?.official_url && (
+                  <a href={group.meta.official_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                    Official site
+                  </a>
+                )}
+              </summary>
+              {group.meta?.long_description && <p className="source-group-description">{group.meta.long_description}</p>}
+              {group.meta?.references && group.meta.references.length > 0 && (
+                <div className="reference-links">
+                  {group.meta.references.map((reference) => (
+                    <a key={reference.url} href={reference.url} target="_blank" rel="noreferrer">{reference.label}</a>
+                  ))}
+                </div>
+              )}
+              <div className="source-stack nested-source-stack">
+                {group.sources.map((source) => (
+                  <details key={source.id} className="source-card detailed subsource-card">
+                    <summary>
+                      <span>
+                        <strong>{sourceDisplayName(source)}</strong>
+                        <small>{sourceShortName(source)} · {providerDisplayName(source)}</small>
                       </span>
-                      <em>{variable.unit ?? variable.geometry_type ?? variable.value_semantics ?? ""}</em>
+                      {sourceOfficialUrl(source) && <a href={sourceOfficialUrl(source)} target="_blank" rel="noreferrer">Official site</a>}
                     </summary>
-                    <div className="variable-detail-grid">
-                      <span><strong>Type</strong>{variable.data_type ?? variable.value_semantics ?? "continuous"}</span>
-                      <span><strong>Resampling</strong>{variable.resampling ?? "source default"}</span>
-                      <span><strong>Native resolution</strong>{variable.native_resolution_m ? `${variable.native_resolution_m} m` : source.native_resolution ?? "source default"}</span>
-                      {variable.valid_range && <span><strong>Valid range</strong>{variable.valid_range.join(" to ")}</span>}
+                    <p className="source-group-description">{source.long_description ?? source.description ?? source.summary ?? "No extended description available."}</p>
+                    <div className="source-meta">
+                      <MetaChip label="Product" value={source.product_group ?? source.product} />
+                      <MetaChip label="Period/version" value={source.source_period ?? source.version ?? "current"} />
+                      <MetaChip label="Native resolution" value={source.native_resolution ?? source.source_resolution ?? "native"} />
+                      <MetaChip label="Source CRS" value={source.source_crs} />
+                    </div>
+                    <div className="source-stack">
+                      {sourceDimensionEntries(source).length > 0 && (
+                        <div className="mini-list">
+                          {sourceDimensionEntries(source).map(([key, values]) => (
+                            <span key={key}>{key}: {values.length} values</span>
+                          ))}
+                        </div>
+                      )}
+                      {source.source_resolution_options && source.source_resolution_options.length > 0 && (
+                        <div className="mini-list">
+                          <span>source resolutions: {source.source_resolution_options.join(", ")}</span>
+                        </div>
+                      )}
+                      {source.temporal && (
+                        <div className="notice info compact-notice">
+                          Temporal model: {source.temporal.label ?? source.temporal.kind}
+                          {source.temporal.note ? ` · ${source.temporal.note}` : ""}
+                        </div>
+                      )}
+                      {sourceVariables(source).map((variable) => (
+                        <details key={variable.name} className="variable-card detailed">
+                          <summary className="source-head">
+                            <span className="source-title-row">
+                              <strong>{variable.description ?? humanizeId(variable.name)}</strong>
+                              <small>{variable.name} · {variable.kind}</small>
+                            </span>
+                            <em>{variable.unit ?? variable.geometry_type ?? variable.value_semantics ?? ""}</em>
+                          </summary>
+                          <div className="variable-detail-grid">
+                            <span><strong>Type</strong>{variable.data_type ?? variable.value_semantics ?? "continuous"}</span>
+                            <span><strong>Semantics</strong>{semanticLabel(variable.value_semantics ?? variable.data_type)}</span>
+                            <span><strong>Resampling</strong>{variable.resampling ?? "source default"}</span>
+                            <span><strong>Native resolution</strong>{variable.native_resolution_m ? `${variable.native_resolution_m} m` : source.native_resolution ?? "source default"}</span>
+                            {variable.valid_range && <span><strong>Valid range</strong>{variable.valid_range.join(" to ")}</span>}
+                            {variable.scale_factor && <span><strong>Scale factor</strong>{variable.scale_factor}</span>}
+                          </div>
+                          <p className="semantic-explanation">{semanticHelpText(variable.value_semantics ?? variable.data_type)}</p>
+                          {variable.category_classes && variable.category_classes.length > 0 && (
+                            <div className="category-reference-list">
+                              {variable.category_classes.map((item) => (
+                                <span key={categoryClassToken(item)}>
+                                  <strong>{item.label || item.name || categoryClassToken(item)}</strong>
+                                  <small>{categoryClassValues(item).join(", ")}</small>
+                                  {item.description && <small>{item.description}</small>}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </details>
+                      ))}
                     </div>
                   </details>
                 ))}
               </div>
             </details>
-              ))}
-            </div>
-          </details>
-        ))}
-      </section>
+          ))}
+        </section>
+      )}
     </main>
   );
 }
@@ -5334,7 +7235,7 @@ function VariablesPanel({
                 <em>{variable.unit ?? variable.geometry_type ?? ""}</em>
               </label>
               <div className="variable-detail-grid">
-                <span><strong>Semantics</strong>{variable.value_semantics ?? variable.data_type ?? "continuous"}</span>
+                <span><strong>Semantics</strong>{semanticLabel(variable.value_semantics ?? variable.data_type)}</span>
                 <span><strong>Default resampling</strong>{variable.resampling ?? "nearest"}</span>
                 <span><strong>Native resolution</strong>{variable.native_resolution_m ? `${variable.native_resolution_m} m` : source.native_resolution ?? "source default"}</span>
                 {variable.valid_range && (
@@ -5475,7 +7376,7 @@ function VariablesPanel({
                     ))}
                   </select>
                   <small className="field-hint">
-                    {item.semantics}
+                    {semanticLabel(item.semantics)}
                   </small>
                 </label>
               );
@@ -7207,12 +9108,15 @@ function DerivedPanel({
             <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="degC, mm, ratio..." />
           </label>
           <label>
-            Value semantics
+            <span className="label-line">
+              Value semantics <InfoTip text={semanticHelpText(valueSemantics)} />
+            </span>
             <select value={valueSemantics} onChange={(event) => setValueSemantics(event.target.value)}>
-              {(catalog.value_semantics ?? ["intensive", "percentage", "categorical"]).map((item) => (
-                <option key={item} value={item}>{item}</option>
+              {(catalog.value_semantics ?? ["categorical", "ordinal", "binary", "intensive", "intensive_depth", "percentage", "fraction", "ratio", "extensive", "count", "circular"]).map((item) => (
+                <option key={item} value={item}>{semanticLabel(item)}</option>
               ))}
             </select>
+            <small className="field-hint">{semanticInfo(valueSemantics).description}</small>
           </label>
           <label className="span-2">
             Description
@@ -7275,6 +9179,14 @@ function ReviewPanel({
   removePlannedLayer: (layer: PlannedLayer) => void;
   removeDerivedFeature: (index: number) => void;
 }) {
+  const renderValidationMessage = (message: string) => (
+    <div className="validation-message">
+      {message.split("\n").map((line, index) => (
+        <span key={`${line}-${index}`}>{line}</span>
+      ))}
+    </div>
+  );
+
   return (
     <main className="workspace review-grid">
       <section className="panel">
@@ -7296,10 +9208,10 @@ function ReviewPanel({
           </div>
         )}
         {validation?.errors.map((error) => (
-          <div className="notice error" key={error}>{error}</div>
+          <div className="notice error" key={error}>{renderValidationMessage(error)}</div>
         ))}
         {validation?.warnings.map((warning) => (
-          <div className="notice info" key={warning}>{warning}</div>
+          <div className="notice info" key={warning}>{renderValidationMessage(warning)}</div>
         ))}
         {validation?.sources.map((source) => (
           <div className="summary-row" key={source.id}>
@@ -7319,7 +9231,7 @@ function ReviewPanel({
             <div className="review-layer-row" key={layer.id}>
               <span>
                 <strong>{layer.label}</strong>
-                <small>{layer.sourceTitle}{layer.valueSemantics ? ` · ${layer.valueSemantics}` : ""}</small>
+                <small>{layer.sourceTitle}{layer.valueSemantics ? ` · ${semanticInfo(layer.valueSemantics).label}` : ""}</small>
               </span>
               <button className="ghost danger" onClick={() => removePlannedLayer(layer)}>Remove</button>
             </div>

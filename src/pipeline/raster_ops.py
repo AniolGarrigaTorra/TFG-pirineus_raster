@@ -11,7 +11,7 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.transform import Affine
+from rasterio.transform import Affine, array_bounds, from_origin
 from rasterio.warp import reproject
 
 from src.io.paths import get_grid_path
@@ -296,6 +296,80 @@ def read_category_fraction_to_grid(
     dst[~np.isfinite(dst)] = np.nan
 
     return dst
+
+
+def make_intermediate_grid_context(
+    base_grid: GridContext,
+    resolution_m: float,
+    *,
+    aoi_name_suffix: str = "intermediate",
+) -> GridContext:
+    """
+    Build an in-memory grid context over the same bounds/CRS as base_grid.
+
+    This is used when an operation should be evaluated before the final target
+    resampling. The intermediate grid is anchored to the target grid origin so
+    aggregation back to the target grid is stable and reproducible.
+    """
+    resolution = float(resolution_m)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError(f"Intermediate resolution must be positive: {resolution_m}")
+
+    left, bottom, right, top = array_bounds(
+        base_grid.height,
+        base_grid.width,
+        base_grid.transform,
+    )
+    width = max(1, int(np.ceil((right - left) / resolution)))
+    height = max(1, int(np.ceil((top - bottom) / resolution)))
+    transform = from_origin(left, top, resolution, resolution)
+
+    profile = base_grid.profile.copy()
+    profile.update(
+        height=height,
+        width=width,
+        transform=transform,
+        crs=base_grid.crs,
+        dtype="float32",
+        count=1,
+        nodata=np.nan,
+    )
+
+    return GridContext(
+        path=base_grid.path,
+        profile=profile,
+        transform=transform,
+        crs=base_grid.crs,
+        height=height,
+        width=width,
+        resolution_m=int(round(resolution)),
+        aoi_name=f"{base_grid.aoi_name}_{aoi_name_suffix}",
+    )
+
+
+def reproject_array_between_grids(
+    array: np.ndarray,
+    src_grid: GridContext,
+    dst_grid: GridContext,
+    resampling: Resampling,
+) -> np.ndarray:
+    """
+    Reproject/resample an already evaluated array from one project CRS grid to another.
+    """
+    dst = np.full(dst_grid.shape, np.nan, dtype=np.float32)
+    reproject(
+        source=array.astype(np.float32),
+        destination=dst,
+        src_transform=src_grid.transform,
+        src_crs=src_grid.crs,
+        src_nodata=np.nan,
+        dst_transform=dst_grid.transform,
+        dst_crs=dst_grid.crs,
+        dst_nodata=np.nan,
+        resampling=resampling,
+    )
+    dst[~np.isfinite(dst)] = np.nan
+    return dst.astype(np.float32)
 
 
 def _source_pixel_area_m2(src) -> float | None:
@@ -662,6 +736,7 @@ def build_feature_metadata(
     output_aoi_name: str,
     target_resolution_m: int,
     resampling_method_name: str,
+    source_input_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     Build metadata for temporal aggregated feature rasters.
@@ -703,6 +778,7 @@ def build_feature_metadata(
         "output_aoi_name": output_aoi_name,
         "target_resolution_m": target_resolution_m,
         "resampling": resampling_method_name,
+        "source_clipped_path": str(source_input_path) if source_input_path else None,
         "resampling_effective_method": (
             "average+area_ratio"
             if is_conservative_resampling(resampling_method_name)
@@ -721,6 +797,7 @@ def build_static_feature_metadata(
     output_aoi_name: str,
     target_resolution_m: int,
     resampling_method_name: str,
+    source_input_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     Build metadata for static feature rasters.
@@ -750,6 +827,7 @@ def build_static_feature_metadata(
         "output_aoi_name": output_aoi_name,
         "target_resolution_m": target_resolution_m,
         "resampling": resampling_method_name,
+        "source_clipped_path": str(source_input_path) if source_input_path else None,
         "resampling_effective_method": (
             "average+area_ratio"
             if is_conservative_resampling(resampling_method_name)

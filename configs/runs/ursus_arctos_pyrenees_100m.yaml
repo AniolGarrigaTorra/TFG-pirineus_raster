@@ -1,825 +1,2023 @@
 run:
   name: ursus_arctos_pyrenees_100m
-  description: "Dataset for the Ursus arctos habitat project."
+  description: 'Dataset for the Ursus Arctos habitat project. '
   project_config: configs/project.yaml
   crs: EPSG:3035
-  aoi_config: configs/aoi/ursus_arctos_pyrenees.yaml
+  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
   resolution_m: 100
   stages:
-    - all
-
+  - all
 features:
-  - name: elevation
-    title: Digital elevation model
-    description: Copernicus DEM GLO-30 elevation aligned to the project grid.
-    unit: m
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: source_layer
-    source:
+- name: topography_dem
+  title: Copernicus DEM
+  description: Digital Elevation Model of the terrain
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
       kind: source
       source_id: copernicus_dem_glo30
       config: configs/sources/copernicus/copernicus_dem_glo30.yaml
       variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
       resampling: average
-
-  - name: slope
-    title: Slope
-    description: Slope derived from the DEM.
-    unit: degrees
+  parameters: {}
+  outputs:
+  - name: topography_dem_elevation
+    suffix: elevation
+    unit: m
     value_semantics: intensive
     output_dtype: float32
-    build_type: spatial
-    operation: terrain
-    method: slope
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+- name: topography_slope
+  title: Copernicus DEM - Slope
+  description: 'Slope derived from copernicus DEM '
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: slope
+  parameters: {}
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_slope
+    suffix: ''
+    value_semantics: intensive
+    output_dtype: float32
     inputs:
       dem:
-        kind: feature
-        feature: elevation
-
-  - name: aspect
-    title: Aspect
-    description: Aspect derived from the DEM.
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
+    operation: terrain
+    method: slope
+    parameters: {}
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: topography_aspect
+  title: Copernicus DEM - Aspect
+  description: Aspect of the terrain derived from Copernicus DEM
+  unit: degrees
+  value_semantics: circular
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: aspect
+  parameters: {}
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_aspect
+    suffix: ''
     unit: degrees
     value_semantics: circular
     output_dtype: float32
-    build_type: spatial
-    operation: terrain
-    method: aspect
     inputs:
       dem:
-        kind: feature
-        feature: elevation
-
-  - name: slope_std_focal_r3
-    title: Local slope variability
-    description: Focal standard deviation of slope using a 3-cell radius.
-    unit: degrees
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: spatial
-    operation: focal
-    method: std
-    parameters:
-      radius: 3
-    inputs:
-      x:
-        kind: feature
-        feature: slope
-
-  - name: ruggedness
-    title: Terrain ruggedness
-    description: Terrain ruggedness derived from the DEM.
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
+    operation: terrain
+    method: aspect
+    parameters: {}
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: topography_ruggedness
+  title: Copernicus DEM - Ruggedness
+  description: Ruggedness of the terrain derived from Copernicus DEM
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: ruggedness
+  parameters:
+    radius: 1
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_ruggedness
+    suffix: ''
     unit: m
     value_semantics: intensive
     output_dtype: float32
-    build_type: spatial
+    inputs:
+      dem:
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
     operation: terrain
     method: ruggedness
     parameters:
-      radius: 3
-    inputs:
-      dem:
-        kind: feature
-        feature: elevation
-
-  - name: roughness
-    title: Terrain roughness
-    description: Terrain roughness derived from the DEM.
-    unit: m
+      radius: 1
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: topography_tpi_med
+  title: Copernicus DEM - Relative Altitude (TPI) - Medium Scale
+  description: Relative altitude (TPI) respect the mean altitude in a medium scale
+    (1km, r=5)
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: tpi
+  parameters:
+    radius: 5
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_tpi_med
+    suffix: ''
     value_semantics: intensive
     output_dtype: float32
-    build_type: spatial
-    operation: terrain
-    method: roughness
-    parameters:
-      radius: 3
     inputs:
       dem:
-        kind: feature
-        feature: elevation
-
-  - name: tpi
-    title: Topographic position index
-    description: Topographic position index derived from the DEM.
-    unit: m
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: spatial
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
     operation: terrain
     method: tpi
     parameters:
-      radius: 3
+      radius: 5
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: topography_tpi_macro
+  title: Copernicus DEM - Relative Altitude (TPI) - Macro Scale
+  description: Relative Altitude (TPI) with respect to the mean in a macroscale (5km,
+    r=25) derived from Copernicus DEM
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: tpi
+  parameters:
+    radius: 25
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_tpi_macro
+    suffix: ''
+    value_semantics: intensive
+    output_dtype: float32
     inputs:
       dem:
-        kind: feature
-        feature: elevation
-
-  - name: mean_elevation_focal_r50
-    title: Relative elevation baseline
-    description: Mean elevation in a 50-cell radius neighbourhood.
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
+    operation: terrain
+    method: tpi
+    parameters:
+      radius: 25
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: topography_roughness
+  title: Copernicus DEM - Roughness
+  description: Roughness of the terrain derived from Copernicus DEM r=1
+  unit: m
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: spatial
+  inputs:
+    dem:
+      kind: source
+      source_id: copernicus_dem_glo30
+      config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+      variable: elevation
+      query:
+        source_id: copernicus_dem_glo30
+        variable: elevation
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 30m
+      resampling: average
+  operation: terrain
+  method: roughness
+  parameters:
+    radius: 1
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: average
+  outputs:
+  - name: topography_roughness
+    suffix: ''
     unit: m
     value_semantics: intensive
     output_dtype: float32
-    build_type: spatial
-    operation: focal
-    method: mean
-    parameters:
-      radius: 50
     inputs:
-      x:
-        kind: feature
-        feature: elevation
-
-  - name: clcplus_backbone_fractions_2018
-    title: CLC+ Backbone class fractions
-    description: Selected 2018 CLC+ Backbone class fractions at the target grid.
-    unit: fraction
-    value_semantics: fraction
-    output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: clcplus_backbone_fraction_low_growing_woody_plants
-        source:
-          kind: source
-          source_id: copernicus_clms_clcplus_backbone
-          config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
-          variable: clcplus_backbone
-          query:
-            variable: clcplus_backbone_fraction_low_growing_woody_plants
-          temporal:
-            output_mode: supplied_layers
-            layers:
-              years: [2018]
-          category_fraction:
-            variable: clcplus_backbone
-            name: clcplus_backbone_fraction_low_growing_woody_plants
-            class_values: [5]
-            label: Low-growing woody plants
-            resampling: average
-          resampling: average
-      - name: clcplus_backbone_fraction_herbaceous_all
-        source:
-          kind: source
-          source_id: copernicus_clms_clcplus_backbone
-          config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
-          variable: clcplus_backbone
-          query:
-            variable: clcplus_backbone_fraction_herbaceous_all
-          temporal:
-            output_mode: supplied_layers
-            layers:
-              years: [2018]
-          category_fraction:
-            variable: clcplus_backbone
-            name: clcplus_backbone_fraction_herbaceous_all
-            class_values: [6, 7]
-            label: Permanent and periodically herbaceous
-            resampling: average
-          resampling: average
-      - name: clcplus_backbone_fraction_sparse_open_surfaces
-        source:
-          kind: source
-          source_id: copernicus_clms_clcplus_backbone
-          config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
-          variable: clcplus_backbone
-          query:
-            variable: clcplus_backbone_fraction_sparse_open_surfaces
-          temporal:
-            output_mode: supplied_layers
-            layers:
-              years: [2018]
-          category_fraction:
-            variable: clcplus_backbone
-            name: clcplus_backbone_fraction_sparse_open_surfaces
-            class_values: [8, 9]
-            label: Lichens, mosses and sparse vegetation
-            resampling: average
-          resampling: average
-
-  - name: tree_cover_density
-    title: Tree cover density
-    description: Copernicus HRL tree cover density.
-    unit: percent
-    value_semantics: percentage
-    output_dtype: float32
-    build_type: source_layer
-    source:
-      kind: source
-      source_id: copernicus_clms_forest
-      config: configs/sources/copernicus/copernicus_clms_forest.yaml
-      variable: tree_cover_density
-      resampling: average
-
-  - name: dominant_leaf_type_fractions
-    title: Dominant leaf type fractions
-    description: Broadleaved and coniferous forest fractions from Dominant Leaf Type.
-    unit: fraction
-    value_semantics: fraction
-    output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: dominant_leaf_type_fraction_broadleaved_forest
-        source:
-          kind: source
-          source_id: copernicus_clms_forest
-          config: configs/sources/copernicus/copernicus_clms_forest.yaml
-          variable: dominant_leaf_type
-          query:
-            variable: dominant_leaf_type_fraction_broadleaved_forest
-          category_fraction:
-            variable: dominant_leaf_type
-            name: dominant_leaf_type_fraction_broadleaved_forest
-            class_values: [1]
-            label: Broadleaved forest
-            resampling: average
-          resampling: average
-      - name: dominant_leaf_type_fraction_coniferous_forest
-        source:
-          kind: source
-          source_id: copernicus_clms_forest
-          config: configs/sources/copernicus/copernicus_clms_forest.yaml
-          variable: dominant_leaf_type
-          query:
-            variable: dominant_leaf_type_fraction_coniferous_forest
-          category_fraction:
-            variable: dominant_leaf_type
-            name: dominant_leaf_type_fraction_coniferous_forest
-            class_values: [2]
-            label: Coniferous forest
-            resampling: average
-          resampling: average
-
-  - name: hrvpp_total_productivity_mean
-    title: Mean vegetation productivity
-    description: Mean HR-VPP total productivity by growing season for 2017-2024.
-    unit: productivity units
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: total_productivity_s1_mean_2017_2024
-        source:
-          kind: source
-          source_id: copernicus_clms_hrvpp_vpp_laea
-          config: configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml
-          variable: total_productivity
-          query:
-            variable: total_productivity_s1
-            aggregation_name: total_productivity_mean
-          dimensions:
-            growth_season: [s1, s2]
-          temporal:
-            output_mode: aggregate
-            aggregations:
-              use: []
-              custom:
-                - name: total_productivity_mean
-                  form: year_range_metric
-                  variables: [total_productivity]
-                  years: [2017, 2024]
-                  metric: mean
-          resampling: average
-      - name: total_productivity_s2_mean_2017_2024
-        source:
-          kind: source
-          source_id: copernicus_clms_hrvpp_vpp_laea
-          config: configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml
-          variable: total_productivity
-          query:
-            variable: total_productivity_s2
-            aggregation_name: total_productivity_mean
-          dimensions:
-            growth_season: [s1, s2]
-          temporal:
-            output_mode: aggregate
-            aggregations:
-              use: []
-              custom:
-                - name: total_productivity_mean
-                  form: year_range_metric
-                  variables: [total_productivity]
-                  years: [2017, 2024]
-                  metric: mean
-          resampling: average
-
-  - name: snow_2022_periods
-    title: Snow summary layers
-    description: Configured HRSI snow postprocess summaries.
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: snow_cover_days_winter
-        unit: days
-        value_semantics: count
-        source:
-          kind: source
-          source_id: copernicus_hrsi_snow
-          config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
-          variable: snow_fraction
-          query:
-            variable: snow_cover_days_winter
-            aggregation_name: snow_cover_days_winter
-          temporal: &snow_postprocess
-            output_mode: postprocess_aggregate
-            aggregations:
-              use:
-                - snow_cover_days_winter
-                - snow_fraction_mean_spring
-                - snow_fraction_mean_winter
-                - snow_cover_days_spring
-              custom: []
-          resampling: average
-      - name: snow_fraction_mean_spring
-        unit: percent
-        value_semantics: percentage
-        source:
-          kind: source
-          source_id: copernicus_hrsi_snow
-          config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
-          variable: snow_fraction
-          query:
-            variable: snow_fraction_mean_spring
-            aggregation_name: snow_fraction_mean_spring
-          temporal: *snow_postprocess
-          resampling: average
-      - name: snow_fraction_mean_winter
-        unit: percent
-        value_semantics: percentage
-        source:
-          kind: source
-          source_id: copernicus_hrsi_snow
-          config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
-          variable: snow_fraction
-          query:
-            variable: snow_fraction_mean_winter
-            aggregation_name: snow_fraction_mean_winter
-          temporal: *snow_postprocess
-          resampling: average
-      - name: snow_cover_days_spring
-        unit: days
-        value_semantics: count
-        source:
-          kind: source
-          source_id: copernicus_hrsi_snow
-          config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
-          variable: snow_fraction
-          query:
-            variable: snow_cover_days_spring
-            aggregation_name: snow_cover_days_spring
-          temporal: *snow_postprocess
-          resampling: average
-
-  - name: above_ground_biomass_mean
-    title: Mean above-ground biomass
-    description: Mean ESA CCI above-ground biomass across selected years.
-    unit: Mg/ha
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: source_layer
-    source:
+      dem:
+        kind: source
+        source_id: copernicus_dem_glo30
+        config: configs/sources/copernicus/copernicus_dem_glo30.yaml
+        variable: elevation
+        query:
+          source_id: copernicus_dem_glo30
+          variable: elevation
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 30m
+        resampling: average
+    operation: terrain
+    method: roughness
+    parameters:
+      radius: 1
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: average
+- name: habitat_biomass
+  title: Vegetal Biomass
+  description: Total biomass in an ha.
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
       kind: source
       source_id: esa_cci_biomass_agb_100m
       config: configs/sources/esa_cci/esa_cci_biomass_agb_100m.yaml
       variable: agb
       query:
+        source_id: esa_cci_biomass_agb_100m
         variable: agb
-        aggregation_name: agb_mean
+        aggregation_name: mean
+      dimensions: {}
       temporal:
         output_mode: aggregate
         aggregations:
           use: []
           custom:
-            - name: agb_mean
-              form: year_range_metric
-              variables: [agb]
-              years: [2005, 2024]
-              metric: mean
+          - name: mean
+            form: year_range_metric
+            metric: mean
+            years:
+            - 2005
+            - 2024
+            variables:
+            - agb
+      source_resolution: 100m
       resampling: average
-
-  - name: built_surface_mean
-    title: Mean built-up surface
-    description: Mean GHSL built-up surface area for 2010-2020.
-    unit: m2 per cell
-    value_semantics: extensive
+  parameters: {}
+  outputs:
+  - name: habitat_biomass_mean
+    suffix: mean
+    value_semantics: intensive
     output_dtype: float32
-    build_type: source_layer
-    source:
-      kind: source
-      source_id: ghsl_ghs_built_s_r2023a
-      config: configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml
-      variable: built_surface
-      query:
-        variable: built_surface
-        aggregation_name: built_surface_mean
-      temporal:
-        output_mode: aggregate
-        aggregations:
-          use: []
-          custom:
-            - name: built_surface_mean
+    inputs:
+      x:
+        kind: source
+        source_id: esa_cci_biomass_agb_100m
+        config: configs/sources/esa_cci/esa_cci_biomass_agb_100m.yaml
+        variable: agb
+        query:
+          source_id: esa_cci_biomass_agb_100m
+          variable: agb
+          aggregation_name: mean
+        dimensions: {}
+        temporal:
+          output_mode: aggregate
+          aggregations:
+            use: []
+            custom:
+            - name: mean
               form: year_range_metric
-              variables: [built_surface]
-              years: [2010, 2020]
               metric: mean
-      source_resolution: 100m
-      resampling: conservative_sum
-
-  - name: built_surface_non_residential_mean
-    title: Mean non-residential built-up surface
-    description: Mean GHSL non-residential built-up surface area for 2010-2020.
-    unit: m2 per cell
-    value_semantics: extensive
-    output_dtype: float32
-    build_type: source_layer
-    source:
+              years:
+              - 2005
+              - 2024
+              variables:
+              - agb
+        source_resolution: 100m
+        resampling: average
+    parameters: {}
+- name: habitat_broadleaf
+  title: Broadleaved forest coverage ratio
+  description: Coverage percentage of broadleaved forest in the 100m cell. Derived
+    from Copernicus CLMS forest dominant_leaf_type.
+  value_semantics: fraction
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
       kind: source
-      source_id: ghsl_ghs_built_s_r2023a
-      config: configs/sources/ghsl/ghsl_ghs_built_s_r2023a.yaml
-      variable: built_surface_non_residential
+      source_id: copernicus_clms_forest
+      config: configs/sources/copernicus/copernicus_clms_forest.yaml
+      variable: dominant_leaf_type
       query:
-        variable: built_surface_non_residential
-        aggregation_name: built_surface_non_residential_mean
+        source_id: copernicus_clms_forest
+        variable: dominant_leaf_type_broadleaved_forest_fraction
+      dimensions: {}
       temporal:
-        output_mode: aggregate
-        aggregations:
-          use: []
-          custom:
-            - name: built_surface_non_residential_mean
-              form: year_range_metric
-              variables: [built_surface_non_residential]
-              years: [2010, 2020]
-              metric: mean
-      source_resolution: 100m
-      resampling: conservative_sum
-
-  - name: population_count_mean
-    title: Mean resident population count
-    description: Mean GHSL resident population count for 2010-2020.
-    unit: people per cell
-    value_semantics: count
+        output_mode: static
+      category_fraction:
+        variable: dominant_leaf_type
+        name: dominant_leaf_type_broadleaved_forest_fraction
+        class_values:
+        - 1
+        label: Broadleaved forest
+        resampling: average
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_broadleaf
+    suffix: ''
+    value_semantics: fraction
     output_dtype: float32
-    build_type: source_layer
-    source:
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_forest
+        config: configs/sources/copernicus/copernicus_clms_forest.yaml
+        variable: dominant_leaf_type
+        query:
+          source_id: copernicus_clms_forest
+          variable: dominant_leaf_type_broadleaved_forest_fraction
+        dimensions: {}
+        temporal:
+          output_mode: static
+        category_fraction:
+          variable: dominant_leaf_type
+          name: dominant_leaf_type_broadleaved_forest_fraction
+          class_values:
+          - 1
+          label: Broadleaved forest
+          resampling: average
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: habitat_coniferous
+  title: Coniferous forest coverage ratio
+  description: Coverage ratio of coniferous forest in the cell. Derived from Copernicus
+    CLMS forest dominant_leaf_type.
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_forest
+      config: configs/sources/copernicus/copernicus_clms_forest.yaml
+      variable: dominant_leaf_type
+      query:
+        source_id: copernicus_clms_forest
+        variable: dominant_leaf_type_coniferous_forest_fraction
+      dimensions: {}
+      temporal:
+        output_mode: static
+      category_fraction:
+        variable: dominant_leaf_type
+        name: dominant_leaf_type_coniferous_forest_fraction
+        class_values:
+        - 2
+        label: Coniferous forest
+        resampling: average
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_coniferous_dominant_leaf_type
+    suffix: dominant_leaf_type
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_forest
+        config: configs/sources/copernicus/copernicus_clms_forest.yaml
+        variable: dominant_leaf_type
+        query:
+          source_id: copernicus_clms_forest
+          variable: dominant_leaf_type_coniferous_forest_fraction
+        dimensions: {}
+        temporal:
+          output_mode: static
+        category_fraction:
+          variable: dominant_leaf_type
+          name: dominant_leaf_type_coniferous_forest_fraction
+          class_values:
+          - 2
+          label: Coniferous forest
+          resampling: average
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: habitat_mix_forest
+  title: Mix forest coverage ratio
+  description: Coverage ratio for mix forests. Derived from habitat_broadleaf and
+    habitat_coniferous derived features
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: expression
+  inputs:
+    x:
+      kind: feature
+      feature: habitat_broadleaf
+      output: habitat_broadleaf
+    y:
+      kind: feature
+      feature: habitat_coniferous_dominant_leaf_type
+      output: habitat_coniferous_dominant_leaf_type
+  expression: clip(2*minimum(x,y),0,1)
+  parameters: {}
+  evaluation_stage: target_grid
+  outputs:
+  - name: habitat_mix_forest_habitat_broadleaf_habitat_coniferous_dominant_leaf_type
+    suffix: habitat_broadleaf_habitat_coniferous_dominant_leaf_type
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: feature
+        feature: habitat_broadleaf
+        output: habitat_broadleaf
+      y:
+        kind: feature
+        feature: habitat_coniferous_dominant_leaf_type
+        output: habitat_coniferous_dominant_leaf_type
+    expression: clip(2*minimum(x,y),0,1)
+    parameters: {}
+    evaluation_stage: target_grid
+- name: habitat_tree_cover_density
+  title: Tree Cover Density
+  description: Mean tree cover density derived from Copernicus CLMS forest tree_cover_density
+  value_semantics: percentage
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_forest
+      config: configs/sources/copernicus/copernicus_clms_forest.yaml
+      variable: tree_cover_density
+      query:
+        source_id: copernicus_clms_forest
+        variable: tree_cover_density
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_tree_cover_density
+    suffix: ''
+    value_semantics: percentage
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_forest
+        config: configs/sources/copernicus/copernicus_clms_forest.yaml
+        variable: tree_cover_density
+        query:
+          source_id: copernicus_clms_forest
+          variable: tree_cover_density
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: habitat_grasslands
+  title: Grasslands coverage ratio
+  description: Coverage Ratio of grasslands. Derived from Copernicus CLMS grasslands
+  value_semantics: fraction
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_grasslands
+      config: configs/sources/copernicus/copernicus_clms_grasslands.yaml
+      variable: grasslands
+      query:
+        source_id: copernicus_clms_grasslands
+        variable: grasslands_grassland_fraction
+      dimensions: {}
+      temporal:
+        output_mode: static
+      category_fraction:
+        variable: grasslands
+        name: grasslands_grassland_fraction
+        class_values:
+        - 1
+        label: Grassland
+        resampling: average
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_grasslands
+    suffix: ''
+    value_semantics: fraction
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_grasslands
+        config: configs/sources/copernicus/copernicus_clms_grasslands.yaml
+        variable: grasslands
+        query:
+          source_id: copernicus_clms_grasslands
+          variable: grasslands_grassland_fraction
+        dimensions: {}
+        temporal:
+          output_mode: static
+        category_fraction:
+          variable: grasslands
+          name: grasslands_grassland_fraction
+          class_values:
+          - 1
+          label: Grassland
+          resampling: average
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: human_logdistance_secondary_roads
+  title: Logaritmic Distance to Secondary Roads
+  description: Minimum Logaritmic Distance to the nearest secondary road from OSM
+  value_semantics: ratio
+  output_dtype: float32
+  build_type: expression
+  inputs:
+    x:
+      kind: source
+      source_id: openstreetmap_geofabrik_pyrenees
+      config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+      layer: transport.secondary_roads_distance
+      query:
+        source_id: openstreetmap_geofabrik_pyrenees
+        variable: secondary_roads_distance
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: osm
+      resampling: min
+  expression: log10(x)
+  parameters: {}
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: min
+  outputs:
+  - name: human_logdistance_secondary_roads_transport_secondary_roads_distance
+    suffix: transport.secondary_roads_distance
+    value_semantics: ratio
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: openstreetmap_geofabrik_pyrenees
+        config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+        layer: transport.secondary_roads_distance
+        query:
+          source_id: openstreetmap_geofabrik_pyrenees
+          variable: secondary_roads_distance
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: osm
+        resampling: min
+    expression: log10(x)
+    parameters: {}
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: min
+- name: human_logdistance_tracks
+  title: Logaritmic Distance to Tracks
+  description: Minimum Logaritmic Distance to the nearest track from OSM
+  value_semantics: ratio
+  output_dtype: float32
+  build_type: expression
+  inputs:
+    x:
+      kind: source
+      source_id: openstreetmap_geofabrik_pyrenees
+      config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+      layer: transport.forest_tracks_distance
+      query:
+        source_id: openstreetmap_geofabrik_pyrenees
+        variable: forest_tracks_distance
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: osm
+      resampling: nearest
+  expression: log10(x)
+  parameters: {}
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: min
+  outputs:
+  - name: human_logdistance_tracks
+    suffix: ''
+    value_semantics: ratio
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: openstreetmap_geofabrik_pyrenees
+        config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+        layer: transport.forest_tracks_distance
+        query:
+          source_id: openstreetmap_geofabrik_pyrenees
+          variable: forest_tracks_distance
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: osm
+        resampling: nearest
+    expression: log10(x)
+    parameters: {}
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: min
+- name: human_logdistance_towns
+  title: Logaritmic Distance to Towns
+  description: Minimum Logaritmic Distance to the nearest town from OSM
+  value_semantics: ratio
+  output_dtype: float32
+  build_type: expression
+  inputs:
+    x:
+      kind: source
+      source_id: openstreetmap_geofabrik_pyrenees
+      config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+      layer: settlements.settlements_distance
+      query:
+        source_id: openstreetmap_geofabrik_pyrenees
+        variable: settlements_distance
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: osm
+      resampling: min
+  expression: log10(x)
+  parameters: {}
+  evaluation_stage: native_then_resample
+  evaluation_resolution_m: native
+  post_resampling: min
+  outputs:
+  - name: human_logdistance_towns
+    suffix: ''
+    value_semantics: ratio
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: openstreetmap_geofabrik_pyrenees
+        config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+        layer: settlements.settlements_distance
+        query:
+          source_id: openstreetmap_geofabrik_pyrenees
+          variable: settlements_distance
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: osm
+        resampling: min
+    expression: log10(x)
+    parameters: {}
+    evaluation_stage: native_then_resample
+    evaluation_resolution_m: native
+    post_resampling: min
+- name: human_population_density
+  title: Population Density
+  description: Population density derived from GHSL
+  value_semantics: count
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
       kind: source
       source_id: ghsl_ghs_pop_r2023a
       config: configs/sources/ghsl/ghsl_ghs_pop_r2023a.yaml
       variable: population_count
       query:
+        source_id: ghsl_ghs_pop_r2023a
         variable: population_count
-        aggregation_name: population_count_mean
+        aggregation_name: mean
+      dimensions: {}
       temporal:
         output_mode: aggregate
         aggregations:
           use: []
           custom:
-            - name: population_count_mean
-              form: year_range_metric
-              variables: [population_count]
-              years: [2010, 2020]
-              metric: mean
+          - name: mean
+            form: year_range_metric
+            metric: mean
+            years:
+            - 1995
+            - 2025
+            variables:
+            - population_count
       source_resolution: 100m
-      resampling: conservative_sum
-
-  - name: osm_anthropic_layers
-    title: OSM anthropic layers
-    description: OSM distance and presence layers used by the habitat dataset.
+      resampling: bilinear
+  parameters: {}
+  outputs:
+  - name: human_population_density_mean
+    suffix: mean
+    value_semantics: count
     output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: secondary_roads_distance
-        unit: m
-        value_semantics: intensive
-        source:
-          kind: source
-          source_id: openstreetmap_geofabrik_pyrenees
-          config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
-          layer: transport.secondary_roads_distance
-          query:
-            variable: secondary_roads_distance
-      - name: forest_tracks_distance
-        unit: m
-        value_semantics: intensive
-        source:
-          kind: source
-          source_id: openstreetmap_geofabrik_pyrenees
-          config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
-          layer: transport.forest_tracks_distance
-          query:
-            variable: forest_tracks_distance
-      - name: settlements_distance
-        unit: m
-        value_semantics: intensive
-        source:
-          kind: source
-          source_id: openstreetmap_geofabrik_pyrenees
-          config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
-          layer: settlements.settlements_distance
-          query:
-            variable: settlements_distance
-      - name: buildings_presence
-        unit: binary
-        value_semantics: categorical
-        source:
-          kind: source
-          source_id: openstreetmap_geofabrik_pyrenees
-          config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
-          layer: built_environment.buildings_presence
-          query:
-            variable: buildings_presence
-      - name: anthropic_landuse_presence
-        unit: binary
-        value_semantics: categorical
-        source:
-          kind: source
-          source_id: openstreetmap_geofabrik_pyrenees
-          config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
-          layer: built_environment.anthropic_landuse_presence
-          query:
-            variable: anthropic_landuse_presence
-
-  - name: log_secondary_roads_distance
-    title: Log distance to secondary roads
-    description: Base-10 logarithmic distance to nearest secondary road.
-    unit: log10(m)
-    value_semantics: intensive
-    output_dtype: float32
-    build_type: expression
-    expression: log10(x + 1)
     inputs:
       x:
-        kind: feature
-        feature: secondary_roads_distance
-
-  - name: log_forest_tracks_distance
-    title: Log distance to forest tracks
-    description: Base-10 logarithmic distance to nearest forest track.
-    unit: log10(m)
-    value_semantics: intensive
+        kind: source
+        source_id: ghsl_ghs_pop_r2023a
+        config: configs/sources/ghsl/ghsl_ghs_pop_r2023a.yaml
+        variable: population_count
+        query:
+          source_id: ghsl_ghs_pop_r2023a
+          variable: population_count
+          aggregation_name: mean
+        dimensions: {}
+        temporal:
+          output_mode: aggregate
+          aggregations:
+            use: []
+            custom:
+            - name: mean
+              form: year_range_metric
+              metric: mean
+              years:
+              - 1995
+              - 2025
+              variables:
+              - population_count
+        source_resolution: 100m
+        resampling: bilinear
+    parameters: {}
+- name: climate_snow_cover_winter
+  title: Snow Coverage ratio Winter
+  description: Snow coverage ratio on winter. Derived from CLMS hrsi snow.
+  value_semantics: percentage
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_hrsi_snow
+      config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+      variable: snow_fraction
+      query:
+        source_id: copernicus_hrsi_snow
+        variable: snow_fraction
+        aggregation_name: winter
+      dimensions: {}
+      temporal:
+        output_mode: postprocess_aggregate
+        aggregations:
+          use: []
+          custom:
+          - name: winter
+            form: explicit_month_list_metric
+            metric: mean
+            months:
+            - 1
+            - 3
+            years:
+            - 2022
+            - 2022
+            variables:
+            - snow_fraction
+      source_resolution: 20m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: climate_snow_cover_winter_winter
+    suffix: winter
+    value_semantics: percentage
     output_dtype: float32
-    build_type: expression
-    expression: log10(x + 1)
     inputs:
       x:
-        kind: feature
-        feature: forest_tracks_distance
-
-  - name: log_settlements_distance
-    title: Log distance to settlements
-    description: Base-10 logarithmic distance to nearest settlement.
-    unit: log10(m)
+        kind: source
+        source_id: copernicus_hrsi_snow
+        config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+        variable: snow_fraction
+        query:
+          source_id: copernicus_hrsi_snow
+          variable: snow_fraction
+          aggregation_name: winter
+        dimensions: {}
+        temporal:
+          output_mode: postprocess_aggregate
+          aggregations:
+            use: []
+            custom:
+            - name: winter
+              form: explicit_month_list_metric
+              metric: mean
+              months:
+              - 1
+              - 3
+              years:
+              - 2022
+              - 2022
+              variables:
+              - snow_fraction
+        source_resolution: 20m
+        resampling: average
+    parameters: {}
+- name: climate_snow_cover_spring
+  title: Snow Coverage ratio Spring
+  description: Snow coverage ratio in Spring derived from Copernicus CLMS HRSI Snow
+    snow_fraction
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_hrsi_snow
+      config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+      variable: snow_fraction
+      query:
+        source_id: copernicus_hrsi_snow
+        variable: snow_fraction
+        aggregation_name: spring
+      dimensions: {}
+      temporal:
+        output_mode: postprocess_aggregate
+        aggregations:
+          use: []
+          custom:
+          - name: spring
+            form: explicit_month_list_metric
+            metric: mean
+            months:
+            - 4
+            - 6
+            years:
+            - 2022
+            - 2022
+            variables:
+            - snow_fraction
+      source_resolution: 20m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: climate_snow_cover_spring_snow_fraction
+    suffix: snow_fraction
     value_semantics: intensive
     output_dtype: float32
-    build_type: expression
-    expression: log10(x + 1)
     inputs:
       x:
-        kind: feature
-        feature: settlements_distance
-
-  - name: pdca_topoclimate_seasons
-    title: PDCA seasonal topoclimate layers
-    description: Selected seasonal PDCA layers.
-    value_semantics: intensive
+        kind: source
+        source_id: copernicus_hrsi_snow
+        config: configs/sources/copernicus/copernicus_hrsi_snow.yaml
+        variable: snow_fraction
+        query:
+          source_id: copernicus_hrsi_snow
+          variable: snow_fraction
+          aggregation_name: spring
+        dimensions: {}
+        temporal:
+          output_mode: postprocess_aggregate
+          aggregations:
+            use: []
+            custom:
+            - name: spring
+              form: explicit_month_list_metric
+              metric: mean
+              months:
+              - 4
+              - 6
+              years:
+              - 2022
+              - 2022
+              variables:
+              - snow_fraction
+        source_resolution: 20m
+        resampling: average
+    parameters: {}
+- name: climate_precipitation
+  title: Annual precipitation
+  description: annual mean precipitation derived from PDCA
+  value_semantics: intensive_depth
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: prec
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: prec
+        period: annual
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: true
+          annual_index: false
+          months: []
+          seasons: []
+          years: []
+      source_resolution: 30m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: climate_precipitation_annual
+    suffix: annual
+    value_semantics: intensive_depth
     output_dtype: float32
-    build_type: source_layer
-    outputs:
-      - name: tmin_winter
-        source: &pdca_tmin
-          kind: source
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: prec
+        query:
           source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: tmin
-          query:
-            variable: tmin
-            period: winter
-          temporal: &pdca_season_temporal
-            output_mode: supplied_layers
-            layers:
-              annual: false
-              annual_index: false
-              months: []
-              seasons: [winter, spring, summer, autumn]
-              years: []
-          resampling: average
-      - name: tmin_spring
-        source:
-          <<: *pdca_tmin
-          query:
-            variable: tmin
-            period: spring
-      - name: tmin_summer
-        source:
-          <<: *pdca_tmin
-          query:
-            variable: tmin
-            period: summer
-      - name: tmin_autumn
-        source:
-          <<: *pdca_tmin
-          query:
-            variable: tmin
-            period: autumn
-      - name: tmax_winter
-        source: &pdca_tmax
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: tmax
-          query:
-            variable: tmax
-            period: winter
-          temporal: *pdca_season_temporal
-          resampling: average
-      - name: tmax_spring
-        source:
-          <<: *pdca_tmax
-          query:
-            variable: tmax
-            period: spring
-      - name: tmax_summer
-        source:
-          <<: *pdca_tmax
-          query:
-            variable: tmax
-            period: summer
-      - name: tmax_autumn
-        source:
-          <<: *pdca_tmax
-          query:
-            variable: tmax
-            period: autumn
-      - name: tmean_winter
-        source: &pdca_tmean
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: tmean
-          query:
-            variable: tmean
-            period: winter
-          temporal: *pdca_season_temporal
-          resampling: average
-      - name: tmean_spring
-        source:
-          <<: *pdca_tmean
-          query:
-            variable: tmean
-            period: spring
-      - name: tmean_summer
-        source:
-          <<: *pdca_tmean
-          query:
-            variable: tmean
-            period: summer
-      - name: tmean_autumn
-        source:
-          <<: *pdca_tmean
-          query:
-            variable: tmean
-            period: autumn
-      - name: prec_winter
-        source: &pdca_prec
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
           variable: prec
-          query:
-            variable: prec
-            period: winter
-          temporal: *pdca_season_temporal
-      - name: prec_spring
-        source:
-          <<: *pdca_prec
-          query:
-            variable: prec
-            period: spring
-      - name: prec_summer
-        source:
-          <<: *pdca_prec
-          query:
-            variable: prec
-            period: summer
-      - name: prec_autumn
-        source:
-          <<: *pdca_prec
-          query:
-            variable: prec
-            period: autumn
-      - name: pet_winter
-        source: &pdca_pet
-          kind: source
+          period: annual
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: true
+            annual_index: false
+            months: []
+            seasons: []
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+- name: climate_solar_radiation
+  title: Annual Solar Radiation
+  description: Annual mean solar radiation derived from PDCA
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: psr
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: psr
+        period: annual
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: true
+          annual_index: false
+          months: []
+          seasons: []
+          years: []
+      source_resolution: 30m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: climate_solar_radiation_annual
+    suffix: annual
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: psr
+        query:
           source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: pet
-          query:
-            variable: pet
-            period: winter
-          temporal: *pdca_season_temporal
-      - name: pet_spring
-        source:
-          <<: *pdca_pet
-          query:
-            variable: pet
-            period: spring
-      - name: pet_summer
-        source:
-          <<: *pdca_pet
-          query:
-            variable: pet
-            period: summer
-      - name: pet_autumn
-        source:
-          <<: *pdca_pet
-          query:
-            variable: pet
-            period: autumn
-      - name: water_availability_winter
-        source: &pdca_water
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: water_availability
-          query:
-            variable: water_availability
-            period: winter
-          temporal: *pdca_season_temporal
-      - name: water_availability_spring
-        source:
-          <<: *pdca_water
-          query:
-            variable: water_availability
-            period: spring
-      - name: water_availability_summer
-        source:
-          <<: *pdca_water
-          query:
-            variable: water_availability
-            period: summer
-      - name: water_availability_autumn
-        source:
-          <<: *pdca_water
-          query:
-            variable: water_availability
-            period: autumn
-      - name: gdd_winter
-        source: &pdca_gdd
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
-          variable: gdd
-          query:
-            variable: gdd
-            period: winter
-          temporal: *pdca_season_temporal
-      - name: gdd_spring
-        source:
-          <<: *pdca_gdd
-          query:
-            variable: gdd
-            period: spring
-      - name: gdd_summer
-        source:
-          <<: *pdca_gdd
-          query:
-            variable: gdd
-            period: summer
-      - name: gdd_autumn
-        source:
-          <<: *pdca_gdd
-          query:
-            variable: gdd
-            period: autumn
-      - name: psr_winter
-        source: &pdca_psr
-          kind: source
-          source_id: pdca_topoclimate_1950_2012
-          config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
           variable: psr
-          query:
-            variable: psr
-            period: winter
-          temporal: *pdca_season_temporal
-      - name: psr_spring
-        source:
-          <<: *pdca_psr
-          query:
-            variable: psr
-            period: spring
-      - name: psr_summer
-        source:
-          <<: *pdca_psr
-          query:
-            variable: psr
-            period: summer
-      - name: psr_autumn
-        source:
-          <<: *pdca_psr
-          query:
-            variable: psr
-            period: autumn
-
+          period: annual
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: true
+            annual_index: false
+            months: []
+            seasons: []
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+- name: climate_mean_temperature
+  title: Mean Temperature
+  description: Mean temperature derived from PDCA
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: tmean
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: tmean
+        period: winter
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons:
+          - winter
+          - spring
+          - summer
+          - autumn
+          years: []
+      source_resolution: 30m
+      resampling: bilinear
+  parameters: {}
+  outputs:
+  - name: climate_mean_temperature_winter
+    suffix: winter
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmean
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmean
+          period: winter
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_mean_temperature_spring
+    suffix: spring
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmean
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmean
+          period: spring
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_mean_temperature_summer
+    suffix: summer
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmean
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmean
+          period: summer
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_mean_temperature_autumn
+    suffix: autumn
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmean
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmean
+          period: autumn
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+- name: climate_min_temperature
+  title: Minimum Temperature
+  description: Minimum temperature for all seasons derived from PDCA
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: tmin
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: tmin
+        period: winter
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons:
+          - winter
+          - spring
+          - summer
+          - autumn
+          years: []
+      source_resolution: 30m
+      resampling: bilinear
+  parameters: {}
+  outputs:
+  - name: climate_min_temperature_winter
+    suffix: winter
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmin
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmin
+          period: winter
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_min_temperature_spring
+    suffix: spring
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmin
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmin
+          period: spring
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_min_temperature_summer
+    suffix: summer
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmin
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmin
+          period: summer
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_min_temperature_autumn
+    suffix: autumn
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmin
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmin
+          period: autumn
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+- name: climate_max_temperature
+  title: Maximum Temperature
+  description: Maximum temperature for all seasons ferived from PDCA
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: tmax
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: tmax
+        period: winter
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons:
+          - winter
+          - spring
+          - summer
+          - autumn
+          years: []
+      source_resolution: 30m
+      resampling: bilinear
+  parameters: {}
+  outputs:
+  - name: climate_max_temperature_winter
+    suffix: winter
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmax
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmax
+          period: winter
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_max_temperature_spring
+    suffix: spring
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmax
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmax
+          period: spring
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_max_temperature_summer
+    suffix: summer
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmax
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmax
+          period: summer
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+  - name: climate_max_temperature_autumn
+    suffix: autumn
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: tmax
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: tmax
+          period: autumn
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: bilinear
+    parameters: {}
+- name: habitat_productivity
+  title: HRVPP Productivity
+  description: Hrvpp productivity derived from Copernicus HRVPP total_productivity
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_hrvpp_vpp_laea
+      config: configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml
+      variable: total_productivity
+      query:
+        source_id: copernicus_clms_hrvpp_vpp_laea
+        variable: total_productivity_s1
+        aggregation_name: mean
+        season: s1
+      dimensions:
+        growth_season:
+        - s1
+      temporal:
+        output_mode: aggregate
+        aggregations:
+          use: []
+          custom:
+          - name: mean
+            form: year_range_metric
+            metric: mean
+            years:
+            - 2017
+            - 2024
+            variables:
+            - total_productivity
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_productivity_mean
+    suffix: mean
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_hrvpp_vpp_laea
+        config: configs/sources/copernicus/copernicus_clms_hrvpp_vpp_laea.yaml
+        variable: total_productivity
+        query:
+          source_id: copernicus_clms_hrvpp_vpp_laea
+          variable: total_productivity_s1
+          aggregation_name: mean
+          season: s1
+        dimensions:
+          growth_season:
+          - s1
+        temporal:
+          output_mode: aggregate
+          aggregations:
+            use: []
+            custom:
+            - name: mean
+              form: year_range_metric
+              metric: mean
+              years:
+              - 2017
+              - 2024
+              variables:
+              - total_productivity
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: climate_water_availability
+  title: Water Availability
+  description: Water AVailability for all seasons derived from PDCA
+  value_semantics: intensive_depth
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: pdca_topoclimate_1950_2012
+      config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+      variable: water_availability
+      query:
+        source_id: pdca_topoclimate_1950_2012
+        variable: water_availability
+        period: winter
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons:
+          - winter
+          - spring
+          - summer
+          - autumn
+          years: []
+      source_resolution: 30m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: climate_water_availability_winter
+    suffix: winter
+    value_semantics: intensive_depth
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: water_availability
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: water_availability
+          period: winter
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+  - name: climate_water_availability_spring
+    suffix: spring
+    value_semantics: intensive_depth
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: water_availability
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: water_availability
+          period: spring
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+  - name: climate_water_availability_summer
+    suffix: summer
+    value_semantics: intensive_depth
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: water_availability
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: water_availability
+          period: summer
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+  - name: climate_water_availability_autumn
+    suffix: autumn
+    value_semantics: intensive_depth
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: pdca_topoclimate_1950_2012
+        config: configs/sources/pdca/pdca_topoclimate_1950_2012.yaml
+        variable: water_availability
+        query:
+          source_id: pdca_topoclimate_1950_2012
+          variable: water_availability
+          period: autumn
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons:
+            - winter
+            - spring
+            - summer
+            - autumn
+            years: []
+        source_resolution: 30m
+        resampling: average
+    parameters: {}
+- name: human_landuse_presence
+  title: Landuse Presence
+  description: Binary that indicates if there is presence of any landuse derived from
+    OSM
+  value_semantics: intensive
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: openstreetmap_geofabrik_pyrenees
+      config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+      layer: built_environment.anthropic_landuse_presence
+      query:
+        source_id: openstreetmap_geofabrik_pyrenees
+        variable: anthropic_landuse_presence
+      dimensions: {}
+      temporal:
+        output_mode: static
+      source_resolution: osm
+      resampling: nearest
+  parameters: {}
+  outputs:
+  - name: human_landuse_presence
+    suffix: ''
+    value_semantics: intensive
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: openstreetmap_geofabrik_pyrenees
+        config: configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml
+        layer: built_environment.anthropic_landuse_presence
+        query:
+          source_id: openstreetmap_geofabrik_pyrenees
+          variable: anthropic_landuse_presence
+        dimensions: {}
+        temporal:
+          output_mode: static
+        source_resolution: osm
+        resampling: nearest
+    parameters: {}
+- name: habitat_screes_and_bare_rocks
+  title: Screes and Bare Rocks coverage ratio
+  description: 'Coverage ratio of Screes and Bare rocks using the likens and mosses,
+    and sparsely vegetation of Copernicus CLC+ Backbone. '
+  unit: fraction
+  value_semantics: fraction
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_clcplus_backbone
+      config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
+      variable: clcplus_backbone
+      query:
+        source_id: copernicus_clms_clcplus_backbone
+        variable: clcplus_backbone_sparse_open_surfaces_fraction
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons: []
+          years:
+          - 2018
+      category_fraction:
+        variable: clcplus_backbone
+        name: clcplus_backbone_sparse_open_surfaces_fraction
+        class_values:
+        - 8
+        - 9
+        label: Lichens, mosses and sparse vegetation
+        resampling: average
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_screes_and_bare_rocks_2018
+    suffix: '2018'
+    unit: fraction
+    value_semantics: fraction
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_clcplus_backbone
+        config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
+        variable: clcplus_backbone
+        query:
+          source_id: copernicus_clms_clcplus_backbone
+          variable: clcplus_backbone_sparse_open_surfaces_fraction
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons: []
+            years:
+            - 2018
+        category_fraction:
+          variable: clcplus_backbone
+          name: clcplus_backbone_sparse_open_surfaces_fraction
+          class_values:
+          - 8
+          - 9
+          label: Lichens, mosses and sparse vegetation
+          resampling: average
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
+- name: habitat_shrubland
+  title: Shrubland coverage ratio
+  description: Coverage ratio of shrublands on the terrain, derived by category farction
+    from CLC+ Backbone low-growing woody plants 2018
+  unit: fraction
+  value_semantics: fraction
+  output_dtype: float32
+  build_type: source_layer
+  inputs:
+    x:
+      kind: source
+      source_id: copernicus_clms_clcplus_backbone
+      config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
+      variable: clcplus_backbone
+      query:
+        source_id: copernicus_clms_clcplus_backbone
+        variable: clcplus_backbone_low_growing_woody_plants_fraction
+      dimensions: {}
+      temporal:
+        output_mode: supplied_layers
+        layers:
+          annual: false
+          annual_index: false
+          months: []
+          seasons: []
+          years:
+          - 2018
+      category_fraction:
+        variable: clcplus_backbone
+        name: clcplus_backbone_low_growing_woody_plants_fraction
+        class_values:
+        - 5
+        label: Low-growing woody plants
+        resampling: average
+      source_resolution: 10m
+      resampling: average
+  parameters: {}
+  outputs:
+  - name: habitat_shrubland_2018
+    suffix: '2018'
+    unit: fraction
+    value_semantics: fraction
+    output_dtype: float32
+    inputs:
+      x:
+        kind: source
+        source_id: copernicus_clms_clcplus_backbone
+        config: configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml
+        variable: clcplus_backbone
+        query:
+          source_id: copernicus_clms_clcplus_backbone
+          variable: clcplus_backbone_low_growing_woody_plants_fraction
+        dimensions: {}
+        temporal:
+          output_mode: supplied_layers
+          layers:
+            annual: false
+            annual_index: false
+            months: []
+            seasons: []
+            years:
+            - 2018
+        category_fraction:
+          variable: clcplus_backbone
+          name: clcplus_backbone_low_growing_woody_plants_fraction
+          class_values:
+          - 5
+          label: Low-growing woody plants
+          resampling: average
+        source_resolution: 10m
+        resampling: average
+    parameters: {}
 outputs:
   dataset_dir: data_processed/datasets/ursus_arctos_pyrenees_100m
   copy_rasters: true

@@ -32,12 +32,15 @@ EXECUTABLE_RESAMPLING_METHODS = {
 VALUE_SEMANTICS = [
     "categorical",
     "ordinal",
+    "binary",
     "intensive",
     "intensive_depth",
     "percentage",
     "fraction",
+    "ratio",
     "extensive",
     "count",
+    "circular",
 ]
 
 

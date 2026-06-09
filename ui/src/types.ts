@@ -264,6 +264,10 @@ export interface DatasetFeatureOutput {
   operation?: string;
   method?: string;
   parameters?: Dict;
+  evaluation_stage?: string;
+  evaluation_resolution_m?: number | string;
+  pre_resample_input_resampling?: string;
+  post_resampling?: string;
 }
 
 export interface DatasetFeatureConfig {
@@ -282,6 +286,10 @@ export interface DatasetFeatureConfig {
   operation?: string;
   method?: string;
   parameters?: Dict;
+  evaluation_stage?: string;
+  evaluation_resolution_m?: number | string;
+  pre_resample_input_resampling?: string;
+  post_resampling?: string;
 }
 
 export interface DerivedFeatureConfig {
@@ -297,6 +305,10 @@ export interface DerivedFeatureConfig {
   output_dtype?: string;
   temporal_meaning?: string;
   parameters?: Dict;
+  evaluation_stage?: string;
+  evaluation_resolution_m?: number | string;
+  pre_resample_input_resampling?: string;
+  post_resampling?: string;
   inputs: Record<string, DerivedInputQuery>;
 }
 
@@ -316,5 +328,44 @@ export interface ValidationReport {
     indices?: string[];
     aggregations?: string[];
     temporal_output_mode?: string;
+    used_by_features?: string[];
   }>;
+}
+
+export interface RunProjectFeatureSummary {
+  name?: string;
+  title?: string;
+  build_type?: string;
+  unit?: string;
+  value_semantics?: string;
+  output_count: number;
+  outputs: string[];
+}
+
+export interface RunProjectSummary {
+  name: string;
+  path: string;
+  description?: string;
+  aoi_config?: string;
+  crs?: string;
+  resolution_m?: number;
+  stages?: string[];
+  dataset_dir?: string;
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  estimated_layers: number;
+  estimated_source_layers?: number;
+  estimated_derived_layers?: number;
+  sources?: ValidationReport["sources"];
+  feature_count: number;
+  features: RunProjectFeatureSummary[];
+  validation?: ValidationReport;
+}
+
+export interface RunProjectDetail {
+  ok: boolean;
+  path: string;
+  run_config: Dict;
+  summary: RunProjectSummary;
 }

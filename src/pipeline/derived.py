@@ -14,8 +14,12 @@ from src.pipeline.layers import (
 )
 from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
+    get_resampling_method,
     load_grid_context,
+    make_intermediate_grid_context,
+    read_raster_to_grid,
     read_raster_array_as_nan,
+    reproject_array_between_grids,
     write_feature_raster,
 )
 
@@ -66,17 +70,33 @@ ALLOWED_FUNCTIONS = {
     "isfinite": np.isfinite,
 }
 
+ALLOWED_FUNCTION_ARITY = {
+    "abs": (1, 1),
+    "sqrt": (1, 1),
+    "log": (1, 1),
+    "log10": (1, 1),
+    "exp": (1, 1),
+    "minimum": (2, 2),
+    "maximum": (2, 2),
+    "where": (3, 3),
+    "clip": (3, 3),
+    "isfinite": (1, 1),
+}
+
 ALLOWED_CONSTANTS = {
     "nan": np.nan,
 }
 
 NUMERIC_VALUE_SEMANTICS = {
+    "binary",
     "intensive",
     "intensive_depth",
     "percentage",
     "fraction",
+    "ratio",
     "extensive",
     "count",
+    "circular",
     None,
 }
 
@@ -120,6 +140,13 @@ DERIVED_OPERATION_GROUPS = {
         "distance_to_mask",
         "distance_to_class",
     ],
+}
+
+EVALUATION_STAGES = {
+    "target_grid",
+    "native_then_resample",
+    "pre_resample",
+    "source_grid",
 }
 
 
@@ -166,9 +193,21 @@ def _validate_expression_node(
         return
 
     if isinstance(node, ast.Name):
+        if node.id in ALLOWED_FUNCTIONS:
+            min_args, max_args = ALLOWED_FUNCTION_ARITY[node.id]
+            expected = (
+                f"{min_args} argument"
+                if min_args == max_args == 1
+                else f"{min_args} arguments"
+                if min_args == max_args
+                else f"{min_args}-{max_args} arguments"
+            )
+            raise ValueError(
+                f"Function {node.id!r} must be called with parentheses "
+                f"and {expected}."
+            )
         if (
             node.id not in allowed_names
-            and node.id not in ALLOWED_FUNCTIONS
             and node.id not in ALLOWED_CONSTANTS
         ):
             raise ValueError(f"Unknown name in expression: {node.id}")
@@ -185,6 +224,20 @@ def _validate_expression_node(
 
         if node.func.id not in ALLOWED_FUNCTIONS:
             raise ValueError(f"Function not allowed: {node.func.id}")
+
+        min_args, max_args = ALLOWED_FUNCTION_ARITY[node.func.id]
+        arg_count = len(node.args)
+        if arg_count < min_args or arg_count > max_args:
+            expected = (
+                f"{min_args} argument"
+                if min_args == max_args == 1
+                else f"{min_args} arguments"
+                if min_args == max_args
+                else f"{min_args}-{max_args} arguments"
+            )
+            raise ValueError(
+                f"Function {node.func.id!r} expects {expected}; got {arg_count}."
+            )
 
         for arg in node.args:
             _validate_expression_node(arg, allowed_names)
@@ -703,6 +756,257 @@ def _layer_native_resolution_m(layer: LayerSpec) -> float | None:
         return None
 
 
+def _as_positive_float(value: Any) -> float | None:
+    if value in [None, "", "native", "auto"]:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(result) or result <= 0:
+        return None
+    return result
+
+
+def _normalise_evaluation_stage(value: Any) -> str:
+    stage = str(value or "target_grid").strip().lower()
+    aliases = {
+        "after_resampling": "target_grid",
+        "after_resample": "target_grid",
+        "post_resample": "target_grid",
+        "post_resampling": "target_grid",
+        "target": "target_grid",
+        "native": "native_then_resample",
+        "before_resample": "native_then_resample",
+        "before_resampling": "native_then_resample",
+        "pre_resample": "native_then_resample",
+        "source_grid": "native_then_resample",
+    }
+    stage = aliases.get(stage, stage)
+    if stage not in {"target_grid", "native_then_resample"}:
+        raise ValueError(
+            f"Unsupported evaluation_stage {value!r}. "
+            "Use 'target_grid' or 'native_then_resample'."
+        )
+    return stage
+
+
+def _native_input_path(layer: LayerSpec) -> tuple[Path, bool]:
+    """
+    Return the best pre-target-grid raster path known for a layer.
+
+    Source builders progressively add source_clipped_path/source_raster metadata.
+    If unavailable, the target-grid layer path is returned with available=False so
+    callers can warn that no extra spatial information can be recovered.
+    """
+    for key in [
+        "source_clipped_path",
+        "source_input_path",
+        "source_raster_path",
+        "source_raster",
+        "clipped_path",
+        "input",
+    ]:
+        value = layer.metadata.get(key)
+        if not value:
+            continue
+        path = Path(str(value))
+        if path.exists():
+            return path, True
+
+    return Path(layer.path), False
+
+
+def _input_resampling_for_native(
+    layer: LayerSpec,
+    derived_cfg: dict[str, Any],
+) -> str:
+    parameters = derived_cfg.get("parameters", {}) or {}
+    override = (
+        derived_cfg.get("pre_resample_input_resampling")
+        or parameters.get("pre_resample_input_resampling")
+        or parameters.get("input_resampling")
+    )
+    if override:
+        return str(override)
+
+    semantics = _layer_value_semantics(layer)
+    if semantics in {"categorical", "ordinal", "binary"}:
+        return "nearest"
+    if semantics in {"count", "extensive"}:
+        return "average"
+    return "bilinear"
+
+
+def _post_resampling_name(
+    derived_cfg: dict[str, Any],
+    operation: str,
+) -> str:
+    parameters = derived_cfg.get("parameters", {}) or {}
+    explicit = (
+        derived_cfg.get("post_resampling")
+        or derived_cfg.get("final_resampling")
+        or parameters.get("post_resampling")
+        or parameters.get("final_resampling")
+    )
+    if explicit:
+        return str(explicit)
+
+    recipe = str(derived_cfg.get("recipe", ""))
+    if operation == "recipe" and recipe in {
+        "binary_threshold_mask",
+        "class_mask",
+        "reclassification",
+    }:
+        return "nearest"
+    if operation == "focal":
+        method = str(derived_cfg.get("method", parameters.get("method", "mean")))
+        if method in {"majority", "diversity"}:
+            return "mode" if method == "majority" else "average"
+    return "average"
+
+
+def _evaluation_resolution_m(
+    derived_cfg: dict[str, Any],
+    input_layers: dict[str, LayerSpec],
+    target_resolution_m: int,
+) -> float:
+    parameters = derived_cfg.get("parameters", {}) or {}
+    explicit = _as_positive_float(
+        derived_cfg.get("evaluation_resolution_m")
+        or parameters.get("evaluation_resolution_m")
+        or parameters.get("pre_resample_resolution_m")
+    )
+    if explicit is not None:
+        return explicit
+
+    native = [
+        value
+        for value in (_layer_native_resolution_m(layer) for layer in input_layers.values())
+        if value is not None and value > 0
+    ]
+    if native:
+        return min(native)
+    return float(target_resolution_m)
+
+
+def _circular_resample_to_target(
+    degrees: np.ndarray,
+    src_grid,
+    dst_grid,
+) -> np.ndarray:
+    radians = np.deg2rad(degrees.astype(np.float32))
+    valid = np.isfinite(radians)
+    sin_values = np.full(degrees.shape, np.nan, dtype=np.float32)
+    cos_values = np.full(degrees.shape, np.nan, dtype=np.float32)
+    sin_values[valid] = np.sin(radians[valid])
+    cos_values[valid] = np.cos(radians[valid])
+
+    average = get_resampling_method("average")
+    sin_grid = reproject_array_between_grids(
+        sin_values,
+        src_grid=src_grid,
+        dst_grid=dst_grid,
+        resampling=average,
+    )
+    cos_grid = reproject_array_between_grids(
+        cos_values,
+        src_grid=src_grid,
+        dst_grid=dst_grid,
+        resampling=average,
+    )
+    result = np.degrees(np.arctan2(sin_grid, cos_grid))
+    result = np.mod(result, 360.0).astype(np.float32)
+    result[~np.isfinite(sin_grid) | ~np.isfinite(cos_grid)] = np.nan
+    return result
+
+
+def _evaluate_native_then_resample(
+    derived_cfg: dict[str, Any],
+    input_layers: dict[str, LayerSpec],
+    target_grid,
+    target_resolution_m: int,
+) -> tuple[np.ndarray, str, str, dict[str, Any], list[str]]:
+    operation_name = str(derived_cfg.get("operation", "expression"))
+    evaluation_resolution = _evaluation_resolution_m(
+        derived_cfg=derived_cfg,
+        input_layers=input_layers,
+        target_resolution_m=target_resolution_m,
+    )
+    intermediate_grid = make_intermediate_grid_context(
+        base_grid=target_grid,
+        resolution_m=evaluation_resolution,
+    )
+
+    input_arrays: dict[str, np.ndarray] = {}
+    input_paths: dict[str, str] = {}
+    input_resampling: dict[str, str] = {}
+    warnings: list[str] = []
+
+    for input_name, layer in input_layers.items():
+        raster_path, native_available = _native_input_path(layer)
+        resampling_name = _input_resampling_for_native(layer, derived_cfg)
+        input_paths[input_name] = str(raster_path)
+        input_resampling[input_name] = resampling_name
+
+        if not native_available:
+            warnings.append(
+                f"Input '{input_name}' ({layer.name}) does not expose a clipped/native "
+                "source path; native_then_resample uses the target-grid raster for "
+                "that input and cannot recover lost sub-cell information."
+            )
+
+        scale_factor = float(layer.metadata.get("scale_factor", 1.0) or 1.0) if native_available else 1.0
+        band = int(layer.metadata.get("band", 1) or 1)
+        input_arrays[input_name] = read_raster_to_grid(
+            raster_path=raster_path,
+            grid=intermediate_grid,
+            resampling=get_resampling_method(resampling_name),
+            band=band,
+            scale_factor=scale_factor,
+            resampling_method_name=resampling_name,
+        )
+
+    native_result, operation, effective_expression = evaluate_derived_operation(
+        derived_cfg=derived_cfg,
+        input_arrays=input_arrays,
+        grid_resolution_m=int(round(evaluation_resolution)),
+    )
+
+    method = str(derived_cfg.get("method", (derived_cfg.get("parameters", {}) or {}).get("method", "")))
+    post_resampling = _post_resampling_name(derived_cfg, operation_name)
+    if operation_name == "terrain" and method == "aspect" and post_resampling in {
+        "average",
+        "bilinear",
+        "cubic",
+        "circular_mean",
+    }:
+        result = _circular_resample_to_target(
+            native_result,
+            src_grid=intermediate_grid,
+            dst_grid=target_grid,
+        )
+        effective_post_resampling = "circular_mean"
+    else:
+        result = reproject_array_between_grids(
+            native_result,
+            src_grid=intermediate_grid,
+            dst_grid=target_grid,
+            resampling=get_resampling_method(post_resampling),
+        )
+        effective_post_resampling = post_resampling
+
+    metadata = {
+        "evaluation_stage": "native_then_resample",
+        "evaluation_resolution_m": evaluation_resolution,
+        "evaluation_grid_shape": [intermediate_grid.height, intermediate_grid.width],
+        "pre_resample_input_paths": input_paths,
+        "pre_resample_input_resampling": input_resampling,
+        "post_resampling": effective_post_resampling,
+    }
+    return result, operation, effective_expression, metadata, warnings
+
+
 def _range_includes_zero(value: Any) -> bool:
     if not value or not isinstance(value, (list, tuple)) or len(value) != 2:
         return True
@@ -723,6 +1027,8 @@ def validate_derived_feature_definition(
 
     if not isinstance(inputs_cfg, dict) or not inputs_cfg:
         raise ValueError(f"Derived feature '{derived_cfg.get('name')}' has no inputs.")
+
+    _normalise_evaluation_stage(derived_cfg.get("evaluation_stage", "target_grid"))
 
     if operation == "expression":
         if "expression" not in derived_cfg:
@@ -843,6 +1149,7 @@ def _build_derived_metadata(
     effective_expression: str,
     warnings: list[str],
 ) -> dict[str, Any]:
+    evaluation_metadata = derived_cfg.get("_evaluation_metadata", {}) or {}
     return {
         "provider": "derived",
         "product": "derived_features",
@@ -861,6 +1168,10 @@ def _build_derived_metadata(
         "parameters": derived_cfg.get("parameters"),
         "expression": derived_cfg.get("expression"),
         "effective_expression": effective_expression,
+        "evaluation_stage": _normalise_evaluation_stage(
+            derived_cfg.get("evaluation_stage", "target_grid")
+        ),
+        **evaluation_metadata,
         "warnings": warnings,
         "temporal_meaning": derived_cfg.get("temporal_meaning"),
         "run_name": run_name,
@@ -973,17 +1284,22 @@ def build_derived_features(
     written_paths: list[Path] = []
 
     for derived_cfg in derived_features:
+        derived_cfg = dict(derived_cfg)
         validate_derived_feature_definition(derived_cfg)
 
         name = derived_cfg["name"]
         inputs_cfg = derived_cfg.get("inputs", {})
         operation_name = str(derived_cfg.get("operation", "expression"))
+        evaluation_stage = _normalise_evaluation_stage(
+            derived_cfg.get("evaluation_stage", "target_grid")
+        )
 
         if not inputs_cfg:
             raise ValueError(f"Derived feature '{name}' has no inputs.")
 
         progress_log(f"[derived] Feature: {name}")
         progress_log(f"[derived] Operation: {operation_name}")
+        progress_log(f"[derived] Evaluation stage: {evaluation_stage}")
 
         input_layers: dict[str, LayerSpec] = {}
         input_arrays: dict[str, np.ndarray] = {}
@@ -997,21 +1313,44 @@ def build_derived_features(
 
             input_layers[input_name] = layer
 
-            array, _ = read_raster_array_as_nan(layer.path)
-            input_arrays[input_name] = array
+            if evaluation_stage == "target_grid":
+                array, _ = read_raster_array_as_nan(layer.path)
+                input_arrays[input_name] = array
 
             progress_log(f"[derived] Input {input_name}: {layer.name}")
 
-        result, operation, effective_expression = evaluate_derived_operation(
-            derived_cfg=derived_cfg,
-            input_arrays=input_arrays,
-            grid_resolution_m=target_resolution_m,
-        )
+        evaluation_warnings: list[str] = []
+        if evaluation_stage == "native_then_resample":
+            (
+                result,
+                operation,
+                effective_expression,
+                evaluation_metadata,
+                evaluation_warnings,
+            ) = _evaluate_native_then_resample(
+                derived_cfg=derived_cfg,
+                input_layers=input_layers,
+                target_grid=grid,
+                target_resolution_m=target_resolution_m,
+            )
+            derived_cfg["_evaluation_metadata"] = evaluation_metadata
+        else:
+            result, operation, effective_expression = evaluate_derived_operation(
+                derived_cfg=derived_cfg,
+                input_arrays=input_arrays,
+                grid_resolution_m=target_resolution_m,
+            )
+            derived_cfg["_evaluation_metadata"] = {
+                "evaluation_stage": "target_grid",
+                "evaluation_resolution_m": target_resolution_m,
+                "post_resampling": None,
+            }
         warnings = validate_derived_feature_inputs(
             derived_cfg=derived_cfg,
             input_layers=input_layers,
             effective_expression=effective_expression,
         )
+        warnings.extend(evaluation_warnings)
         for warning in warnings:
             progress_log(f"[derived] {warning}", level="warning")
 

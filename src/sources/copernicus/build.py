@@ -294,6 +294,17 @@ def _build_yearly_static_aggregations(
                     "year_end": years[-1],
                     "temporal_output_mode": "aggregate",
                     "input_variables": [item[0] for item in selected_items],
+                    "source_clipped_paths": [
+                        str(
+                            _get_clipped_path(
+                                project_cfg=project_cfg,
+                                source_cfg=source_cfg,
+                                clip_aoi_name=clip_aoi_name,
+                                variable=item[0],
+                            )
+                        )
+                        for item in selected_items
+                    ],
                     "provider": source.get("provider"),
                     "product": source.get("product"),
                 }
@@ -325,6 +336,7 @@ def _build_copernicus_static_metadata(
     output_aoi_name: str,
     target_resolution_m: int,
     resampling_method_name: str,
+    source_input_path: Path | None = None,
 ) -> dict:
     metadata = build_static_feature_metadata(
         source_cfg=source_cfg,
@@ -334,6 +346,7 @@ def _build_copernicus_static_metadata(
         output_aoi_name=output_aoi_name,
         target_resolution_m=target_resolution_m,
         resampling_method_name=resampling_method_name,
+        source_input_path=source_input_path,
     )
 
     dataset_cfg = source_cfg.get("dataset", {}) or {}
@@ -495,6 +508,7 @@ def build_copernicus_features(
                 output_aoi_name=output_aoi_name,
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=resampling_name,
+                source_input_path=clipped_path,
             )
 
             written_path = write_feature_raster(
@@ -546,6 +560,7 @@ def build_copernicus_features(
                 output_aoi_name=output_aoi_name,
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=fraction_resampling_name,
+                source_input_path=clipped_path,
             )
             metadata.update(
                 {

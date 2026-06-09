@@ -9,6 +9,7 @@ from pathlib import Path
 from src.io.config import load_yaml
 from src.make_grid import create_grid
 from src.pipeline.raster_ops import build_static_feature_metadata
+from src.pipeline.resampling import VALUE_SEMANTICS
 from src.pipeline.runner import _load_domain_configs
 from src.pipeline.source_overrides import normalize_source_domains
 from src.pipeline.variable_expansion import expand_source_config
@@ -291,6 +292,77 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertIn("ghsl", connectors)
         self.assertIn("esa_cci", connectors)
         self.assertIn("esa_worldcover", connectors)
+
+    def test_value_semantics_include_binary_and_circular(self):
+        self.assertIn("binary", VALUE_SEMANTICS)
+        self.assertIn("circular", VALUE_SEMANTICS)
+        self.assertIn("ratio", VALUE_SEMANTICS)
+
+    def test_feature_compiler_infers_value_semantics(self):
+        cfg = {
+            "run": {
+                "name": "inferred_semantics",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "tree_cover_density",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "copernicus_clms_forest",
+                        "config": "configs/sources/copernicus/copernicus_clms_forest.yaml",
+                        "variable": "tree_cover_density",
+                    },
+                },
+                {
+                    "name": "broadleaved_fraction",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "copernicus_clms_forest",
+                        "config": "configs/sources/copernicus/copernicus_clms_forest.yaml",
+                        "variable": "dominant_leaf_type",
+                        "query": {"variable": "broadleaved_fraction"},
+                        "category_fraction": {
+                            "variable": "dominant_leaf_type",
+                            "name": "broadleaved_fraction",
+                            "class_values": [1],
+                            "resampling": "average",
+                        },
+                        "resampling": "average",
+                    },
+                },
+                {
+                    "name": "broadleaved_mask",
+                    "build_type": "masking",
+                    "recipe": "class_mask",
+                    "parameters": {"class_value": 1},
+                    "inputs": {
+                        "x": {
+                            "kind": "source",
+                            "source_id": "copernicus_clms_forest",
+                            "config": "configs/sources/copernicus/copernicus_clms_forest.yaml",
+                            "variable": "dominant_leaf_type",
+                        }
+                    },
+                },
+            ],
+            "outputs": {"dataset_dir": "data/processed/inferred_semantics"},
+        }
+
+        compiled = compile_run_config(cfg)
+        by_name = {item["name"]: item for item in compiled["derived_features"]}
+        self.assertEqual(by_name["tree_cover_density"]["value_semantics"], "percentage")
+        self.assertEqual(by_name["tree_cover_density"]["output_dtype"], "float32")
+        self.assertEqual(by_name["broadleaved_fraction"]["value_semantics"], "fraction")
+        self.assertEqual(by_name["broadleaved_fraction"]["output_dtype"], "float32")
+        self.assertEqual(by_name["broadleaved_mask"]["value_semantics"], "binary")
+        self.assertEqual(by_name["broadleaved_mask"]["output_dtype"], "uint8")
 
     def test_new_sources_are_visible_in_catalog(self):
         catalogs = {item["id"]: item for item in list_source_catalogs()}
@@ -634,6 +706,106 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertFalse(
             compiled["variables"]["settlement_model_2020"]["build_output_enabled"]
         )
+
+    def test_yearly_category_fraction_accepts_catalog_generated_from_reference(self):
+        cases = [
+            (
+                "configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml",
+                "clcplus_backbone",
+                2018,
+                [8, 9],
+                "clcplus_backbone_2018",
+            ),
+            (
+                "configs/sources/esa_worldcover/esa_worldcover_land_cover_10m.yaml",
+                "worldcover",
+                2021,
+                [20, 30],
+                "worldcover_2021",
+            ),
+            (
+                "configs/sources/ghsl/ghsl_ghs_smod_r2023a.yaml",
+                "settlement_model",
+                2020,
+                [21, 22, 23, 30],
+                "settlement_model_2020",
+            ),
+        ]
+
+        for config_path, group_name, year, class_values, expected_variable in cases:
+            with self.subTest(config_path=config_path):
+                source_cfg = expand_source_config(load_yaml(config_path))
+                compiled = compile_source_config_for_run(
+                    source_cfg,
+                    {
+                        "select": {
+                            "variables": [],
+                            "temporal": {
+                                "output_mode": "supplied_layers",
+                                "layers": {"years": [year]},
+                            },
+                            "category_fractions": [
+                                {
+                                    "variable": f"variable_groups.{group_name}",
+                                    "name": "category_fraction",
+                                    "class_values": class_values,
+                                    "resampling": "average",
+                                },
+                            ],
+                        },
+                    },
+                )
+
+                self.assertEqual(
+                    compiled["category_fractions"][0]["variable"],
+                    expected_variable,
+                )
+                self.assertTrue(compiled["variables"][expected_variable]["enabled"])
+                self.assertFalse(
+                    compiled["variables"][expected_variable]["build_output_enabled"]
+                )
+
+    def test_validation_errors_include_final_feature_context(self):
+        cfg = {
+            "run": {
+                "name": "bad_fraction_context",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/experimental_pallars_sobira.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "habitat_bad_fraction",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "copernicus_clms_clcplus_backbone",
+                        "config": "configs/sources/copernicus/copernicus_clms_clcplus_backbone.yaml",
+                        "variable": "clcplus_backbone",
+                        "query": {"variable": "bad_fraction"},
+                        "temporal": {
+                            "output_mode": "supplied_layers",
+                            "layers": {"years": [2018]},
+                        },
+                        "category_fraction": {
+                            "variable": "variable_groups.not_a_real_group",
+                            "name": "bad_fraction",
+                            "class_values": [8, 9],
+                            "resampling": "average",
+                        },
+                    },
+                }
+            ],
+            "outputs": {"dataset_dir": "data/processed/bad_fraction_context"},
+        }
+
+        report = validate_researcher_run_config(cfg)
+        self.assertFalse(report["ok"])
+        self.assertIn("Source 'copernicus_clms_clcplus_backbone' failed validation.", report["errors"][0])
+        self.assertIn("Used by final feature(s): habitat_bad_fraction.", report["errors"][0])
+        self.assertIn("Problem:", report["errors"][0])
 
     def test_categorical_yearly_collections_reject_numeric_aggregations(self):
         cfg = {

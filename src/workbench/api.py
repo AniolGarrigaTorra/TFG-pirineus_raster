@@ -5,7 +5,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 from pyproj import Transformer
@@ -54,6 +54,147 @@ def _sanitize_config_name(value: Any) -> str:
     if not name:
         raise ValueError("Config name cannot be empty.")
     return name
+
+
+def _runs_dir() -> Path:
+    return get_repo_root() / "configs" / "runs"
+
+
+def _resolve_run_config_path(value: Any) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Run config path/name cannot be empty.")
+
+    repo_root = get_repo_root()
+    runs_dir = _runs_dir().resolve()
+    candidate = Path(text)
+
+    if candidate.suffix.lower() not in {".yaml", ".yml"}:
+        candidate = candidate.with_suffix(".yaml")
+
+    if candidate.is_absolute():
+        run_path = candidate
+    elif str(candidate).startswith("configs/runs/"):
+        run_path = repo_root / candidate
+    else:
+        run_path = runs_dir / candidate.name
+
+    resolved = run_path.resolve()
+    if resolved.parent != runs_dir:
+        raise ValueError("Run config must live directly under configs/runs.")
+    return resolved
+
+
+def _run_features_summary(run_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for feature in run_cfg.get("features", []) or []:
+        if not isinstance(feature, dict):
+            continue
+        outputs = feature.get("outputs") or []
+        output_names = [
+            str(output.get("name"))
+            for output in outputs
+            if isinstance(output, dict) and output.get("name")
+        ]
+        result.append(
+            {
+                "name": feature.get("name"),
+                "title": feature.get("title"),
+                "build_type": feature.get("build_type"),
+                "unit": feature.get("unit"),
+                "value_semantics": feature.get("value_semantics"),
+                "output_count": len(output_names) or 1,
+                "outputs": output_names,
+            }
+        )
+    return result
+
+
+def _run_config_summary(path: Path) -> dict[str, Any]:
+    repo_root = get_repo_root()
+    relative_path = str(path.relative_to(repo_root))
+
+    try:
+        run_cfg = load_yaml(path)
+    except Exception as exc:
+        return {
+            "name": path.stem,
+            "path": relative_path,
+            "ok": False,
+            "errors": [f"Could not read YAML: {exc}"],
+            "warnings": [],
+            "feature_count": 0,
+            "estimated_layers": 0,
+            "features": [],
+        }
+
+    run_section = run_cfg.get("run", {}) if isinstance(run_cfg.get("run"), dict) else {}
+    try:
+        validation = validate_researcher_run_config(run_cfg, run_config_path=path)
+    except Exception as exc:
+        validation = {
+            "ok": False,
+            "errors": [str(exc)],
+            "warnings": [],
+            "estimated_layers": 0,
+            "estimated_source_layers": 0,
+            "estimated_derived_layers": 0,
+            "sources": [],
+        }
+
+    features = _run_features_summary(run_cfg)
+    return {
+        "name": run_section.get("name") or path.stem,
+        "path": relative_path,
+        "description": run_section.get("description"),
+        "aoi_config": run_section.get("aoi_config"),
+        "crs": run_section.get("crs"),
+        "resolution_m": run_section.get("resolution_m"),
+        "stages": run_section.get("stages"),
+        "dataset_dir": (run_cfg.get("outputs", {}) or {}).get("dataset_dir"),
+        "ok": bool(validation.get("ok")),
+        "errors": validation.get("errors", []),
+        "warnings": validation.get("warnings", []),
+        "estimated_layers": validation.get("estimated_layers", 0),
+        "estimated_source_layers": validation.get("estimated_source_layers", 0),
+        "estimated_derived_layers": validation.get("estimated_derived_layers", 0),
+        "sources": validation.get("sources", []),
+        "feature_count": len(features),
+        "features": features,
+        "validation": validation,
+    }
+
+
+def _list_run_configs() -> dict[str, Any]:
+    runs_dir = _runs_dir()
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    paths = sorted(
+        [*runs_dir.glob("*.yaml"), *runs_dir.glob("*.yml")],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    return {"ok": True, "runs": [_run_config_summary(path) for path in paths]}
+
+
+def _get_run_config(path_value: Any) -> dict[str, Any]:
+    path = _resolve_run_config_path(path_value)
+    if not path.exists():
+        raise FileNotFoundError(f"Run config does not exist: {path.name}")
+    run_cfg = load_yaml(path)
+    return {
+        "ok": True,
+        "path": str(path.relative_to(get_repo_root())),
+        "run_config": run_cfg,
+        "summary": _run_config_summary(path),
+    }
+
+
+def _delete_run_config(payload: dict[str, Any]) -> dict[str, Any]:
+    path = _resolve_run_config_path(payload.get("path") or payload.get("name"))
+    if not path.exists():
+        raise FileNotFoundError(f"Run config does not exist: {path.name}")
+    path.unlink()
+    return {"ok": True, "path": str(path.relative_to(get_repo_root()))}
 
 
 def _bounds_epsg4326(crs: str, bounds: dict[str, float]) -> dict[str, float]:
@@ -197,7 +338,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         try:
             if path == "/api/health":
                 _json_response(self, 200, {"ok": True})
@@ -211,6 +353,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path == "/api/runs":
+                _json_response(self, 200, _list_run_configs())
+                return
+
+            if path == "/api/run":
+                query = parse_qs(parsed_url.query)
+                _json_response(self, 200, _get_run_config((query.get("path") or [""])[0]))
+                return
+
             _json_response(
                 self,
                 404,
@@ -220,9 +371,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "endpoints": [
                         "GET /api/health",
                         "GET /api/catalog",
+                        "GET /api/runs",
+                        "GET /api/run?path=configs/runs/name.yaml",
                         "POST /api/validate-run",
                         "POST /api/render-run",
                         "POST /api/save-run",
+                        "POST /api/delete-run",
                         "POST /api/aoi-config",
                         "POST /api/grid",
                     ],
@@ -242,6 +396,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/api/grid":
                 _json_response(self, 200, _create_grid(payload))
+                return
+
+            if path == "/api/delete-run":
+                _json_response(self, 200, _delete_run_config(payload))
                 return
 
             run_cfg = _extract_run_config(payload)
@@ -288,7 +446,8 @@ def serve_workbench_api(
     print(f"Project config: {project_config_path}")
     print(
         "Endpoints: /api/catalog, /api/validate-run, /api/render-run, "
-        "/api/save-run, /api/aoi-config, /api/grid"
+        "/api/save-run, /api/runs, /api/run, /api/delete-run, "
+        "/api/aoi-config, /api/grid"
     )
     print("==============================")
 

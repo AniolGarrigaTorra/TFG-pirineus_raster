@@ -1,4 +1,4 @@
-import type { AoiBounds, AoiCatalog, ValidationReport, WorkbenchCatalog } from "./types";
+import type { AoiBounds, AoiCatalog, RunProjectDetail, RunProjectSummary, ValidationReport, WorkbenchCatalog } from "./types";
 
 async function requestJson<T>(
   path: string,
@@ -35,6 +35,21 @@ async function requestJson<T>(
 
 export function fetchCatalog(): Promise<WorkbenchCatalog> {
   return requestJson<WorkbenchCatalog>("/api/catalog");
+}
+
+export function fetchRunConfigs(): Promise<{ ok: boolean; runs: RunProjectSummary[] }> {
+  return requestJson("/api/runs");
+}
+
+export function fetchRunConfig(path: string): Promise<RunProjectDetail> {
+  return requestJson(`/api/run?path=${encodeURIComponent(path)}`);
+}
+
+export function deleteRunConfig(path: string): Promise<{ ok: boolean; path: string }> {
+  return requestJson("/api/delete-run", {
+    method: "POST",
+    body: JSON.stringify({ path })
+  });
 }
 
 export function validateRunConfig(runConfig: unknown): Promise<ValidationReport> {

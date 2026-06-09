@@ -40,6 +40,18 @@ SUPPORTED_POSTPROCESS_METRICS = [
 ]
 
 
+def _format_source_validation_error(
+    source_id: str,
+    used_by: list[Any],
+    error: Exception,
+) -> str:
+    lines = [f"Source '{source_id}' failed validation."]
+    if used_by:
+        lines.append(f"Used by final feature(s): {', '.join(map(str, used_by))}.")
+    lines.append(f"Problem: {error}")
+    return "\n".join(lines)
+
+
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -83,6 +95,13 @@ def _enable_selected(
         collection[name]["enabled"] = True
 
 
+def _normalise_variable_group_reference(value: Any) -> str:
+    text = str(value).strip()
+    if text.startswith("variable_groups."):
+        return text.split(".", 1)[1]
+    return text
+
+
 def _is_yearly_static_collection(cfg: dict[str, Any]) -> bool:
     return cfg.get("dataset", {}).get("layer_structure") == "yearly_static_collection"
 
@@ -104,7 +123,8 @@ def _expanded_variables_for_yearly_groups(
     resolved: list[str] = []
     unknown: list[str] = []
 
-    for name in selected:
+    for raw_name in selected:
+        name = _normalise_variable_group_reference(raw_name)
         if name in variables:
             resolved.append(name)
             continue
@@ -270,6 +290,7 @@ def _category_fraction_targets(
     cfg: dict[str, Any],
     variable: str,
 ) -> list[tuple[str, dict[str, Any]]]:
+    variable = _normalise_variable_group_reference(variable)
     variables = cfg.get("variables", {}) or {}
     if variable in variables:
         return [(variable, variables[variable])]
@@ -375,7 +396,7 @@ def _compile_category_fractions(
         if not isinstance(item, dict):
             raise ConfigValidationError("Each category fraction must be a dictionary.")
 
-        variable = str(item.get("variable", ""))
+        variable = _normalise_variable_group_reference(item.get("variable", ""))
         targets = _category_fraction_targets(cfg, variable)
         class_values = _category_fraction_values(item)
 
@@ -451,6 +472,7 @@ def _aggregation_variable_names(cfg: dict[str, Any]) -> set[str]:
 
 
 def _variable_semantics(cfg: dict[str, Any], variable: str) -> set[str]:
+    variable = _normalise_variable_group_reference(variable)
     variables = cfg.get("variables", {}) or {}
     targets: list[dict[str, Any]] = []
 
@@ -465,12 +487,14 @@ def _variable_semantics(cfg: dict[str, Any], variable: str) -> set[str]:
         )
 
     semantics = {
-        str(item.get("value_semantics") or item.get("data_type"))
+        semantic
         for item in targets
-        if item.get("value_semantics") or item.get("data_type")
+        if (semantic := _normalise_value_semantics(item.get("value_semantics") or item.get("data_type")))
     }
     if not semantics and cfg.get("dataset", {}).get("data_type"):
-        semantics.add(str(cfg["dataset"]["data_type"]))
+        semantic = _normalise_value_semantics(cfg["dataset"]["data_type"])
+        if semantic:
+            semantics.add(semantic)
     return semantics
 
 
@@ -1964,6 +1988,7 @@ def _try_merge_source_requirement(
     entry: dict[str, Any],
     select: dict[str, Any],
     overrides: dict[str, Any] | None,
+    used_by_feature: str | None = None,
 ) -> bool:
     try:
         merged_select = deepcopy(entry["select"])
@@ -1977,6 +2002,11 @@ def _try_merge_source_requirement(
         entry["overrides"] = merged_overrides
     else:
         entry.pop("overrides", None)
+    if used_by_feature:
+        used_by = list(entry.get("used_by_features", []) or [])
+        if used_by_feature not in used_by:
+            used_by.append(used_by_feature)
+        entry["used_by_features"] = used_by
     return True
 
 
@@ -1987,6 +2017,7 @@ def _source_requirement_alias(
     source_key_to_alias: dict[str, str],
     source_alias_to_entry: dict[str, dict[str, Any]],
     alias_counts: dict[str, int],
+    used_by_feature: str | None = None,
 ) -> str:
     config = input_cfg.get("config")
     source_id = str(input_cfg.get("source_id") or input_cfg.get("id") or "").strip()
@@ -2009,7 +2040,7 @@ def _source_requirement_alias(
     key = _canonical_json(key_payload)
     if key in source_key_to_alias:
         alias = source_key_to_alias[key]
-        if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides):
+        if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides, used_by_feature):
             return alias
 
         conflict_payload = {
@@ -2019,7 +2050,7 @@ def _source_requirement_alias(
         key = _canonical_json(conflict_payload)
         if key in source_key_to_alias:
             alias = source_key_to_alias[key]
-            if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides):
+            if _try_merge_source_requirement(source_alias_to_entry[alias], select, overrides, used_by_feature):
                 return alias
 
     base_alias = _sanitize_token(source_id)
@@ -2035,6 +2066,8 @@ def _source_requirement_alias(
         entry["stages"] = stages
     if overrides:
         entry["overrides"] = overrides
+    if used_by_feature:
+        entry["used_by_features"] = [used_by_feature]
 
     source_entries.append(entry)
     source_key_to_alias[key] = alias
@@ -2077,6 +2110,7 @@ def _compile_feature_input(
     source_alias_to_entry: dict[str, dict[str, Any]],
     alias_counts: dict[str, int],
     known_feature_outputs: set[str],
+    used_by_feature: str | None = None,
 ) -> dict[str, Any]:
     input_kind = str(input_cfg.get("kind") or input_cfg.get("type") or "source")
 
@@ -2099,8 +2133,271 @@ def _compile_feature_input(
         source_key_to_alias=source_key_to_alias,
         source_alias_to_entry=source_alias_to_entry,
         alias_counts=alias_counts,
+        used_by_feature=used_by_feature,
     )
     return _source_query_from_input(input_cfg, source_alias=source_alias)
+
+
+def _normalise_value_semantics(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"auto", "none", "null", "unknown"}:
+        return None
+    aliases = {
+        "continuous": "intensive",
+        "numeric": "intensive",
+        "float": "intensive",
+        "float32": "intensive",
+        "float64": "intensive",
+        "integer": "count",
+        "int": "count",
+        "boolean": "binary",
+        "bool": "binary",
+        "class": "categorical",
+        "classes": "categorical",
+        "proportion": "fraction",
+        "coverage_fraction": "fraction",
+    }
+    return aliases.get(text.lower(), text)
+
+
+def _source_input_variable_name(input_cfg: dict[str, Any]) -> str | None:
+    category_fraction = input_cfg.get("category_fraction")
+    if isinstance(category_fraction, dict) and category_fraction.get("variable") is not None:
+        return _normalise_variable_group_reference(category_fraction["variable"])
+
+    if input_cfg.get("variable") is not None:
+        return _normalise_variable_group_reference(input_cfg["variable"])
+
+    query = input_cfg.get("query")
+    if isinstance(query, dict) and query.get("variable") is not None:
+        return _normalise_variable_group_reference(query["variable"])
+
+    if input_cfg.get("layer") is not None:
+        return str(input_cfg["layer"]).split(".")[-1]
+
+    return None
+
+
+def _source_input_value_semantics(input_cfg: dict[str, Any]) -> str | None:
+    if isinstance(input_cfg.get("category_fraction"), dict):
+        return "fraction"
+
+    config = input_cfg.get("config")
+    variable = _source_input_variable_name(input_cfg)
+    if not config or not variable:
+        return None
+
+    try:
+        source_cfg = expand_source_config(load_yaml(resolve_path(config, must_exist=True)))
+    except Exception:
+        return None
+
+    semantics = _variable_semantics(source_cfg, variable)
+    if len(semantics) == 1:
+        return next(iter(semantics))
+    if len(semantics) > 1 and semantics.issubset({"categorical", "ordinal", "binary"}):
+        return "categorical"
+    return None
+
+
+def _feature_input_value_semantics(
+    input_cfg: Any,
+    known_feature_semantics: dict[str, str],
+) -> str | None:
+    if not isinstance(input_cfg, dict):
+        return None
+
+    input_kind = str(input_cfg.get("kind") or input_cfg.get("type") or "source")
+    if input_kind == "feature":
+        variable = str(input_cfg.get("output") or input_cfg.get("feature") or "").strip()
+        return known_feature_semantics.get(variable)
+
+    if input_kind == "source":
+        return _source_input_value_semantics(input_cfg)
+
+    return None
+
+
+def _feature_raw_inputs(feature: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
+    inputs = deepcopy(output.get("inputs") or feature.get("inputs") or {})
+    build_type = _feature_build_type(feature)
+    if build_type == "source_layer" and not inputs:
+        source_input = output.get("source") or feature.get("source")
+        if isinstance(source_input, dict):
+            inputs = {"x": source_input}
+    return inputs if isinstance(inputs, dict) else {}
+
+
+def _infer_expression_value_semantics(
+    expression: str,
+    input_semantics: dict[str, str | None],
+) -> str | None:
+    text = str(expression or "").strip()
+    compact = text.replace(" ", "")
+    if compact == "x":
+        return input_semantics.get("x")
+    if any(op in compact for op in ["/", "log(", "log10("]):
+        return "ratio"
+    if any(op in compact for op in [">=", "<=", "==", "!=", ">", "<"]):
+        if compact.startswith("where("):
+            return input_semantics.get("x") or "intensive"
+        return "binary"
+    if any(op in compact for op in ["+", "-", "*", "**"]):
+        values = {value for value in input_semantics.values() if value}
+        if values and values.issubset({"percentage"}):
+            return "percentage"
+        if values and values.issubset({"fraction", "binary"}):
+            return "fraction"
+        if values and values.issubset({"count"}):
+            return "count"
+        return "intensive"
+    return input_semantics.get("x")
+
+
+def _infer_feature_value_semantics(
+    feature: dict[str, Any],
+    output: dict[str, Any],
+    known_feature_semantics: dict[str, str],
+) -> str | None:
+    explicit = _normalise_value_semantics(output.get("value_semantics"))
+    if explicit:
+        return explicit
+    explicit = _normalise_value_semantics(feature.get("value_semantics"))
+    if explicit:
+        return explicit
+
+    build_type = _feature_build_type(feature)
+    raw_inputs = _feature_raw_inputs(feature, output)
+    input_semantics = {
+        str(alias): _feature_input_value_semantics(input_cfg, known_feature_semantics)
+        for alias, input_cfg in raw_inputs.items()
+    }
+
+    if build_type == "source_layer":
+        return input_semantics.get("x")
+
+    if build_type in {"masking", "recipe"}:
+        recipe = str(output.get("recipe") or feature.get("recipe") or "")
+        if recipe in {"binary_threshold_mask", "class_mask"}:
+            return "binary"
+        if recipe == "reclassification":
+            return input_semantics.get("x") or "categorical"
+        if recipe == "thermal_range":
+            return "intensive"
+        if recipe == "water_balance":
+            return "intensive_depth"
+        if recipe == "aridity_index":
+            return "ratio"
+        if recipe == "snow_persistence_ratio":
+            return "fraction"
+        if recipe == "seasonal_contrast":
+            parameters = output.get("parameters") or feature.get("parameters") or {}
+            metric = str(parameters.get("metric", "difference")) if isinstance(parameters, dict) else "difference"
+            return "ratio" if "ratio" in metric else (input_semantics.get("a") or "intensive")
+
+    if build_type in {"terrain", "focal", "distance", "spatial"}:
+        operation = str(output.get("operation") or feature.get("operation") or "")
+        if build_type != "spatial":
+            operation = build_type
+        method = str(output.get("method") or feature.get("method") or "")
+        if operation == "distance":
+            return "intensive"
+        if operation == "terrain":
+            return "circular" if method == "aspect" else "intensive"
+        if operation == "focal":
+            source_semantics = input_semantics.get("x")
+            if method == "majority":
+                return source_semantics or "categorical"
+            if method == "diversity":
+                return "count"
+            if method == "mean" and source_semantics in {"binary", "fraction"}:
+                return "fraction"
+            if method in {"min", "max"} and source_semantics:
+                return source_semantics
+            if method == "sum" and source_semantics in {"count", "extensive"}:
+                return source_semantics
+            return "intensive"
+
+    if build_type == "expression":
+        return _infer_expression_value_semantics(
+            str(output.get("expression") or feature.get("expression") or ""),
+            input_semantics,
+        )
+
+    return None
+
+
+def _infer_feature_output_dtype(
+    feature: dict[str, Any],
+    output: dict[str, Any],
+    value_semantics: str | None,
+) -> str:
+    explicit = output.get("output_dtype") or feature.get("output_dtype")
+    if explicit:
+        return str(explicit)
+
+    build_type = _feature_build_type(feature)
+    recipe = str(output.get("recipe") or feature.get("recipe") or "")
+    if build_type == "masking" and recipe in {"binary_threshold_mask", "class_mask"}:
+        return "uint8"
+    if value_semantics in {"categorical", "ordinal", "binary"} and build_type == "source_layer":
+        return "int32"
+    return "float32"
+
+
+def _normalise_feature_evaluation_stage(value: Any) -> str | None:
+    if value in [None, ""]:
+        return None
+    text = str(value).strip().lower()
+    aliases = {
+        "after_resampling": "target_grid",
+        "after_resample": "target_grid",
+        "post_resample": "target_grid",
+        "post_resampling": "target_grid",
+        "target": "target_grid",
+        "native": "native_then_resample",
+        "before_resample": "native_then_resample",
+        "before_resampling": "native_then_resample",
+        "pre_resample": "native_then_resample",
+        "source_grid": "native_then_resample",
+    }
+    normalised = aliases.get(text, text)
+    if normalised not in {"target_grid", "native_then_resample"}:
+        raise ConfigValidationError(
+            f"Unsupported evaluation_stage {value!r}. "
+            "Use 'target_grid' or 'native_then_resample'."
+        )
+    return normalised
+
+
+def _normalise_feature_evaluation_resolution(value: Any) -> Any:
+    if value in [None, "", "native", "auto"]:
+        return "native"
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            f"evaluation_resolution_m must be 'native' or a positive metre value: {value!r}"
+        ) from exc
+    if number <= 0:
+        raise ConfigValidationError(
+            f"evaluation_resolution_m must be positive: {value!r}"
+        )
+    return int(number) if number.is_integer() else number
+
+
+def _normalise_feature_post_resampling(value: Any) -> str | None:
+    if value in [None, ""]:
+        return None
+    text = str(value).strip()
+    if text not in SUPPORTED_RESAMPLING:
+        raise ConfigValidationError(
+            f"Unsupported post_resampling method {text!r}. "
+            f"Supported: {SUPPORTED_RESAMPLING}"
+        )
+    return text
 
 
 def _normalise_feature_inputs(
@@ -2140,6 +2437,7 @@ def _normalise_feature_inputs(
             source_alias_to_entry=source_alias_to_entry,
             alias_counts=alias_counts,
             known_feature_outputs=known_feature_outputs,
+            used_by_feature=_feature_output_name(feature, output),
         )
     return compiled_inputs
 
@@ -2153,6 +2451,7 @@ def _derived_feature_from_feature_output(
     source_alias_to_entry: dict[str, dict[str, Any]],
     alias_counts: dict[str, int],
     known_feature_outputs: set[str],
+    known_feature_semantics: dict[str, str],
 ) -> dict[str, Any]:
     build_type = _feature_build_type(feature)
     output_name = _feature_output_name(feature, output)
@@ -2166,18 +2465,48 @@ def _derived_feature_from_feature_output(
         known_feature_outputs=known_feature_outputs,
     )
 
+    inferred_semantics = _infer_feature_value_semantics(
+        feature,
+        output,
+        known_feature_semantics,
+    )
+    inferred_dtype = _infer_feature_output_dtype(feature, output, inferred_semantics)
+
     derived: dict[str, Any] = {
         "name": output_name,
         "description": output.get("description") or feature.get("description"),
         "unit": output.get("unit") or feature.get("unit"),
-        "value_semantics": output.get("value_semantics") or feature.get("value_semantics"),
-        "output_dtype": output.get("output_dtype") or feature.get("output_dtype") or "float32",
+        "value_semantics": inferred_semantics,
+        "output_dtype": inferred_dtype,
         "inputs": inputs,
     }
 
     for key in ["title", "valid_range", "temporal_meaning"]:
         if output.get(key) is not None or feature.get(key) is not None:
             derived[key] = output.get(key, feature.get(key))
+
+    evaluation_stage = _normalise_feature_evaluation_stage(
+        output.get("evaluation_stage", feature.get("evaluation_stage"))
+    )
+    if evaluation_stage:
+        derived["evaluation_stage"] = evaluation_stage
+        if evaluation_stage == "native_then_resample":
+            derived["evaluation_resolution_m"] = _normalise_feature_evaluation_resolution(
+                output.get("evaluation_resolution_m", feature.get("evaluation_resolution_m"))
+            )
+            post_resampling = _normalise_feature_post_resampling(
+                output.get("post_resampling", feature.get("post_resampling"))
+                or output.get("final_resampling", feature.get("final_resampling"))
+            )
+            if post_resampling:
+                derived["post_resampling"] = post_resampling
+
+    pre_resampling = output.get(
+        "pre_resample_input_resampling",
+        feature.get("pre_resample_input_resampling"),
+    )
+    if pre_resampling is not None:
+        derived["pre_resample_input_resampling"] = _normalise_feature_post_resampling(pre_resampling)
 
     if build_type == "source_layer":
         derived.update({"operation": "expression", "expression": "x"})
@@ -2239,6 +2568,7 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
     source_alias_to_entry: dict[str, dict[str, Any]] = {}
     alias_counts: dict[str, int] = {}
     known_outputs: set[str] = set()
+    known_output_semantics: dict[str, str] = {}
     warnings: list[str] = []
 
     for feature in features:
@@ -2254,6 +2584,7 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
                 source_alias_to_entry=source_alias_to_entry,
                 alias_counts=alias_counts,
                 known_feature_outputs=known_outputs,
+                known_feature_semantics=known_output_semantics,
             )
             if derived["name"] in known_outputs:
                 raise ConfigValidationError(
@@ -2266,6 +2597,8 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
                 )
             compiled_derived.append(derived)
             known_outputs.add(str(derived["name"]))
+            if derived.get("value_semantics"):
+                known_output_semantics[str(derived["name"])] = str(derived["value_semantics"])
 
     if not compiled_sources:
         raise ConfigValidationError("At least one final feature must depend on a source input.")
@@ -2485,7 +2818,8 @@ def validate_researcher_run_config(
                     "This is valid but can be slow and storage-heavy."
                 )
         except Exception as exc:
-            errors.append(f"{source_id}: {exc}")
+            used_by = source_entry.get("used_by_features", []) or []
+            errors.append(_format_source_validation_error(source_id, used_by, exc))
 
     estimated_source_layers = sum(
         item.get("estimated_layers", 0)
@@ -2707,6 +3041,7 @@ def _source_summary(
         "category_fractions": [item.get("name") for item in category_fractions],
         "vector_layers": vector_layers,
         "estimated_layers": layer_count,
+        "used_by_features": sorted(set(source_entry.get("used_by_features", []) or [])),
     }
 
 

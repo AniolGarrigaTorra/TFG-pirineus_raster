@@ -188,8 +188,9 @@ Each final feature has:
 - `name`: stable output name used for the GeoTIFF filename.
 - `build_type`: one of `source_layer`, `recipe`, `masking`, `spatial` or
   `expression`.
-- optional metadata such as `title`, `description`, `unit`,
-  `value_semantics` and `output_dtype`.
+- optional metadata such as `title`, `description` and `unit`. The compiler
+  infers `value_semantics` and `output_dtype` from the source metadata and the
+  selected operation unless an advanced override is provided.
 - one or more inputs. Inputs can point to official source layers or to earlier
   final features created in the same run.
 
@@ -208,6 +209,41 @@ into target-cell proportions. They are computed before target-grid resampling,
 so `average` resampling gives a 0-1 coverage fraction at 100 m or any other
 target resolution. A class mask, by contrast, tests an already aligned raster
 and cannot recover sub-cell composition lost during categorical resampling.
+
+Derived/processed features can also declare `evaluation_stage`:
+
+- `target_grid`: the default cheap path. Source inputs are first aligned to the
+  project grid, then the expression/recipe/spatial operation is evaluated.
+- `native_then_resample`: inputs are reprojected to a metric intermediate grid
+  using the best native resolution recorded in metadata, the operation is
+  evaluated there, and the result is then aggregated/resampled to the final
+  project grid. This is recommended for DEM terrain derivatives, focal windows
+  and distance surfaces when the target resolution is coarser than the source.
+
+For example, `target_grid` slope at 100 m means "slope of the DEM already
+smoothed to 100 m"; `native_then_resample` slope means "native-scale slope
+aggregated to the 100 m cells". The latter is usually more informative but can
+be slower and depends on source builders exposing `source_clipped_path`
+metadata.
+
+`value_semantics` is Pirineus Raster metadata that describes how raster values
+should be interpreted. It is not a GeoTIFF standard field, but it follows common
+GIS/statistical concepts and is used for UI filtering, validation and resampling
+guidance. In normal workbench use it is inferred automatically; set it manually
+only when an advanced expression creates a genuinely ambiguous output:
+
+- `categorical`: nominal class codes such as land cover or geology.
+- `ordinal`: ordered class codes where rank matters but numeric spacing may not.
+- `binary`: 0/1 masks for presence/absence.
+- `intensive`: continuous local values such as elevation, temperature, distance
+  or biomass per hectare.
+- `intensive_depth`: depth-like accumulated fields such as precipitation in mm.
+- `percentage`: 0-100 values such as tree cover density.
+- `fraction`: 0-1 proportions such as category coverage fractions.
+- `ratio`: unitless ratios that are not necessarily limited to 0-1.
+- `extensive`: cell totals such as built-up square metres per cell.
+- `count`: discrete counts such as population or snow days.
+- `circular`: angles such as aspect where 0 and 360 degrees are neighbours.
 
 Temporal selections are explicit because sources do not all behave the same:
 

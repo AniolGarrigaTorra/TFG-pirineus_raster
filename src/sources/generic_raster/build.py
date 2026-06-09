@@ -254,6 +254,17 @@ def _build_yearly_static_aggregations(
                     "year_end": years[-1],
                     "temporal_output_mode": "aggregate",
                     "input_variables": [item[0] for item in selected_items],
+                    "source_clipped_paths": [
+                        str(
+                            _yearly_clipped_path(
+                                project_cfg=project_cfg,
+                                source_cfg=source_cfg,
+                                variable=item[0],
+                                clip_aoi_name=clip_aoi_name,
+                            )
+                        )
+                        for item in selected_items
+                    ],
                 }
             )
 
@@ -374,6 +385,7 @@ def build_generic_raster_features(
                 output_aoi_name=output_aoi_name,
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=resampling_name,
+                source_input_path=clipped_path,
             )
             metadata.update(
                 {
@@ -436,6 +448,7 @@ def build_generic_raster_features(
                 output_aoi_name=output_aoi_name,
                 target_resolution_m=target_resolution_m,
                 resampling_method_name=fraction_resampling_name,
+                source_input_path=clipped_path,
             )
             metadata.update(
                 {
