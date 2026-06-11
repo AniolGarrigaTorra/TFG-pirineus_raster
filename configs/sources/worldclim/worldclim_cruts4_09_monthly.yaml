@@ -29,13 +29,13 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
-  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 download:
   enabled: true
   mode: auto
   overwrite_existing: false
   keep_global_zip_after_clip: false
+  max_workers: 2
 
 processing:
   source_resolution: 10arcmin

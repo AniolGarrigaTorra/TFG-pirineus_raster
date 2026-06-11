@@ -1256,7 +1256,11 @@ def _enable_yearly_aggregation_variables(cfg: dict[str, Any]) -> None:
         if not isinstance(variable_cfg, dict):
             continue
         year = _variable_reference_year(variable_cfg)
-        enabled = variable in selected_names and year in selected_years
+        enabled = (
+            bool(variable_cfg.get("enabled", True))
+            and variable in selected_names
+            and year in selected_years
+        )
         variable_cfg["enabled"] = enabled
         matched = matched or enabled
 
@@ -1685,18 +1689,104 @@ def _feature_build_type(feature: dict[str, Any]) -> str:
     return value
 
 
+def _extract_feature_aggregation_names(feature: dict[str, Any]) -> list[str]:
+    """Extract aggregation names from a feature's source temporal configuration."""
+    source = feature.get("source")
+    if not isinstance(source, dict):
+        return []
+    
+    temporal = source.get("temporal")
+    if not isinstance(temporal, dict):
+        return []
+    
+    aggregations_cfg = temporal.get("aggregations")
+    if not aggregations_cfg:
+        return []
+    
+    names: list[str] = []
+    
+    # Extract "use" aggregations (preset names)
+    if isinstance(aggregations_cfg, dict):
+        use_list = aggregations_cfg.get("use") or []
+        if not isinstance(use_list, list):
+            use_list = [use_list] if use_list else []
+        names.extend([str(item) for item in use_list])
+        
+        # Extract "custom" aggregations (custom definitions)
+        custom_list = aggregations_cfg.get("custom") or []
+        if not isinstance(custom_list, list):
+            custom_list = [custom_list] if custom_list else []
+        for custom_agg in custom_list:
+            if isinstance(custom_agg, dict):
+                agg_name = custom_agg.get("name")
+                if agg_name:
+                    names.append(str(agg_name))
+    elif isinstance(aggregations_cfg, list):
+        # Fallback: list of aggregation names or dicts
+        for item in aggregations_cfg:
+            if isinstance(item, dict):
+                agg_name = item.get("name")
+                if agg_name:
+                    names.append(str(agg_name))
+            else:
+                names.append(str(item))
+    
+    return names
+
+
 def _feature_outputs(feature: dict[str, Any]) -> list[dict[str, Any]]:
     outputs = feature.get("outputs")
     if outputs is None:
-        output = {
-            key: deepcopy(value)
-            for key, value in feature.items()
-            if key
-            not in {
-                "outputs",
+        # Check if this feature should be expanded based on temporal aggregations
+        aggregation_names = _extract_feature_aggregation_names(feature)
+        
+        if aggregation_names:
+            # Create one output per aggregation
+            base_output = {
+                key: deepcopy(value)
+                for key, value in feature.items()
+                if key not in {"outputs"}
             }
-        }
-        return [output]
+            
+            expanded_outputs = []
+            source = base_output.get("source")
+            if isinstance(source, dict):
+                for agg_name in aggregation_names:
+                    output = deepcopy(base_output)
+                    output_source = output.get("source")
+                    if isinstance(output_source, dict):
+                        # Update query to use aggregation_name
+                        query = output_source.get("query") or {}
+                        if not isinstance(query, dict):
+                            query = {}
+                        query["aggregation_name"] = agg_name
+                        output_source["query"] = query
+                        
+                        # Update output name to include aggregation suffix
+                        # Use suffix so it gets applied by _feature_output_name
+                        if "name" not in output:
+                            output["suffix"] = agg_name
+                        
+                        # Update temporal config to only include this aggregation
+                        temporal = output_source.get("temporal")
+                        if isinstance(temporal, dict):
+                            aggregations_cfg = temporal.get("aggregations")
+                            if isinstance(aggregations_cfg, dict):
+                                # Keep all aggregations but they'll be filtered at build time
+                                # The aggregation_name in query tells the build which one to use
+                                pass
+                    expanded_outputs.append(output)
+            
+            return expanded_outputs if expanded_outputs else [base_output]
+        else:
+            # No aggregations, use the original logic
+            output = {
+                key: deepcopy(value)
+                for key, value in feature.items()
+                if key not in {"outputs"}
+            }
+            return [output]
+    
     if not isinstance(outputs, list) or not outputs:
         raise ConfigValidationError(
             f"Feature {feature.get('name')!r} outputs must be a non-empty list."

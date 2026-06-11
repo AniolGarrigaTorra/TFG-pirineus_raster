@@ -1440,7 +1440,10 @@ function buildSourceLayerOutputs({
     }
 
     if ((temporalMode === "aggregate" || temporalMode === "postprocess_aggregate") && aggregation) {
-      const suffix = [context.suffix, aggregation.name].filter(Boolean).join("_");
+      // For postprocess_aggregate, don't duplicate the aggregation name if it's already in the feature name
+      const aggregationInName = temporalMode === "postprocess_aggregate" && featureName.toLowerCase().includes(aggregation.name.toLowerCase());
+      const suffixParts = aggregationInName ? [context.suffix] : [context.suffix, aggregation.name];
+      const suffix = suffixParts.filter(Boolean).join("_");
       const temporal = {
         output_mode: temporalMode,
         aggregations: {
@@ -1450,7 +1453,7 @@ function buildSourceLayerOutputs({
       };
       const query = {
         source_id: source.id,
-        variable: sourceQueryVariableForContext(source, variable, context, categoryFraction),
+        variable: temporalMode === "postprocess_aggregate" ? aggregation.name : sourceQueryVariableForContext(source, variable, context, categoryFraction),
         aggregation_name: aggregation.name,
         ...context.query
       };

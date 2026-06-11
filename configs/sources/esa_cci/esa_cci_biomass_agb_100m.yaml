@@ -26,7 +26,6 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
-  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 years: [2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
@@ -34,6 +33,7 @@ download:
   enabled: true
   mode: manual_url
   overwrite_existing: false
+  max_workers: 2
 
 processing:
   source_resolution: 100m

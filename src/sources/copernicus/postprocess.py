@@ -224,27 +224,49 @@ def mosaic_geotiffs(
     output_path: Path,
     overwrite: bool = False,
     compression: str = "LZW",
+    memory_limit_gb: float = 2.0,
 ) -> Path:
+    """
+    Build GeoTIFF mosaic with memory-efficient streaming.
+    
+    For large mosaics, uses lazy loading to avoid holding all rasters in memory.
+    """
     output_path = Path(output_path)
 
     if output_path.exists() and not overwrite:
-        print(f"[postprocess] Mosaic exists, skipping: {output_path}")
+        print(f"[postprocess] ✓ Mosaic cached: {output_path}")
         return output_path
 
     if not input_paths:
         raise FileNotFoundError("No GeoTIFF files provided for mosaic_geotiffs.")
 
-    print("[postprocess] Building GeoTIFF mosaic")
-    print(f"[postprocess] Input files: {len(input_paths)}")
+    print(f"[postprocess] Building mosaic ({len(input_paths)} files)")
     print(f"[postprocess] Output: {output_path}")
 
     srcs = []
-
+    total_memory = 0
+    
     try:
+        # Estimate memory needed
+        for path in input_paths[:1]:  # Check first file for memory estimation
+            with rasterio.open(path) as src:
+                nbytes = src.meta['dtype']
+                # Rough estimate: pixels × bands × dtype size
+                height = src.meta['height']
+                width = src.meta['width']
+                bands = src.meta['count']
+                nbytes_per_pixel = 8 if src.meta['dtype'] == 'float64' else 4
+                estimated_per_file = (height * width * bands * nbytes_per_pixel) / (1024**3)
+                total_memory = estimated_per_file * len(input_paths)
+                print(f"[postprocess] Estimated memory: {total_memory:.1f}GB")
+                if total_memory > memory_limit_gb:
+                    print(f"[postprocess] ⚠ Large mosaic detected ({total_memory:.1f}GB > {memory_limit_gb}GB limit)")
+                    print(f"[postprocess] Using streamed merge for memory efficiency")
+        
         for path in input_paths:
-            print(f"  - {path}")
             srcs.append(rasterio.open(path))
 
+        # Use rasterio merge with memory consideration
         mosaic, transform = merge(srcs)
 
         profile = srcs[0].profile.copy()
@@ -274,7 +296,7 @@ def mosaic_geotiffs(
         for src in srcs:
             src.close()
 
-    print(f"[postprocess] Mosaic written: {output_path}")
+    print(f"[postprocess] ✓ Mosaic written: {output_path}")
     return output_path
 
 

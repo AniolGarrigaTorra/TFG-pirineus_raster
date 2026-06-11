@@ -3,7 +3,7 @@ run:
   description: 'Dataset for the Ursus Arctos habitat project. '
   project_config: configs/project.yaml
   crs: EPSG:3035
-  aoi_config: configs/aoi/experimental_pallars_sobira.yaml
+  aoi_config: configs/aoi/ursus_arctos_pyrenees.yaml
   resolution_m: 100
   stages:
   - all
@@ -696,7 +696,7 @@ features:
       layer: transport.secondary_roads_distance
       query:
         source_id: openstreetmap_geofabrik_pyrenees
-        variable: secondary_roads_distance
+        variable: transport_secondary_roads_distance
       dimensions: {}
       temporal:
         output_mode: static
@@ -720,7 +720,7 @@ features:
         layer: transport.secondary_roads_distance
         query:
           source_id: openstreetmap_geofabrik_pyrenees
-          variable: secondary_roads_distance
+          variable: transport_secondary_roads_distance
         dimensions: {}
         temporal:
           output_mode: static
@@ -745,7 +745,7 @@ features:
       layer: transport.forest_tracks_distance
       query:
         source_id: openstreetmap_geofabrik_pyrenees
-        variable: forest_tracks_distance
+        variable: transport_forest_tracks_distance
       dimensions: {}
       temporal:
         output_mode: static
@@ -769,7 +769,7 @@ features:
         layer: transport.forest_tracks_distance
         query:
           source_id: openstreetmap_geofabrik_pyrenees
-          variable: forest_tracks_distance
+          variable: transport_forest_tracks_distance
         dimensions: {}
         temporal:
           output_mode: static
@@ -794,7 +794,7 @@ features:
       layer: settlements.settlements_distance
       query:
         source_id: openstreetmap_geofabrik_pyrenees
-        variable: settlements_distance
+        variable: settlements_settlements_distance
       dimensions: {}
       temporal:
         output_mode: static
@@ -818,7 +818,7 @@ features:
         layer: settlements.settlements_distance
         query:
           source_id: openstreetmap_geofabrik_pyrenees
-          variable: settlements_distance
+          variable: settlements_settlements_distance
         dimensions: {}
         temporal:
           output_mode: static
@@ -943,8 +943,7 @@ features:
         variable: snow_fraction
         query:
           source_id: copernicus_hrsi_snow
-          variable: snow_fraction
-          aggregation_name: winter
+          variable: winter
         dimensions: {}
         temporal:
           output_mode: postprocess_aggregate
@@ -1015,8 +1014,7 @@ features:
         variable: snow_fraction
         query:
           source_id: copernicus_hrsi_snow
-          variable: snow_fraction
-          aggregation_name: spring
+          variable: spring
         dimensions: {}
         temporal:
           output_mode: postprocess_aggregate
@@ -1845,7 +1843,7 @@ features:
       layer: built_environment.anthropic_landuse_presence
       query:
         source_id: openstreetmap_geofabrik_pyrenees
-        variable: anthropic_landuse_presence
+        variable: built_environment_anthropic_landuse_presence
       dimensions: {}
       temporal:
         output_mode: static
@@ -1865,7 +1863,7 @@ features:
         layer: built_environment.anthropic_landuse_presence
         query:
           source_id: openstreetmap_geofabrik_pyrenees
-          variable: anthropic_landuse_presence
+          variable: built_environment_anthropic_landuse_presence
         dimensions: {}
         temporal:
           output_mode: static

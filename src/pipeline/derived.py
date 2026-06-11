@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 
 from src.pipeline.layers import (
     LayerSpec,
@@ -14,6 +13,7 @@ from src.pipeline.layers import (
 )
 from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
+    feature_raster_is_ready,
     get_resampling_method,
     load_grid_context,
     make_intermediate_grid_context,
@@ -442,50 +442,81 @@ def _window_stat(
     radius: int,
     method: str,
 ) -> np.ndarray:
+    """Compute focal statistics efficiently using scipy.ndimage.
+    
+    Uses generic_filter instead of materializing 587GB sliding window array.
+    """
     if radius < 1:
         raise ValueError("Focal radius must be >= 1.")
-
+    
+    from scipy import ndimage
+    import gc
+    
+    array_f32 = array.astype(np.float32)
     size = radius * 2 + 1
-    padded = np.pad(
-        array.astype(np.float32),
-        radius,
-        mode="constant",
-        constant_values=np.nan,
-    )
-    windows = sliding_window_view(padded, (size, size))
-
-    with np.errstate(invalid="ignore"):
+    
+    with np.errstate(invalid="ignore", divide="ignore"):
         if method == "mean":
-            return np.nanmean(windows, axis=(-2, -1)).astype(np.float32)
+            return ndimage.generic_filter(array_f32, np.nanmean, size=size, mode="constant", cval=np.nan).astype(np.float32)
         if method == "std":
-            return np.nanstd(windows, axis=(-2, -1)).astype(np.float32)
+            return ndimage.generic_filter(array_f32, np.nanstd, size=size, mode="constant", cval=np.nan).astype(np.float32)
         if method == "min":
-            return np.nanmin(windows, axis=(-2, -1)).astype(np.float32)
+            return ndimage.generic_filter(array_f32, np.nanmin, size=size, mode="constant", cval=np.nan).astype(np.float32)
         if method == "max":
-            return np.nanmax(windows, axis=(-2, -1)).astype(np.float32)
+            return ndimage.generic_filter(array_f32, np.nanmax, size=size, mode="constant", cval=np.nan).astype(np.float32)
         if method == "sum":
-            return np.nansum(windows, axis=(-2, -1)).astype(np.float32)
+            return ndimage.generic_filter(array_f32, np.nansum, size=size, mode="constant", cval=np.nan).astype(np.float32)
         if method == "roughness":
-            return (np.nanmax(windows, axis=(-2, -1)) - np.nanmin(windows, axis=(-2, -1))).astype(np.float32)
+            max_r = ndimage.generic_filter(array_f32, np.nanmax, size=size, mode="constant", cval=np.nan)
+            gc.collect()
+            min_r = ndimage.generic_filter(array_f32, np.nanmin, size=size, mode="constant", cval=np.nan)
+            return (max_r - min_r).astype(np.float32)
         if method == "tpi":
-            center = array.astype(np.float32)
-            mean = np.nanmean(windows, axis=(-2, -1))
-            return (center - mean).astype(np.float32)
+            mean_r = ndimage.generic_filter(array_f32, np.nanmean, size=size, mode="constant", cval=np.nan)
+            return (array_f32 - mean_r).astype(np.float32)
         if method == "ruggedness":
-            center = array.astype(np.float32)
-            diff = windows - center[..., None, None]
-            return np.sqrt(np.nanmean(diff**2, axis=(-2, -1))).astype(np.float32)
-
-    if method in {"majority", "diversity"}:
-        return _categorical_window_stat(windows, method)
-
+            def ruggedness_func(w):
+                c = w.flat[w.size // 2] if w.size > 0 else np.nan
+                return np.sqrt(np.nanmean((w - c) ** 2))
+            return ndimage.generic_filter(array_f32, ruggedness_func, size=size, mode="constant", cval=np.nan).astype(np.float32)
+        if method in {"majority", "diversity"}:
+            return _categorical_window_stat_efficient(array_f32, radius, method)
+    
     raise ValueError(f"Unsupported focal method: {method}")
+
+
+def _categorical_window_stat_efficient(
+    array: np.ndarray,
+    radius: int,
+    method: str,
+) -> np.ndarray:
+    """Efficient categorical stats using scipy.ndimage."""
+    from scipy import ndimage
+    size = radius * 2 + 1
+    
+    if method == "majority":
+        def majority_func(w):
+            v = w[np.isfinite(w)]
+            if v.size == 0:
+                return np.nan
+            u, c = np.unique(v, return_counts=True)
+            return u[np.argmax(c)]
+        return ndimage.generic_filter(array, majority_func, size=size, mode="constant", cval=np.nan).astype(np.float32)
+    
+    if method == "diversity":
+        def diversity_func(w):
+            v = w[np.isfinite(w)]
+            return float(len(np.unique(v))) if v.size > 0 else np.nan
+        return ndimage.generic_filter(array, diversity_func, size=size, mode="constant", cval=np.nan).astype(np.float32)
+    
+    raise ValueError(f"Unsupported categorical method: {method}")
 
 
 def _categorical_window_stat(
     windows: np.ndarray,
     method: str,
 ) -> np.ndarray:
+    """Legacy function - kept for backward compatibility."""
     height, width = windows.shape[:2]
     result = np.full((height, width), np.nan, dtype=np.float32)
 
@@ -1243,6 +1274,149 @@ def _append_derived_raster_to_manifest(
     manifest["layer_summary"] = layer_summary
 
 
+def _manifest_has_derived_output(
+    manifest: dict[str, Any],
+    output_path: Path,
+    variable: str,
+) -> bool:
+    output_path_str = str(output_path)
+    for raster in manifest.get("rasters", []) or []:
+        if raster.get("source_id") != "derived":
+            continue
+        if (
+            raster.get("dataset_path") == output_path_str
+            or raster.get("original_path") == output_path_str
+            or raster.get("name") == output_path.stem
+        ):
+            return True
+
+    for layer in manifest.get("layer_catalog", []) or []:
+        if layer.get("source_id") != "derived":
+            continue
+        if (
+            layer.get("path") == output_path_str
+            or layer.get("original_path") == output_path_str
+            or layer.get("variable") == variable
+        ):
+            return True
+
+    return False
+
+
+def _load_sidecar_metadata(output_path: Path) -> dict[str, Any]:
+    sidecar_path = output_path.with_suffix(".json")
+    with sidecar_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _canonical_metadata_value(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _derived_cache_matches_config(
+    output_path: Path,
+    derived_cfg: dict[str, Any],
+) -> bool:
+    try:
+        metadata = _load_sidecar_metadata(output_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        progress_log(
+            f"[derived] Cache metadata is not readable; rebuilding {output_path}: {exc}",
+            level="warning",
+        )
+        return False
+
+    expected_operation = str(derived_cfg.get("operation", "expression"))
+    checks = {
+        "variable": str(derived_cfg["name"]),
+        "operation_type": expected_operation,
+        "evaluation_stage": _normalise_evaluation_stage(
+            derived_cfg.get("evaluation_stage", "target_grid")
+        ),
+    }
+    for key, expected in checks.items():
+        if str(metadata.get(key)) != str(expected):
+            progress_log(
+                f"[derived] Cache metadata mismatch for {output_path.name}: "
+                f"{key}={metadata.get(key)!r}, expected {expected!r}. Rebuilding.",
+                level="warning",
+            )
+            return False
+
+    for key in ["expression", "recipe", "method", "parameters"]:
+        if key not in derived_cfg:
+            continue
+        if _canonical_metadata_value(metadata.get(key)) != _canonical_metadata_value(
+            derived_cfg.get(key)
+        ):
+            progress_log(
+                f"[derived] Cache metadata mismatch for {output_path.name}: "
+                f"{key} changed. Rebuilding.",
+                level="warning",
+            )
+            return False
+
+    return True
+
+
+def _append_existing_derived_to_manifest(
+    manifest: dict[str, Any],
+    layers: list[LayerSpec],
+    output_path: Path,
+    derived_cfg: dict[str, Any],
+    grid,
+    nodata: float,
+) -> None:
+    name = str(derived_cfg["name"])
+    if _manifest_has_derived_output(manifest, output_path, name):
+        return
+
+    sidecar_path = output_path.with_suffix(".json")
+    metadata = _load_sidecar_metadata(output_path)
+    output_dtype = metadata.get("dtype") or derived_cfg.get("output_dtype", "float32")
+
+    raster_entry = {
+        "name": output_path.stem,
+        "source_id": "derived",
+        "original_path": str(output_path),
+        "dataset_path": str(output_path),
+        "sidecar_json_original_path": str(sidecar_path),
+        "sidecar_json_dataset_path": str(sidecar_path),
+    }
+
+    layer_entry = {
+        "name": output_path.stem,
+        "path": str(output_path),
+        "provider": "derived",
+        "product": "derived_features",
+        "source_id": "derived",
+        "variable": name,
+        "variable_description": (
+            metadata.get("variable_description")
+            or derived_cfg.get("description")
+        ),
+        "unit": metadata.get("unit") or derived_cfg.get("unit"),
+        "valid_range": metadata.get("valid_range") or derived_cfg.get("valid_range"),
+        "aoi": manifest.get("run_aoi_name"),
+        "resolution_m": manifest.get("run_resolution_m"),
+        "crs": str(grid.crs),
+        "nodata": nodata,
+        "dtype": output_dtype,
+        "layer_type": "derived",
+        "sidecar_metadata_path": str(sidecar_path),
+        "original_path": str(output_path),
+        "dataset_path": str(output_path),
+        "metadata": metadata,
+    }
+
+    _append_derived_raster_to_manifest(
+        manifest=manifest,
+        raster_entry=raster_entry,
+        layer_entry=layer_entry,
+    )
+    layers.append(LayerSpec.from_dict(layer_entry))
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -1293,11 +1467,29 @@ def build_derived_features(
         evaluation_stage = _normalise_evaluation_stage(
             derived_cfg.get("evaluation_stage", "target_grid")
         )
+        output_path = rasters_dir / f"derived_{name}.tif"
 
         if not inputs_cfg:
             raise ValueError(f"Derived feature '{name}' has no inputs.")
 
         progress_log(f"[derived] Feature: {name}")
+
+        if (
+            feature_raster_is_ready(output_path, grid, require_sidecar=True)
+            and _derived_cache_matches_config(output_path, derived_cfg)
+        ):
+            _append_existing_derived_to_manifest(
+                manifest=manifest,
+                layers=layers,
+                output_path=output_path,
+                derived_cfg=derived_cfg,
+                grid=grid,
+                nodata=nodata,
+            )
+            progress_log(f"[derived] Cache hit: {name} -> {output_path}")
+            written_paths.append(output_path)
+            continue
+
         progress_log(f"[derived] Operation: {operation_name}")
         progress_log(f"[derived] Evaluation stage: {evaluation_stage}")
 
@@ -1353,9 +1545,6 @@ def build_derived_features(
         warnings.extend(evaluation_warnings)
         for warning in warnings:
             progress_log(f"[derived] {warning}", level="warning")
-
-        output_name = f"derived_{name}.tif"
-        output_path = rasters_dir / output_name
 
         metadata = _build_derived_metadata(
             derived_cfg=derived_cfg,

@@ -15,8 +15,8 @@ class PdcaConnector(RasterSourceConnector):
 
     provider = "pdca"
 
-    def download(self, project_cfg: dict, source_cfg: dict) -> list[Path]:
-        return prepare_pdca_raw_data(project_cfg=project_cfg, source_cfg=source_cfg)
+    def download(self, project_cfg: dict, source_cfg: dict, required_variables: set[str] | None = None) -> list[Path]:
+        return prepare_pdca_raw_data(project_cfg=project_cfg, source_cfg=source_cfg, required_variables=required_variables)
 
     def clip(
         self,

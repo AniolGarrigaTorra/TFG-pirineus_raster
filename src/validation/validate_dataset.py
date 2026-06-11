@@ -10,7 +10,7 @@ from src.io.config import load_yaml, resolve_path
 from src.io.paths import get_grid_path
 
 
-STANDARD_METADATA_KEYS = {
+COMMON_METADATA_KEYS = {
     "metadata_schema_version",
     "generated_at",
     "provider",
@@ -22,6 +22,9 @@ STANDARD_METADATA_KEYS = {
     "nodata",
     "dtype",
     "grid_path",
+}
+
+SOURCE_METADATA_KEYS = {
     "native_resolution",
     "native_resolution_unit",
     "source_config_path",
@@ -29,6 +32,20 @@ STANDARD_METADATA_KEYS = {
     "target_resolution_m",
     "resampling",
 }
+
+DERIVED_METADATA_KEYS = {
+    "operation",
+    "inputs",
+}
+
+
+def _required_metadata_keys(metadata: dict[str, Any]) -> set[str]:
+    required = set(COMMON_METADATA_KEYS)
+    if metadata.get("source_id") == "derived" or metadata.get("layer_type") == "derived":
+        required.update(DERIVED_METADATA_KEYS)
+    else:
+        required.update(SOURCE_METADATA_KEYS)
+    return required
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -120,7 +137,7 @@ def _metadata_warnings(
         errors.append(f"Invalid sidecar JSON: {exc}")
         return None, warnings, errors
 
-    missing = sorted(STANDARD_METADATA_KEYS - set(metadata))
+    missing = sorted(_required_metadata_keys(metadata) - set(metadata))
     if missing:
         message = f"Missing standard metadata keys: {missing}"
         if strict_metadata:

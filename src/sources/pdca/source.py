@@ -8,7 +8,7 @@ from src.sources.pdca.clip import clip_pdca_raw_files
 from src.sources.pdca.download import download_pdca_raw_files
 
 
-def prepare_pdca_raw_data(project_cfg: dict, source_cfg: dict) -> list[Path]:
+def prepare_pdca_raw_data(project_cfg: dict, source_cfg: dict, required_variables: set[str] | None = None) -> list[Path]:
     source = source_cfg["source"]
     processing = source_cfg["processing"]
 
@@ -19,7 +19,7 @@ def prepare_pdca_raw_data(project_cfg: dict, source_cfg: dict) -> list[Path]:
         source_resolution=processing["source_resolution"],
     )
 
-    return download_pdca_raw_files(source_cfg=source_cfg, raw_dir=raw_dir)
+    return download_pdca_raw_files(source_cfg=source_cfg, raw_dir=raw_dir, required_variables=required_variables)
 
 
 def prepare_pdca_clipped_data(

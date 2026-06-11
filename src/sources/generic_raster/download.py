@@ -41,6 +41,7 @@ def download_generic_raster_raw_files(
     source_cfg: dict,
     raw_dir: Path,
     provider: str | None = None,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     validate_generic_raster_source_config(source_cfg, provider=provider)
 
@@ -58,6 +59,22 @@ def download_generic_raster_raw_files(
     progress_log(f"[download] Enabled: {enabled}")
 
     specs = get_download_file_specs(source_cfg)
+    
+    # Filter specs by required_variables if provided
+    if required_variables:
+        specs_before = len(specs)
+        # Use prefix matching to handle expanded variable names like agb_2005 matching agb
+        filtered_specs = []
+        for spec in specs:
+            spec_var = spec["variable"]
+            # Check if spec variable matches any required variable exactly, or starts with required_var_
+            for req_var in required_variables:
+                if spec_var == req_var or spec_var.startswith(f"{req_var}_"):
+                    filtered_specs.append(spec)
+                    break
+        specs = filtered_specs
+        progress_log(f"[download] Filtered specs from {specs_before} to {len(specs)}")
+    
     progress_set_stage_task_total(
         sum(len(spec.get("urls") or []) or 1 for spec in specs),
         label="downloads",

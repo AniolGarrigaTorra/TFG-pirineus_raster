@@ -23,9 +23,20 @@ class RasterSourceConnector(ABC):
         self,
         project_cfg: dict,
         source_cfg: dict,
+        required_variables: set[str] | None = None,
     ) -> list[Path]:
         """
         Download or validate raw source files.
+        
+        Parameters
+        ----------
+        project_cfg : dict
+            Project configuration
+        source_cfg : dict
+            Source configuration
+        required_variables : set[str] | None
+            If provided, only download these variables (filter by variable name).
+            If None or empty, download all enabled variables (backward compatible).
         """
         raise NotImplementedError
 

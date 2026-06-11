@@ -11,6 +11,7 @@ from src.sources.worldclim.download import download_worldclim_raw_files
 def prepare_worldclim_raw_data(
     project_cfg: dict,
     source_cfg: dict,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     """
     Prepare raw global WorldClim files.
@@ -34,6 +35,7 @@ def prepare_worldclim_raw_data(
     return download_worldclim_raw_files(
         source_cfg=source_cfg,
         raw_dir=raw_dir,
+        required_variables=required_variables,
     )
 
 

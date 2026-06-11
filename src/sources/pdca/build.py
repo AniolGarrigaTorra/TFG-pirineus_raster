@@ -7,7 +7,9 @@ from typing import Any
 import rasterio
 
 from src.io.paths import ensure_dir, get_feature_output_dir, get_source_interim_dir
+from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
+    feature_raster_is_ready,
     get_variable_resampling_method,
     get_variable_resampling_method_name,
     load_grid_context,
@@ -169,6 +171,9 @@ def build_pdca_features(
 
     written_paths: list[Path] = []
     manifest: list[dict[str, Any]] = []
+    skipped_unselected = 0
+    skipped_cached = 0
+    skipped_disabled: dict[str, int] = {}
 
     for clipped_path in clipped_paths:
         layer_id = clipped_path.parent.name
@@ -178,13 +183,10 @@ def build_pdca_features(
         variable_key = variable_key_from_layer_id(layer_id, source_tags)
         var_cfg = _variable_cfg(source_cfg, variable_key)
         if var_cfg and not bool(var_cfg.get("enabled", True)):
-            print(
-                f"[pdca:build] Skipping disabled variable: "
-                f"{variable_key} ({layer_id})"
-            )
+            skipped_disabled[variable_key] = skipped_disabled.get(variable_key, 0) + 1
             continue
         if not _pdca_layer_selected(source_cfg, source_tags):
-            print(f"[pdca:build] Skipping unselected temporal layer: {layer_id}")
+            skipped_unselected += 1
             continue
         resampling = get_variable_resampling_method(source_cfg, variable_key)
         resampling_name = get_variable_resampling_method_name(source_cfg, variable_key)
@@ -198,7 +200,6 @@ def build_pdca_features(
             target_resolution_m=target_resolution_m,
         )
 
-        print("==============================")
         print(f"[pdca:build] Layer: {layer_id}")
         print(f"[pdca:build] Variable key: {variable_key}")
         print(f"[pdca:build] Temporal kind: {source_tags.get('temporal_kind')}")
@@ -206,6 +207,27 @@ def build_pdca_features(
         print(f"[pdca:build] Resampling: {resampling_name}")
         print(f"[pdca:build] Input: {clipped_path}")
         print(f"[pdca:build] Output: {output_path}")
+
+        if feature_raster_is_ready(
+            output_path,
+            grid,
+            require_sidecar=output_options["write_sidecar"],
+        ):
+            progress_log(f"[pdca:build] Cache hit: {layer_id} -> {output_path}")
+            written_paths.append(output_path)
+            manifest.append(
+                {
+                    "layer_id": layer_id,
+                    "variable": variable_key,
+                    "temporal_kind": source_tags.get("temporal_kind"),
+                    "period": source_tags.get("period"),
+                    "input": str(clipped_path),
+                    "output": str(output_path),
+                    "resampling": resampling_name,
+                }
+            )
+            skipped_cached += 1
+            continue
 
         array = read_raster_to_grid(
             raster_path=clipped_path,
@@ -261,6 +283,19 @@ def build_pdca_features(
 
     manifest_path = output_dir / "pdca_feature_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
+    if skipped_disabled:
+        details = ", ".join(
+            f"{variable}={count}"
+            for variable, count in sorted(skipped_disabled.items())
+        )
+        total = sum(skipped_disabled.values())
+        progress_log(
+            f"[pdca:build] Disabled variable layers skipped: {total} ({details})"
+        )
+    if skipped_unselected:
+        progress_log(f"[pdca:build] Unselected temporal layers skipped: {skipped_unselected}")
+    if skipped_cached:
+        progress_log(f"[pdca:build] Cached feature rasters reused: {skipped_cached}")
     print(f"[pdca:build] Manifest: {manifest_path}")
 
     return written_paths

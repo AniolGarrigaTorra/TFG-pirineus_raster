@@ -122,6 +122,7 @@ def _extract_zip(
 def download_igme_brgm_raw_files(
     source_cfg: dict,
     raw_dir: Path,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     """
     Download and optionally extract IGME/BRGM ZIP files.

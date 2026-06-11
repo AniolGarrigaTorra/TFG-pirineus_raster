@@ -156,6 +156,22 @@ def _expand_groups_to_mapping(
             item_cfg.setdefault("generation_context", context)
 
             existing = target.get(item_name)
+            if isinstance(existing, dict):
+                existing_group = existing.get("generated_from_group")
+                item_group = item_cfg.get("generated_from_group")
+                if (
+                    existing.get("generated")
+                    and existing_group is not None
+                    and existing_group == item_group
+                ):
+                    for preserved_key in [
+                        "enabled",
+                        "build_output_enabled",
+                        "required",
+                    ]:
+                        if preserved_key in existing:
+                            item_cfg[preserved_key] = existing[preserved_key]
+
             if item_name in target and not bool(group_cfg.get("overwrite_existing", False)):
                 if (
                     isinstance(existing, dict)

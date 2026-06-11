@@ -389,7 +389,8 @@ def clip_monthly_climatology(
         )
 
         if not zip_path.exists():
-            raise FileNotFoundError(f"Missing raw WorldClim ZIP: {zip_path}")
+            print(f"[clip] Raw WorldClim ZIP not found. Skipping (likely filtered during download): {zip_path}")
+            continue
 
         print(f"[clip] Processing monthly variable: {variable}")
         print(f"[clip] ZIP: {zip_path}")
@@ -470,7 +471,8 @@ def clip_future_monthly_multiband(
         )
 
         if not raw_path.exists():
-            raise FileNotFoundError(f"Missing raw CMIP6 GeoTIFF: {raw_path}")
+            print(f"[clip] Raw CMIP6 GeoTIFF not found. Skipping (likely filtered during download): {raw_path}")
+            continue
 
         print(
             f"[clip] Processing CMIP6: "
@@ -547,19 +549,20 @@ def clip_static_index_set(
     )
 
     if not zip_path.exists():
-        raise FileNotFoundError(f"Missing raw WorldClim ZIP: {zip_path}")
+        print(f"[clip] Raw WorldClim ZIP not found for static indices. Skipping (likely filtered during download): {zip_path}")
+        written_paths: list[Path] = []
+    else:
+        written_paths: list[Path] = []
 
-    written_paths: list[Path] = []
+        for index_name, index_number in _get_enabled_indices(source_cfg):
+            print(f"[clip] Processing static index: {index_name}")
 
-    for index_name, index_number in _get_enabled_indices(source_cfg):
-        print(f"[clip] Processing static index: {index_name}")
-
-        clipped_dir = get_source_clipped_dir(
-            project_cfg=project_cfg,
-            provider=provider,
-            product=product,
-            domain_name=clip_aoi_name,
-            source_resolution=source_resolution,
+            clipped_dir = get_source_clipped_dir(
+                project_cfg=project_cfg,
+                provider=provider,
+                product=product,
+                domain_name=clip_aoi_name,
+                source_resolution=source_resolution,
             variable=index_name,
         )
 
@@ -631,7 +634,8 @@ def clip_monthly_time_series(
         )
 
         if not zip_path.exists():
-            raise FileNotFoundError(f"Missing raw WorldClim ZIP: {zip_path}")
+            print(f"[clip] Raw WorldClim ZIP not found. Skipping (likely filtered during download): {zip_path}")
+            continue
 
         print(f"[clip] Processing monthly time series: {variable} {period}")
         print(f"[clip] ZIP: {zip_path}")
@@ -722,21 +726,22 @@ def clip_static_single(
     )
 
     if not zip_path.exists():
-        raise FileNotFoundError(f"Missing raw WorldClim ZIP: {zip_path}")
+        print(f"[clip] Raw WorldClim ZIP not found for static variables. Skipping (likely filtered during download): {zip_path}")
+        written_paths: list[Path] = []
+    else:
+        written_paths: list[Path] = []
 
-    written_paths: list[Path] = []
+        for variable in _get_enabled_static_variables(source_cfg):
+            print(f"[clip] Processing static variable: {variable}")
 
-    for variable in _get_enabled_static_variables(source_cfg):
-        print(f"[clip] Processing static variable: {variable}")
-
-        clipped_dir = get_source_clipped_dir(
-            project_cfg=project_cfg,
-            provider=provider,
-            product=product,
-            domain_name=clip_aoi_name,
-            source_resolution=source_resolution,
-            variable=variable,
-        )
+            clipped_dir = get_source_clipped_dir(
+                project_cfg=project_cfg,
+                provider=provider,
+                product=product,
+                domain_name=clip_aoi_name,
+                source_resolution=source_resolution,
+                variable=variable,
+            )
 
         ensure_dir(clipped_dir)
 

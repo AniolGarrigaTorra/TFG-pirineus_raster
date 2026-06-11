@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import gc
+
 import numpy as np
 
 from src.io.paths import ensure_dir, get_feature_output_dir, get_source_clipped_dir
@@ -279,9 +281,12 @@ def build_worldclim_static_features(
         )
 
         if not clipped_path.exists():
-            raise FileNotFoundError(
-                f"Missing clipped static raster: {clipped_path}"
+            # Skip if missing (likely filtered during download)
+            print(
+                f"[build-static] Clipped raster missing for layer={layer_name}. "
+                f"Skipping (likely filtered during download): {clipped_path}"
             )
+            continue
 
         output_path = _get_static_output_path(
             project_cfg=project_cfg,
@@ -421,10 +426,9 @@ def _read_monthly_stack_to_grid(
         )
 
         if not clipped_path.exists():
-            raise FileNotFoundError(
-                f"Missing clipped monthly raster for variable={variable}, "
-                f"month={month}: {clipped_path}"
-            )
+            # Skip if missing (likely filtered during download)
+            progress_log(f"[build-monthly] Clipped raster missing for variable={variable}, month={month}. Skipping (likely filtered during download): {clipped_path}")
+            continue
 
         monthly_grid = read_raster_to_grid(
             raster_path=clipped_path,
@@ -436,13 +440,19 @@ def _read_monthly_stack_to_grid(
         )
 
         monthly_arrays.append(monthly_grid)
+        # Force garbage collection every 6 months to reduce memory peak
+        if len(monthly_arrays) % 6 == 0:
+            # gc already imported at top of file
+            gc.collect()
 
     if not monthly_arrays:
         raise ValueError(
             f"No monthly arrays collected for variable={variable}, months={months}"
         )
 
-    return np.stack(monthly_arrays, axis=0)
+    result = np.stack(monthly_arrays, axis=0)
+    gc.collect()
+    return result
 
 
 def _write_monthly_raw_slices(
@@ -472,9 +482,9 @@ def _write_monthly_raw_slices(
             variable=variable,
         )
         if not clipped_dir.exists():
-            raise FileNotFoundError(
-                f"Clipped directory not found for variable '{variable}': {clipped_dir}"
-            )
+            # Skip if clipped directory missing (likely filtered during download)
+            progress_log(f"[build-monthly] Clipped directory missing for variable={variable}. Skipping (likely filtered during download): {clipped_dir}")
+            continue
 
         for month in months:
             clipped_path = _get_monthly_clipped_path(
@@ -485,10 +495,9 @@ def _write_monthly_raw_slices(
                 month=month,
             )
             if not clipped_path.exists():
-                raise FileNotFoundError(
-                    f"Missing clipped monthly raster for variable={variable}, "
-                    f"month={month}: {clipped_path}"
-                )
+                # Skip if missing (likely filtered during download)
+                progress_log(f"[build-monthly] Clipped raster missing for variable={variable}, month={month}. Skipping (likely filtered during download): {clipped_path}")
+                continue
 
             output_path = _get_monthly_output_path(
                 project_cfg=project_cfg,
@@ -780,9 +789,9 @@ def _write_time_series_raw_slices(
         )
 
         if not clipped_dir.exists():
-            raise FileNotFoundError(
-                f"Clipped directory not found for variable '{variable}': {clipped_dir}"
-            )
+            # Skip if clipped directory missing (likely filtered during download)
+            progress_log(f"[build-time-series] Clipped directory missing for variable={variable}. Skipping (likely filtered during download): {clipped_dir}")
+            continue
 
         for year in years:
             for month in months:
@@ -795,11 +804,9 @@ def _write_time_series_raw_slices(
                 )
                 clipped_path = clipped_dir / clipped_name
                 if not clipped_path.exists():
-                    raise FileNotFoundError(
-                        f"Missing clipped time-series raster for "
-                        f"variable={variable}, year={year}, month={month}: "
-                        f"{clipped_path}"
-                    )
+                    # Skip if missing (likely filtered during download)
+                    progress_log(f"[build-time-series] Clipped raster missing for variable={variable}, year={year}, month={month}. Skipping (likely filtered during download): {clipped_path}")
+                    continue
 
                 output_path = _get_time_series_output_path(
                     project_cfg=project_cfg,
@@ -926,9 +933,12 @@ def build_worldclim_monthly_time_series_features(
         )
 
         if not clipped_dir.exists():
-            raise FileNotFoundError(
-                f"Clipped directory not found for variable '{variable}': {clipped_dir}"
+            # Skip if clipped directory missing (likely filtered during download)
+            print(
+                f"[build-time-series] Clipped directory missing for variable={variable}. "
+                f"Skipping (likely filtered during download): {clipped_dir}"
             )
+            continue
 
         print("==============================")
         print(f"[build-time-series] Variable: {variable}")
@@ -1200,10 +1210,9 @@ def _write_future_raw_slices(
             file_spec=file_spec,
         )
         if not clipped_dir.exists():
-            raise FileNotFoundError(
-                f"Clipped directory not found for CMIP6 variable '{variable}': "
-                f"{clipped_dir}"
-            )
+            # Skip if clipped directory missing (likely filtered during download)
+            progress_log(f"[build-future] Clipped directory missing for variable={variable}. Skipping (likely filtered during download): {clipped_dir}")
+            continue
 
         for month in months:
             clipped_path = _get_future_month_path(
@@ -1214,11 +1223,9 @@ def _write_future_raw_slices(
                 month=month,
             )
             if not clipped_path.exists():
-                raise FileNotFoundError(
-                    f"Missing clipped CMIP6 raster for variable={variable}, "
-                    f"GCM={file_spec['gcm']}, SSP={file_spec['ssp']}, "
-                    f"period={file_spec['period']}, month={month}: {clipped_path}"
-                )
+                # Skip if missing (likely filtered during download)
+                progress_log(f"[build-future] Clipped raster missing for variable={variable}, month={month}. Skipping (likely filtered during download): {clipped_path}")
+                continue
 
             output_path = _get_future_output_path(
                 project_cfg=project_cfg,

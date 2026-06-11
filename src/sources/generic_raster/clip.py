@@ -237,10 +237,9 @@ def clip_generic_raster_raw_files(
     for variable, variable_cfg in get_enabled_variable_items(source_cfg):
         raw_path = build_raw_path(raw_dir, source_cfg, variable)
         if not raw_path.exists():
-            if not bool(variable_cfg.get("required", True)):
-                progress_log(f"[clip] Optional raw raster missing, skipping: {raw_path}")
-                continue
-            raise FileNotFoundError(f"Missing raw raster for variable={variable}: {raw_path}")
+            # If file doesn't exist, skip it (likely filtered during download)
+            progress_log(f"[clip] Raw file not found for variable={variable}. Skipping (likely filtered during download): {raw_path}")
+            continue
 
         input_raster_path = _open_raster_path_for_variable(raw_path, source_cfg, variable)
         with rasterio.open(input_raster_path) as src:

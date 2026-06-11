@@ -67,7 +67,6 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_pdca_full.yaml
-  output_aoi_config: configs/aoi/pyrenees_pdca_full.yaml
 
 download:
   enabled: true
@@ -78,6 +77,7 @@ download:
   timeout_seconds: 1800
   max_retries: 5
   retry_sleep_seconds: 60
+  max_workers: 2
   include_extensions: [".zip"]
   exclude_contains: []
   include_contains: []

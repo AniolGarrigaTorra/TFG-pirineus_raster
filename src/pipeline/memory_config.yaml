@@ -1,0 +1,60 @@
+# Memory Configuration for Pirineus Raster Pipeline
+# ====================================================================
+# 
+# This file controls memory and parallelization settings.
+#
+# QUICK START:
+# - HPC with 200GB+ RAM:    Use defaults (num_workers=4, max_rasters_in_memory=10)
+# - Laptop with 16GB RAM:   Set num_workers=1, max_rasters_in_memory=2
+# - Server with 64GB RAM:   Set num_workers=2, max_rasters_in_memory=5
+#
+# ====================================================================
+
+memory:
+  # Number of parallel workers for data loading
+  # - 1 = sequential (safest, uses least memory, slower)
+  # - 2 = minimal parallelization (balanced)
+  # - 4 = moderate parallelization (default for HPC with 200GB)
+  # - 8 = high parallelization (only for systems with 500GB+ RAM)
+  num_workers: 4
+
+  # Maximum number of rasters to load into memory before computing
+  # intermediate results. Applies to operations like mean, sum, etc.
+  # - 2 = very conservative (safe on 8GB systems)
+  # - 5 = balanced (16GB systems)
+  # - 10 = default (128GB+ systems)
+  # - 20 = aggressive (500GB+ systems)
+  max_rasters_in_memory: 10
+
+  # Force garbage collection every N operations
+  # Helps free memory in Python between batch operations
+  gc_interval: 2
+
+  # Chunk size for windowed raster operations (pixels)
+  # Larger chunks = faster but more memory. 512 is optimal for most cases
+  chunk_size: 512
+
+  # Enable memory logging (debug info)
+  verbose: false
+
+# ====================================================================
+# PRESETS for Common Scenarios
+# ====================================================================
+#
+# HPC with 200GB+ RAM (production, CSL cluster):
+#   num_workers: 4
+#   max_rasters_in_memory: 10
+#
+# HPC with 64GB RAM:
+#   num_workers: 2
+#   max_rasters_in_memory: 5
+#
+# Laptop/Home PC with 16GB RAM:
+#   num_workers: 1
+#   max_rasters_in_memory: 2
+#
+# Server with 32GB RAM:
+#   num_workers: 1
+#   max_rasters_in_memory: 3
+#
+# ====================================================================

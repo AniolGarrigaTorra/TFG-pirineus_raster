@@ -21,3 +21,4 @@ ui/vite.config.d.ts
 ui/public/*
 !ui/public/backgrounds/
 !ui/public/backgrounds/**
+use_cases_info/*

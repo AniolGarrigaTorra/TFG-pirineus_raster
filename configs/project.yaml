@@ -34,3 +34,8 @@ validation:
 naming:
   resolution_unit: m
   month_format: two_digits
+
+parallelization:
+  download_max_workers: 2
+  copy_max_workers: 4
+  description: "Global defaults for parallel operations. Can be overridden per source."

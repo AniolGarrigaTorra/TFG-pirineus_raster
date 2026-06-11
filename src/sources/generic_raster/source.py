@@ -12,6 +12,7 @@ def prepare_generic_raster_raw_data(
     project_cfg: dict,
     source_cfg: dict,
     provider: str | None = None,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     source = source_cfg["source"]
     processing = source_cfg["processing"]
@@ -25,6 +26,7 @@ def prepare_generic_raster_raw_data(
         source_cfg=source_cfg,
         raw_dir=raw_dir,
         provider=provider,
+        required_variables=required_variables,
     )
 
 

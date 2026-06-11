@@ -11,12 +11,18 @@ from src.sources.copernicus.build import build_copernicus_features
 def prepare_copernicus_raw_data(
     project_cfg: dict,
     source_cfg: dict,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     """
     Prepare raw Copernicus source files.
 
     This stage downloads files or validates that manually downloaded files
     already exist.
+    
+    Parameters
+    ----------
+    required_variables : set[str] | None
+        If provided, only download these variables.
     """
     source = source_cfg["source"]
     processing = source_cfg["processing"]
@@ -35,6 +41,7 @@ def prepare_copernicus_raw_data(
     return download_copernicus_raw_files(
         source_cfg=source_cfg,
         raw_dir=raw_dir,
+        required_variables=required_variables,
     )
 
 

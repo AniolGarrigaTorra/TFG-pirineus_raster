@@ -10,6 +10,7 @@ from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     build_feature_metadata,
     build_static_feature_metadata,
+    feature_raster_is_ready,
     get_resampling_method,
     get_variable_resampling_method,
     get_variable_resampling_method_name,
@@ -195,6 +196,22 @@ def _build_yearly_static_aggregations(
             progress_log(f"[build-yearly] Aggregation: {aggregation_name}")
             progress_log(f"[build-yearly] Years: {years[0]}-{years[-1]}")
 
+            output_variable = f"{base_variable}_{aggregation_name}"
+            output_path = output_dir / build_feature_name(
+                source_cfg=source_cfg,
+                variable=output_variable,
+                domain_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+            )
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build-yearly] Cache hit: {output_variable} -> {output_path}")
+                written_paths.append(output_path)
+                continue
+
             for variable, variable_cfg in selected_items:
                 clipped_path = _yearly_clipped_path(
                     project_cfg=project_cfg,
@@ -203,12 +220,9 @@ def _build_yearly_static_aggregations(
                     clip_aoi_name=clip_aoi_name,
                 )
                 if not clipped_path.exists():
-                    if not bool(variable_cfg.get("required", True)):
-                        progress_log(f"[build-yearly] Optional clipped raster missing, skipping: {clipped_path}")
-                        continue
-                    raise FileNotFoundError(
-                        f"Missing clipped raster: {clipped_path}\nRun the clip stage first."
-                    )
+                    # Skip if missing (likely filtered during download)
+                    progress_log(f"[build-yearly] Clipped raster missing for variable={variable}. Skipping (likely filtered during download): {clipped_path}")
+                    continue
 
                 array = read_raster_to_grid(
                     raster_path=clipped_path,
@@ -227,14 +241,6 @@ def _build_yearly_static_aggregations(
                 stack=np.stack(arrays, axis=0),
                 metric=metric,
             ).astype(np.float32)
-
-            output_variable = f"{base_variable}_{aggregation_name}"
-            output_path = output_dir / build_feature_name(
-                source_cfg=source_cfg,
-                variable=output_variable,
-                domain_name=output_aoi_name,
-                target_resolution_m=target_resolution_m,
-            )
 
             metadata = build_feature_metadata(
                 source_cfg=source_cfg,
@@ -339,12 +345,9 @@ def build_generic_raster_features(
         clipped_path = clipped_dir / build_clipped_name(source_cfg, variable, clip_aoi_name)
 
         if not clipped_path.exists():
-            if not bool(variable_cfg.get("required", True)):
-                progress_log(f"[build] Optional clipped raster missing, skipping: {clipped_path}")
-                continue
-            raise FileNotFoundError(
-                f"Missing clipped raster: {clipped_path}\nRun the clip stage first."
-            )
+            # Skip if missing (likely filtered during download)
+            progress_log(f"[build] Clipped raster missing for variable={variable}. Skipping (likely filtered during download): {clipped_path}")
+            continue
 
         output_dir = get_feature_output_dir(
             project_cfg=project_cfg,
@@ -367,50 +370,58 @@ def build_generic_raster_features(
             )
             progress_log(f"[build] Output path: {output_path}")
 
-            grid_array = read_raster_to_grid(
-                raster_path=clipped_path,
-                grid=grid,
-                resampling=resampling,
-                band=int(variable_cfg.get("band", 1)),
-                scale_factor=scale_factor,
-                resampling_method_name=resampling_name,
-            )
-            grid_array = _postprocess_array(grid_array, variable_cfg)
-
-            metadata = build_static_feature_metadata(
-                source_cfg=source_cfg,
-                layer_name=variable,
-                layer_cfg=variable_cfg,
-                clip_aoi_name=clip_aoi_name,
-                output_aoi_name=output_aoi_name,
-                target_resolution_m=target_resolution_m,
-                resampling_method_name=resampling_name,
-                source_input_path=clipped_path,
-            )
-            metadata.update(
-                {
-                    "data_type": variable_cfg.get("data_type")
-                    or source_cfg.get("dataset", {}).get("data_type"),
-                    "native_resolution_m": variable_cfg.get("native_resolution_m")
-                    or source_cfg.get("dataset", {}).get("native_resolution_m"),
-                    "reference_year": (
-                        variable_cfg.get("temporal", {}).get("reference_year")
-                        if isinstance(variable_cfg.get("temporal"), dict)
-                        else source.get("source_period")
-                    ),
-                }
-            )
-
-            written_paths.append(
-                write_feature_raster(
-                    output_path=output_path,
-                    array=grid_array,
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build] Cache hit: {variable} -> {output_path}")
+                written_paths.append(output_path)
+            else:
+                grid_array = read_raster_to_grid(
+                    raster_path=clipped_path,
                     grid=grid,
-                    metadata={key: value for key, value in metadata.items() if value is not None},
-                    **output_options,
-                    validate=True,
+                    resampling=resampling,
+                    band=int(variable_cfg.get("band", 1)),
+                    scale_factor=scale_factor,
+                    resampling_method_name=resampling_name,
                 )
-            )
+                grid_array = _postprocess_array(grid_array, variable_cfg)
+
+                metadata = build_static_feature_metadata(
+                    source_cfg=source_cfg,
+                    layer_name=variable,
+                    layer_cfg=variable_cfg,
+                    clip_aoi_name=clip_aoi_name,
+                    output_aoi_name=output_aoi_name,
+                    target_resolution_m=target_resolution_m,
+                    resampling_method_name=resampling_name,
+                    source_input_path=clipped_path,
+                )
+                metadata.update(
+                    {
+                        "data_type": variable_cfg.get("data_type")
+                        or source_cfg.get("dataset", {}).get("data_type"),
+                        "native_resolution_m": variable_cfg.get("native_resolution_m")
+                        or source_cfg.get("dataset", {}).get("native_resolution_m"),
+                        "reference_year": (
+                            variable_cfg.get("temporal", {}).get("reference_year")
+                            if isinstance(variable_cfg.get("temporal"), dict)
+                            else source.get("source_period")
+                        ),
+                    }
+                )
+
+                written_paths.append(
+                    write_feature_raster(
+                        output_path=output_path,
+                        array=grid_array,
+                        grid=grid,
+                        metadata={key: value for key, value in metadata.items() if value is not None},
+                        **output_options,
+                        validate=True,
+                    )
+                )
 
         for fraction_cfg in _category_fractions_for_variable(source_cfg, variable):
             fraction_name = str(fraction_cfg["name"])
@@ -424,6 +435,15 @@ def build_generic_raster_features(
             progress_log(f"[build] Class values: {fraction_cfg.get('class_values')}")
             progress_log(f"[build] Output path: {output_path}")
             fraction_resampling_name = str(fraction_cfg.get("resampling", "average"))
+
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build] Cache hit: {fraction_name} -> {output_path}")
+                written_paths.append(output_path)
+                continue
 
             fraction_array = read_category_fraction_to_grid(
                 raster_path=clipped_path,

@@ -35,7 +35,6 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
-  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
@@ -55,7 +54,9 @@ download:
     temporary_dir: data_raw/copernicus/_hda_downloads
     move_downloaded_to_raw: false
     mosaic_compression: LZW
-    sleep_after_download_seconds: 2
+    sleep_after_download_seconds: 5          # Increased from 2 to reduce WEkEO pressure
+    max_retries: 3                          # NEW: Retry attempts for failures
+    retry_backoff_multiplier: 2.0           # NEW: Exponential backoff (2s, 4s, 8s)
 
 processing:
   source_resolution: 10m

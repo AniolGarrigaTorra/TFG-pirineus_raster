@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -8,6 +9,7 @@ import numpy as np
 from rasterio.enums import Resampling
 
 from src.pipeline.raster_ops import read_raster_to_grid
+from src.pipeline.memory_optimizer import stack_rasters_memory_aware, free_memory
 
 
 # =============================================================================
@@ -39,26 +41,31 @@ def aggregate_stack(
     -----
     The stack is expected to use np.nan for nodata.
     Aggregations ignore np.nan values.
+    Empty slices (all NaN) are expected and produce NaN output.
     """
     if stack.ndim != 3:
         raise ValueError(
             f"Expected stack with shape (time, height, width), got {stack.shape}"
         )
 
-    if metric == "mean":
-        return np.nanmean(stack, axis=0)
+    # Suppress warnings for empty slices (all NaN values are expected)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        if metric == "mean":
+            return np.nanmean(stack, axis=0)
 
-    if metric == "sum":
-        return np.nansum(stack, axis=0)
+        if metric == "sum":
+            return np.nansum(stack, axis=0)
 
-    if metric == "std":
-        return np.nanstd(stack, axis=0)
+        if metric == "std":
+            return np.nanstd(stack, axis=0)
 
-    if metric == "min":
-        return np.nanmin(stack, axis=0)
+        if metric == "min":
+            return np.nanmin(stack, axis=0)
 
-    if metric == "max":
-        return np.nanmax(stack, axis=0)
+        if metric == "max":
+            return np.nanmax(stack, axis=0)
 
     raise ValueError(f"Unsupported aggregation metric: {metric}")
 
@@ -135,6 +142,9 @@ def read_temporal_stack_to_grid(
             resampling_method_name=resampling_method_name,
         )
         arrays.append(array)
+        # Free memory between loads if many rasters
+        if len(arrays) % 10 == 0:
+            gc.collect()
 
     return np.stack(arrays, axis=0)
 
@@ -217,11 +227,16 @@ def aggregate_year_then_across_years(
         yearly_arrays.append(year_array)
 
     yearly_stack = np.stack(yearly_arrays, axis=0)
-
-    return aggregate_stack(
+    result = aggregate_stack(
         stack=yearly_stack,
         metric=across_year_metric,
     ).astype(np.float32)
+    
+    # Free memory after aggregation
+    del yearly_arrays, yearly_stack
+    gc.collect()
+    
+    return result
 
 
 def aggregate_time_series(

@@ -290,6 +290,7 @@ def _handle_local_file_download(
 def download_copernicus_raw_files(
     source_cfg: dict,
     raw_dir: Path,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     validate_copernicus_source_config(source_cfg)
 
@@ -303,6 +304,22 @@ def download_copernicus_raw_files(
     overwrite = bool(download_cfg.get("overwrite_existing", False))
 
     specs = get_download_file_specs(source_cfg)
+    
+    # Filter specs by required_variables if provided
+    if required_variables:
+        specs_before = len(specs)
+        # Use prefix matching to handle expanded variable names like agb_2005 matching agb
+        filtered_specs = []
+        for spec in specs:
+            spec_var = spec["variable"]
+            # Check if spec variable matches any required variable exactly, or starts with required_var_
+            for req_var in required_variables:
+                if spec_var == req_var or spec_var.startswith(f"{req_var}_"):
+                    filtered_specs.append(spec)
+                    break
+        specs = filtered_specs
+        progress_log(f"[download] Filtered specs from {specs_before} to {len(specs)}")
+    
     progress_set_stage_task_total(
         sum(len(spec.get("urls") or []) or 1 for spec in specs),
         label="downloads",
@@ -363,14 +380,25 @@ def download_copernicus_raw_files(
                 output_path=output_path,
             )
 
-            written_paths = _run_postprocess(
-                input_paths=downloaded_files,
-                output_path=output_path,
-                raw_dir=raw_dir,
-                source_cfg=source_cfg,
-                spec=spec,
-            )
-            raw_paths.extend(written_paths)
+            # If empty list returned, it means cache hit - output file already exists
+            if not downloaded_files:
+                if output_path.exists():
+                    progress_log(f"[download] ✓ Cached: {output_path}")
+                    raw_paths.append(output_path)
+                else:
+                    raise FileNotFoundError(
+                        f"Cache hit detected but output file not found: {output_path}"
+                    )
+            else:
+                written_paths = _run_postprocess(
+                    input_paths=downloaded_files,
+                    output_path=output_path,
+                    raw_dir=raw_dir,
+                    source_cfg=source_cfg,
+                    spec=spec,
+                )
+                raw_paths.extend(written_paths)
+            
             progress_advance_stage_task(name=output_path.name)
             continue
 

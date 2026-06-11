@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from src.io.config import resolve_path
+from src.pipeline.memory_optimizer import set_memory_config
 from src.workbench.api import serve_workbench_api
 from src.workbench.catalog import source_catalog_from_config, workbench_catalog
 from src.workbench.compiler import (
@@ -35,6 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "run_config",
         help="Path to a run config YAML, e.g. configs/runs/ursus_arctos_pyrenees_100m.yaml",
+    )
+    run_parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers. Default: 4 (HPC). Set to 1 for low-memory systems.",
+    )
+    run_parser.add_argument(
+        "--max-rasters-in-memory",
+        type=int,
+        default=None,
+        help="Max rasters to load before computing intermediate result. Default: 10 (HPC). Set to 2-3 for low-memory systems.",
     )
 
     run_source_parser = subparsers.add_parser(
@@ -269,6 +282,13 @@ def main() -> None:
 
     if args.command == "run":
         from src.pipeline.dataset import run_dataset_pipeline
+        
+        # Initialize memory configuration
+        if args.num_workers or args.max_rasters_in_memory:
+            set_memory_config(
+                num_workers=args.num_workers,
+                max_rasters_in_memory=args.max_rasters_in_memory,
+            )
 
         run_dataset_pipeline(
             run_config_path=args.run_config,

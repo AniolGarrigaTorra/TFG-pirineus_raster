@@ -942,6 +942,38 @@ def write_feature_raster(
     return output_path
 
 
+def feature_raster_is_ready(
+    output_path: Path,
+    grid: GridContext,
+    *,
+    require_sidecar: bool = True,
+) -> bool:
+    """
+    Fast metadata-only cache check for a completed feature raster.
+    """
+    output_path = Path(output_path)
+    if not output_path.exists():
+        return False
+
+    if require_sidecar and not output_path.with_suffix(".json").exists():
+        return False
+
+    try:
+        validate_raster_matches_grid(
+            raster_path=output_path,
+            grid_path=grid.path,
+        )
+    except Exception as exc:
+        progress_log(
+            f"[cache] Existing raster is not reusable and will be rebuilt: "
+            f"{output_path} ({exc})",
+            level="warning",
+        )
+        return False
+
+    return True
+
+
 # =============================================================================
 # Validation
 # =============================================================================

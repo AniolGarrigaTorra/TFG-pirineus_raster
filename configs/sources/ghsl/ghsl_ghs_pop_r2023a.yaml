@@ -25,7 +25,6 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
-  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 years: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
 
@@ -33,6 +32,7 @@ download:
   enabled: true
   mode: manual_url
   overwrite_existing: false
+  max_workers: 2
 
 processing:
   # User-facing labels. Official GHSL grid tokens are mapped below for URLs.

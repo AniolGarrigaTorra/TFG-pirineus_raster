@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import shutil
 from datetime import datetime, timezone
@@ -193,9 +194,11 @@ def copy_stage_rasters_to_dataset(
     Copy rasters from build stage results to the dataset rasters directory.
 
     Only .tif/.tiff files from stage='build' are copied.
+    Uses parallel copying when multiple files are available.
     """
-    copied: list[dict[str, Any]] = []
-
+    # Collect all copy tasks first
+    copy_tasks = []
+    
     for stage_result in stage_results:
         if stage_result.get("stage") != "build":
             continue
@@ -206,11 +209,41 @@ def copy_stage_rasters_to_dataset(
             if path.suffix.lower() not in {".tif", ".tiff"}:
                 continue
 
+            copy_tasks.append((path, source_id))
+
+    if not copy_tasks:
+        return []
+
+    copied: list[dict[str, Any]] = []
+    
+    # Use parallel copying for multiple files (max 4 workers)
+    max_workers = min(len(copy_tasks), 4)
+    
+    if len(copy_tasks) > 1 and max_workers > 1:
+        def copy_task(raster_path, src_id):
+            return copy_raster_to_dataset(
+                raster_path=raster_path,
+                dataset_rasters_dir=dataset_rasters_dir,
+                source_id=src_id,
+                overwrite=overwrite,
+            )
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(copy_task, raster_path, src_id)
+                for raster_path, src_id in copy_tasks
+            ]
+            
+            for future in concurrent.futures.as_completed(futures):
+                copied.append(future.result())
+    else:
+        # Sequential copy for single file
+        for raster_path, src_id in copy_tasks:
             copied.append(
                 copy_raster_to_dataset(
-                    raster_path=path,
+                    raster_path=raster_path,
                     dataset_rasters_dir=dataset_rasters_dir,
-                    source_id=source_id,
+                    source_id=src_id,
                     overwrite=overwrite,
                 )
             )

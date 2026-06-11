@@ -3,12 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import gc
+
 import numpy as np
 
 from src.io.paths import get_source_clipped_dir, get_feature_output_dir
 from src.pipeline.config import get_temporal_aggregations, years_from_range
 from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
+    feature_raster_is_ready,
     load_grid_context,
     print_grid_context,
     read_raster_to_grid,
@@ -230,6 +233,23 @@ def _build_yearly_static_aggregations(
             progress_log(f"[build-yearly] Aggregation: {aggregation_name}")
             progress_log(f"[build-yearly] Years: {years[0]}-{years[-1]}")
 
+            output_variable = f"{base_variable}_{aggregation_name}"
+            output_path = _get_output_path(
+                project_cfg=project_cfg,
+                source_cfg=source_cfg,
+                output_aoi_name=output_aoi_name,
+                target_resolution_m=target_resolution_m,
+                variable=output_variable,
+            )
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build-yearly] Cache hit: {output_variable} -> {output_path}")
+                written_paths.append(output_path)
+                continue
+
             for variable, variable_cfg in selected_items:
                 clipped_path = _get_clipped_path(
                     project_cfg=project_cfg,
@@ -238,16 +258,12 @@ def _build_yearly_static_aggregations(
                     variable=variable,
                 )
                 if not clipped_path.exists():
-                    if not bool(variable_cfg.get("required", True)):
-                        progress_log(
-                            f"[build-yearly] Optional clipped raster missing, "
-                            f"skipping: {clipped_path}"
-                        )
-                        continue
-                    raise FileNotFoundError(
-                        f"Missing clipped Copernicus raster: {clipped_path}\n"
-                        "Run the clip stage first."
+                    # Skip if missing (likely filtered during download)
+                    progress_log(
+                        f"[build-yearly] Clipped raster missing for variable={variable}. "
+                        f"Skipping (likely filtered during download): {clipped_path}"
                     )
+                    continue
 
                 array = read_raster_to_grid(
                     raster_path=clipped_path,
@@ -262,19 +278,12 @@ def _build_yearly_static_aggregations(
             if not arrays:
                 continue
 
+            stacked = np.stack(arrays, axis=0)
+            gc.collect()  # Free memory after stacking
             aggregated = aggregate_stack(
-                stack=np.stack(arrays, axis=0),
+                stack=stacked,
                 metric=metric,
             ).astype(np.float32)
-
-            output_variable = f"{base_variable}_{aggregation_name}"
-            output_path = _get_output_path(
-                project_cfg=project_cfg,
-                source_cfg=source_cfg,
-                output_aoi_name=output_aoi_name,
-                target_resolution_m=target_resolution_m,
-                variable=output_variable,
-            )
 
             metadata = build_feature_metadata(
                 source_cfg=source_cfg,
@@ -426,11 +435,11 @@ def build_copernicus_features(
         resolution_m=target_resolution_m,
     )
 
-    print("[build] Provider:", source_cfg["source"]["provider"])
-    print("[build] Product:", source_cfg["source"]["product"])
-    print("[build] Output AOI:", output_aoi_name)
-    print("[build] Clip AOI:", clip_aoi_name)
-    print("[build] Target resolution:", target_resolution_m)
+    progress_log(f"[build] Provider: {source_cfg['source']['provider']}")
+    progress_log(f"[build] Product: {source_cfg['source']['product']}")
+    progress_log(f"[build] Output AOI: {output_aoi_name}")
+    progress_log(f"[build] Clip AOI: {clip_aoi_name}")
+    progress_log(f"[build] Target resolution: {target_resolution_m}")
     print_grid_context(grid, prefix="[build]")
 
     written_paths: list[Path] = []
@@ -455,26 +464,20 @@ def build_copernicus_features(
         )
 
         if not clipped_path.exists():
-            if not bool(variable_cfg.get("required", True)):
-                print(
-                    f"[build] Optional clipped Copernicus raster missing for "
-                    f"variable={variable}. Skipping: {clipped_path}"
-                )
-                continue
-
-            raise FileNotFoundError(
-                f"Missing clipped Copernicus raster: {clipped_path}\n"
-                "Run the clip stage first."
+            # Skip if missing (likely filtered during download)
+            progress_log(
+                f"[build] Clipped raster missing for variable={variable}. "
+                f"Skipping (likely filtered during download): {clipped_path}"
             )
+            continue
 
-        print("==============================")
-        print(f"[build] Variable: {variable}")
-        print(f"[build] Description: {variable_cfg.get('description', '')}")
-        print(f"[build] Data type: {variable_cfg.get('data_type')}")
-        print(f"[build] Native resolution: {variable_cfg.get('native_resolution_m')}")
-        print(f"[build] Scale factor: {scale_factor}")
-        print(f"[build] Resampling: {resampling_name}")
-        print(f"[build] Clipped path: {clipped_path}")
+        progress_log(f"[build] Variable: {variable}")
+        progress_log(f"[build] Description: {variable_cfg.get('description', '')}")
+        progress_log(f"[build] Data type: {variable_cfg.get('data_type')}")
+        progress_log(f"[build] Native resolution: {variable_cfg.get('native_resolution_m')}")
+        progress_log(f"[build] Scale factor: {scale_factor}")
+        progress_log(f"[build] Resampling: {resampling_name}")
+        progress_log(f"[build] Clipped path: {clipped_path}")
 
         if bool(variable_cfg.get("build_output_enabled", True)):
             output_path = _get_output_path(
@@ -484,44 +487,52 @@ def build_copernicus_features(
                 target_resolution_m=target_resolution_m,
                 variable=variable,
             )
-            print(f"[build] Output path: {output_path}")
+            progress_log(f"[build] Output path: {output_path}")
 
-            grid_array = read_raster_to_grid(
-                raster_path=clipped_path,
-                grid=grid,
-                resampling=resampling,
-                band=1,
-                scale_factor=scale_factor,
-                resampling_method_name=resampling_name,
-            )
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build] Cache hit: {variable} -> {output_path}")
+                written_paths.append(output_path)
+            else:
+                grid_array = read_raster_to_grid(
+                    raster_path=clipped_path,
+                    grid=grid,
+                    resampling=resampling,
+                    band=1,
+                    scale_factor=scale_factor,
+                    resampling_method_name=resampling_name,
+                )
 
-            grid_array = _postprocess_array(
-                array=grid_array,
-                variable_cfg=variable_cfg,
-            )
+                grid_array = _postprocess_array(
+                    array=grid_array,
+                    variable_cfg=variable_cfg,
+                )
 
-            metadata = _build_copernicus_static_metadata(
-                source_cfg=source_cfg,
-                variable=variable,
-                variable_cfg=variable_cfg,
-                clip_aoi_name=clip_aoi_name,
-                output_aoi_name=output_aoi_name,
-                target_resolution_m=target_resolution_m,
-                resampling_method_name=resampling_name,
-                source_input_path=clipped_path,
-            )
+                metadata = _build_copernicus_static_metadata(
+                    source_cfg=source_cfg,
+                    variable=variable,
+                    variable_cfg=variable_cfg,
+                    clip_aoi_name=clip_aoi_name,
+                    output_aoi_name=output_aoi_name,
+                    target_resolution_m=target_resolution_m,
+                    resampling_method_name=resampling_name,
+                    source_input_path=clipped_path,
+                )
 
-            written_path = write_feature_raster(
-                output_path=output_path,
-                array=grid_array,
-                grid=grid,
-                metadata=metadata,
-                **output_options,
-                validate=True,
-            )
+                written_path = write_feature_raster(
+                    output_path=output_path,
+                    array=grid_array,
+                    grid=grid,
+                    metadata=metadata,
+                    **output_options,
+                    validate=True,
+                )
 
-            print(f"[build] Written: {written_path}")
-            written_paths.append(written_path)
+                progress_log(f"[build] Written: {written_path}")
+                written_paths.append(written_path)
 
         for fraction_cfg in _category_fractions_for_variable(source_cfg, variable):
             fraction_name = str(fraction_cfg["name"])
@@ -532,10 +543,19 @@ def build_copernicus_features(
                 target_resolution_m=target_resolution_m,
                 variable=fraction_name,
             )
-            print(f"[build] Category fraction: {fraction_name}")
-            print(f"[build] Class values: {fraction_cfg.get('class_values')}")
-            print(f"[build] Output path: {output_path}")
+            progress_log(f"[build] Category fraction: {fraction_name}")
+            progress_log(f"[build] Class values: {fraction_cfg.get('class_values')}")
+            progress_log(f"[build] Output path: {output_path}")
             fraction_resampling_name = str(fraction_cfg.get("resampling", "average"))
+
+            if feature_raster_is_ready(
+                output_path,
+                grid,
+                require_sidecar=output_options["write_sidecar"],
+            ):
+                progress_log(f"[build] Cache hit: {fraction_name} -> {output_path}")
+                written_paths.append(output_path)
+                continue
 
             fraction_array = read_category_fraction_to_grid(
                 raster_path=clipped_path,
@@ -581,7 +601,7 @@ def build_copernicus_features(
                 **output_options,
                 validate=True,
             )
-            print(f"[build] Written: {written_path}")
+            progress_log(f"[build] Written: {written_path}")
             written_paths.append(written_path)
 
     return written_paths

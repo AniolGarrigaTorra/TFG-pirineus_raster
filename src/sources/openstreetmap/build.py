@@ -12,6 +12,7 @@ from src.io.paths import get_feature_output_dir, get_source_clipped_dir
 from src.pipeline.progress import progress_log
 from src.pipeline.raster_ops import (
     build_static_feature_metadata,
+    feature_raster_is_ready,
     load_grid_context,
     print_grid_context,
     write_feature_raster,
@@ -157,6 +158,15 @@ def build_osm_features(
         progress_log(f"[build:osm] Output mode: {layer_cfg.get('output', 'presence')}")
         progress_log(f"[build:osm] Clipped path: {clipped_path}")
         progress_log(f"[build:osm] Output path: {output_path}")
+
+        if feature_raster_is_ready(
+            output_path,
+            grid,
+            require_sidecar=output_options["write_sidecar"],
+        ):
+            progress_log(f"[build:osm] Cache hit: {layer_key} -> {output_path}")
+            written_paths.append(output_path)
+            continue
 
         gdf = _read_clipped_features(clipped_path, target_crs=str(grid.crs))
         array, output_mode = _build_layer_array(gdf, layer_cfg, grid)

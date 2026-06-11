@@ -33,6 +33,7 @@ download:
   timeout_seconds: 1800
   max_retries: 4
   retry_sleep_seconds: 45
+  max_workers: 2
   regions:
     - name: cataluna
       filename: cataluna-latest.osm.pbf

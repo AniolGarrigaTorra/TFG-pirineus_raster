@@ -630,6 +630,40 @@ class NewSourceIntegrationTests(unittest.TestCase):
         self.assertEqual(spec["hda_query"]["resolution"], "10")
         self.assertEqual(spec["hda_query"]["start"], "2020-01-01T00:00:00.000Z")
 
+        aggregate_compiled = compile_source_config_for_run(
+            source_cfg,
+            {
+                "select": {
+                    "variables": ["total_productivity"],
+                    "dimensions": {"growth_season": ["s1"]},
+                    "temporal": {
+                        "output_mode": "aggregate",
+                        "aggregations": {
+                            "custom": [
+                                {
+                                    "name": "mean",
+                                    "form": "year_range_metric",
+                                    "years": [2017, 2024],
+                                    "metric": "mean",
+                                    "variables": ["total_productivity"],
+                                }
+                            ]
+                        },
+                    },
+                },
+            },
+        )
+        aggregate_compiled = expand_source_config(aggregate_compiled)
+        enabled = [
+            name
+            for name, item in aggregate_compiled["variables"].items()
+            if item.get("enabled")
+        ]
+        self.assertEqual(
+            enabled,
+            [f"total_productivity_s1_{year}" for year in range(2017, 2025)],
+        )
+
         cfg = {
             "_compiled_from_features": True,
             "run": {

@@ -12,7 +12,7 @@ from src.sources.copernicus.download import download_file
 from src.sources.openstreetmap.naming import build_osm_raw_path, validate_osm_source_config
 
 
-def download_osm_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
+def download_osm_raw_files(source_cfg: dict, raw_dir: Path, required_variables: set[str] | None = None) -> list[Path]:
     validate_osm_source_config(source_cfg)
 
     raw_dir = Path(raw_dir)

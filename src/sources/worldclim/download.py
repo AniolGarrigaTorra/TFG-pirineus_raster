@@ -254,6 +254,7 @@ def ensure_worldclim_zip(
 def download_worldclim_raw_files(
     source_cfg: dict,
     raw_dir: Path,
+    required_variables: set[str] | None = None,
 ) -> list[Path]:
     layer_structure = get_layer_structure(source_cfg)
 

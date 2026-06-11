@@ -146,7 +146,7 @@ def _download_file(
     )
 
 
-def download_pdca_raw_files(source_cfg: dict, raw_dir: Path) -> list[Path]:
+def download_pdca_raw_files(source_cfg: dict, raw_dir: Path, required_variables: set[str] | None = None) -> list[Path]:
     ensure_dir(raw_dir)
     download_cfg = source_cfg.get("download", {})
     enabled = bool(download_cfg.get("enabled", True))

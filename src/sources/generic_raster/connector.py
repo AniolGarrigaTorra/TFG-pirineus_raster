@@ -18,11 +18,12 @@ class GenericRasterConnector(RasterSourceConnector):
     def __init__(self, provider: str):
         self.provider = provider
 
-    def download(self, project_cfg: dict, source_cfg: dict) -> list[Path]:
+    def download(self, project_cfg: dict, source_cfg: dict, required_variables: set[str] | None = None) -> list[Path]:
         return prepare_generic_raster_raw_data(
             project_cfg=project_cfg,
             source_cfg=source_cfg,
             provider=self.provider,
+            required_variables=required_variables,
         )
 
     def clip(

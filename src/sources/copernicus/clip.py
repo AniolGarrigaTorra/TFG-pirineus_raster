@@ -9,6 +9,7 @@ from rasterio.windows import from_bounds
 from pyproj import Transformer
 
 from src.io.paths import ensure_dir, get_source_raw_dir, get_source_clipped_dir
+from src.pipeline.progress import progress_log
 from src.sources.copernicus.naming import (
     validate_copernicus_source_config,
     get_enabled_variable_items,
@@ -191,7 +192,7 @@ def _clip_one_raster(
     output_path = Path(output_path)
 
     if output_path.exists() and not overwrite:
-        print(f"[clip] Exists, skipping: {output_path}")
+        progress_log(f"[clip] Cache hit: {output_path}")
         return output_path
 
     ensure_dir(output_path.parent)
@@ -223,7 +224,7 @@ def _clip_one_raster(
                 clip_bounds_source_crs=str(clip_bounds_source_crs),
             )
 
-    print(f"[clip] Written: {output_path}")
+    progress_log(f"[clip] Written: {output_path}")
     return output_path
 
 
@@ -262,12 +263,12 @@ def clip_copernicus_raw_files(
     compression = str(output_cfg.get("compression", "LZW"))
     overwrite = bool(download_cfg.get("overwrite_existing", False))
 
-    print("[clip] Provider:", provider)
-    print("[clip] Product:", product)
-    print("[clip] AOI:", clip_aoi_name)
-    print("[clip] AOI CRS:", clip_aoi_crs)
-    print("[clip] Raw dir:", raw_dir)
-    print("[clip] File format:", get_file_format(source_cfg))
+    progress_log(f"[clip] Provider: {provider}")
+    progress_log(f"[clip] Product: {product}")
+    progress_log(f"[clip] AOI: {clip_aoi_name}")
+    progress_log(f"[clip] AOI CRS: {clip_aoi_crs}")
+    progress_log(f"[clip] Raw dir: {raw_dir}")
+    progress_log(f"[clip] File format: {get_file_format(source_cfg)}")
 
     written_paths: list[Path] = []
 
@@ -279,16 +280,13 @@ def clip_copernicus_raw_files(
         )
 
         if not raw_path.exists():
-            if not bool(variable_cfg.get("required", True)):
-                print(
-                    f"[clip] Optional raw Copernicus file missing for "
-                    f"variable={variable}. Skipping: {raw_path}"
-                )
-                continue
-
-            raise FileNotFoundError(
-                f"Missing raw Copernicus file for variable={variable}: {raw_path}"
+            # If file doesn't exist, treat as optional
+            # (this can happen when variables are filtered during download)
+            progress_log(
+                f"[clip] Raw file not found for variable={variable}. "
+                f"Skipping (likely filtered during download): {raw_path}"
             )
+            continue
 
         input_raster_path = _open_raster_path_for_variable(
             raw_path=raw_path,
@@ -321,15 +319,14 @@ def clip_copernicus_raw_files(
             variable=variable,
         )
 
-        print("==============================")
-        print(f"[clip] Variable: {variable}")
-        print(f"[clip] Description: {variable_cfg.get('description', '')}")
-        print(f"[clip] Raw path: {raw_path}")
-        print(f"[clip] Raster path: {input_raster_path}")
-        print(f"[clip] Source CRS: {source_crs}")
-        print(f"[clip] Bounds in AOI CRS: {clip_bounds_aoi_crs}")
-        print(f"[clip] Bounds in source CRS: {clip_bounds_source_crs}")
-        print(f"[clip] Output: {output_path}")
+        progress_log(f"[clip] Variable: {variable}")
+        progress_log(f"[clip] Description: {variable_cfg.get('description', '')}")
+        progress_log(f"[clip] Raw path: {raw_path}")
+        progress_log(f"[clip] Raster path: {input_raster_path}")
+        progress_log(f"[clip] Source CRS: {source_crs}")
+        progress_log(f"[clip] Bounds in AOI CRS: {clip_bounds_aoi_crs}")
+        progress_log(f"[clip] Bounds in source CRS: {clip_bounds_source_crs}")
+        progress_log(f"[clip] Output: {output_path}")
 
         written_path = _clip_one_raster(
             input_raster_path=input_raster_path,

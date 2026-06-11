@@ -19,6 +19,49 @@ from src.workbench.compiler import compile_source_config_for_run
 VALID_STAGES = {"download", "clip", "build", "all"}
 
 
+def _extract_required_variables_for_source(
+    run_cfg: dict | None,
+    source_id: str,
+) -> set[str]:
+    """
+    Extract which variables are required for a given source based on features.
+    
+    Only returns variables that are actually used by features in the run config.
+    This prevents downloading all variables from a source when only a few are needed.
+    
+    Parameters
+    ----------
+    run_cfg : dict | None
+        Run configuration containing features and their inputs
+    source_id : str
+        The source ID to find required variables for
+    
+    Returns
+    -------
+    set[str]
+        Set of variable names required by features that use this source.
+        Empty set if no run_cfg or no features found (fallback: download all).
+    """
+    if not run_cfg:
+        return set()  # No filtering if no run config
+    
+    features = run_cfg.get("features", [])
+    if not features:
+        return set()  # No filtering if no features
+    
+    required_vars = set()
+    
+    for feature in features:
+        inputs = feature.get("inputs", {})
+        for input_name, input_spec in inputs.items():
+            if input_spec.get("source_id") == source_id:
+                variable = input_spec.get("variable")
+                if variable:
+                    required_vars.add(variable)
+    
+    return required_vars
+
+
 def _print_header(
     source_cfg: dict,
     stage: str,
@@ -193,6 +236,17 @@ def run_source_pipeline(
 
     connector = get_source_connector(provider)
 
+    # =========================================================================
+    # Extract which variables are actually required for this source
+    # =========================================================================
+    source_id = source["id"]
+    required_variables = _extract_required_variables_for_source(
+        run_cfg=run_cfg,
+        source_id=source_id,
+    )
+    if required_variables:
+        progress_log(f"Required variables for {source_id}: {sorted(required_variables)}")
+
     final_paths: list[Path] = []
 
     for current_stage in _normalize_single_stage(stage):
@@ -200,6 +254,7 @@ def run_source_pipeline(
             raw_paths = connector.download(
                 project_cfg=project_cfg,
                 source_cfg=source_cfg,
+                required_variables=required_variables if required_variables else None,
             )
             _print_paths("Raw files ready", raw_paths)
             final_paths = raw_paths

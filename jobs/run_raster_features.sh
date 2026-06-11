@@ -6,7 +6,7 @@
 #SBATCH --error=logs/pirineus_raster_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
+#SBATCH --mem=200G
 
 set -euo pipefail
 export PS1="${PS1:-}"   

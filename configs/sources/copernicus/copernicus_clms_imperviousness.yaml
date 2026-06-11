@@ -26,7 +26,6 @@ dataset:
 
 domains:
   clip_aoi_config: configs/aoi/pyrenees_full.yaml
-  output_aoi_config: configs/aoi/experimental_pallars_sobira.yaml
 
 download:
   enabled: true
