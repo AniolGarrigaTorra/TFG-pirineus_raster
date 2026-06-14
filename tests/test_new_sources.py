@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import geopandas as gpd
+
 from src.io.config import load_yaml
 from src.make_grid import create_grid
 from src.pipeline.raster_ops import build_static_feature_metadata
@@ -33,6 +35,13 @@ from src.workbench.compiler import (
     validate_researcher_run_config,
 )
 from src.pipeline.config import validate_run_config
+from src.sources.openstreetmap.build import _build_layer_array
+
+
+class _DummyGrid:
+    shape = (4, 4)
+    transform = None
+    resolution_m = 100
 
 
 class NewSourceIntegrationTests(unittest.TestCase):
@@ -1517,6 +1526,54 @@ class NewSourceIntegrationTests(unittest.TestCase):
         clip_aoi, output_aoi = _load_domain_configs(cfg)
         self.assertEqual(clip_aoi["name"], "pyrenees_full")
         self.assertEqual(output_aoi["name"], "experimental_pallars_sobira")
+
+    def test_osm_empty_enabled_layer_fails_before_empty_raster(self):
+        empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:3035")
+        with self.assertRaisesRegex(ValueError, "zero clipped features"):
+            _build_layer_array(
+                empty,
+                {"output": "distance"},
+                _DummyGrid(),
+            )
+
+    def test_feature_unit_inference_uses_source_units_and_log_transform(self):
+        cfg = {
+            "run": {
+                "name": "unit_inference",
+                "project_config": "configs/project.yaml",
+                "crs": "EPSG:3035",
+                "aoi_config": "configs/aoi/ursus_arctos_pyrenees.yaml",
+                "resolution_m": 100,
+                "stages": ["build"],
+            },
+            "features": [
+                {
+                    "name": "distance",
+                    "build_type": "source_layer",
+                    "source": {
+                        "kind": "source",
+                        "source_id": "openstreetmap_geofabrik_pyrenees",
+                        "config": "configs/sources/openstreetmap/openstreetmap_geofabrik_pyrenees.yaml",
+                        "layer": "transport.secondary_roads_distance",
+                    },
+                },
+                {
+                    "name": "log_distance",
+                    "build_type": "expression",
+                    "expression": "log10(x + 1)",
+                    "inputs": {
+                        "x": {
+                            "kind": "feature",
+                            "feature": "distance",
+                        }
+                    },
+                },
+            ],
+        }
+        compiled = compile_run_config(cfg)
+        by_name = {item["name"]: item for item in compiled["derived_features"]}
+        self.assertEqual(by_name["distance"]["unit"], "m")
+        self.assertEqual(by_name["log_distance"]["unit"], "log10(m)")
 
     def test_legacy_dataset_domains_are_normalized(self):
         cfg = {

@@ -82,9 +82,22 @@ def _read_osm_layer(
     bbox_wgs84: tuple[float, float, float, float],
 ) -> gpd.GeoDataFrame:
     try:
-        return gpd.read_file(pbf_path, layer=osm_layer, bbox=bbox_wgs84)
-    except ValueError:
-        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+        return gpd.read_file(
+            pbf_path,
+            layer=osm_layer,
+            bbox=bbox_wgs84,
+            engine="pyogrio",
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "Null layer" in message or "not recognized as being in a supported" in message:
+            return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+        raise RuntimeError(
+            f"Could not read OSM PBF layer '{osm_layer}' from {pbf_path}. "
+            "OpenStreetMap PBF clipping requires a working pyogrio/GDAL/PROJ "
+            "stack. Rebuild the environment from environment.yml or install "
+            "pyogrio from conda-forge so it matches the GDAL/PROJ libraries."
+        ) from exc
 
 
 def _clip_layer_from_regions(
@@ -130,6 +143,21 @@ def _clip_layer_from_regions(
     if combined.empty:
         return combined
 
+    invalid_mask = ~combined.geometry.is_valid
+    if invalid_mask.any():
+        progress_log(
+            f"[clip:osm] Repairing invalid geometries: {int(invalid_mask.sum())}"
+        )
+        combined = combined.copy()
+        combined.loc[invalid_mask, "geometry"] = combined.loc[
+            invalid_mask,
+            "geometry",
+        ].make_valid()
+        combined = combined.explode(ignore_index=True)
+        combined = combined[combined.geometry.notna() & ~combined.geometry.is_empty]
+        if combined.empty:
+            return combined
+
     clipped = gpd.clip(combined, clip_geom)
     return clipped[clipped.geometry.notna() & ~clipped.geometry.is_empty]
 
@@ -152,6 +180,10 @@ def _write_gpkg(gdf: gpd.GeoDataFrame, output_path: Path) -> None:
         schema=schema,
     ):
         pass
+
+
+def _allow_empty_layer(layer_cfg: dict[str, Any]) -> bool:
+    return bool(layer_cfg.get("allow_empty", False))
 
 
 def clip_osm_raw_files(
@@ -218,6 +250,13 @@ def clip_osm_raw_files(
         progress_log(f"[clip:osm] Layer: {layer_key}")
         progress_log(f"[clip:osm] Features: {len(clipped)}")
         progress_log(f"[clip:osm] Output: {output_path}")
+
+        if clipped.empty and not _allow_empty_layer(layer_cfg):
+            raise ValueError(
+                f"OSM layer '{layer_key}' clipped to zero features. "
+                "Refusing to cache an empty enabled layer; check OSM reader, "
+                "tags, AOI bounds, or set allow_empty=true if this is expected."
+            )
 
         _write_gpkg(clipped, output_path)
         written_paths.append(output_path)

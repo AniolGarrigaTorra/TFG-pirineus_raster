@@ -702,7 +702,7 @@ features:
         output_mode: static
       source_resolution: osm
       resampling: min
-  expression: log10(x)
+  expression: log10(x + 1)
   parameters: {}
   evaluation_stage: native_then_resample
   evaluation_resolution_m: native
@@ -726,7 +726,7 @@ features:
           output_mode: static
         source_resolution: osm
         resampling: min
-    expression: log10(x)
+    expression: log10(x + 1)
     parameters: {}
     evaluation_stage: native_then_resample
     evaluation_resolution_m: native
@@ -751,7 +751,7 @@ features:
         output_mode: static
       source_resolution: osm
       resampling: nearest
-  expression: log10(x)
+  expression: log10(x + 1)
   parameters: {}
   evaluation_stage: native_then_resample
   evaluation_resolution_m: native
@@ -775,7 +775,7 @@ features:
           output_mode: static
         source_resolution: osm
         resampling: nearest
-    expression: log10(x)
+    expression: log10(x + 1)
     parameters: {}
     evaluation_stage: native_then_resample
     evaluation_resolution_m: native
@@ -800,7 +800,7 @@ features:
         output_mode: static
       source_resolution: osm
       resampling: min
-  expression: log10(x)
+  expression: log10(x + 1)
   parameters: {}
   evaluation_stage: native_then_resample
   evaluation_resolution_m: native
@@ -824,7 +824,7 @@ features:
           output_mode: static
         source_resolution: osm
         resampling: min
-    expression: log10(x)
+    expression: log10(x + 1)
     parameters: {}
     evaluation_stage: native_then_resample
     evaluation_resolution_m: native

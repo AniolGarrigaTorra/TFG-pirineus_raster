@@ -43,7 +43,7 @@ def _output_options(project_cfg: dict, source_cfg: dict) -> dict[str, Any]:
 def _read_clipped_features(path: Path, target_crs: str) -> gpd.GeoDataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Missing clipped OSM layer: {path}")
-    gdf = gpd.read_file(path, layer="features")
+    gdf = gpd.read_file(path, layer="features", engine="fiona")
     if gdf.empty:
         return gpd.GeoDataFrame(geometry=[], crs=target_crs)
     if gdf.crs is None:
@@ -76,12 +76,20 @@ def _rasterize_presence(gdf: gpd.GeoDataFrame, grid) -> np.ndarray:
 def _distance_from_presence(presence: np.ndarray, pixel_size_m: int) -> np.ndarray:
     target = np.isfinite(presence) & (presence > 0)
     if not target.any():
-        return np.full(presence.shape, np.nan, dtype=np.float32)
+        raise ValueError(
+            "Cannot compute an OSM distance raster because the rasterized "
+            "presence mask has no target pixels."
+        )
     return (ndimage.distance_transform_edt(~target) * float(pixel_size_m)).astype(np.float32)
 
 
 def _build_layer_array(gdf: gpd.GeoDataFrame, layer_cfg: dict, grid) -> tuple[np.ndarray, str]:
     output_mode = str(layer_cfg.get("output", "presence"))
+    if gdf.empty and not bool(layer_cfg.get("allow_empty", False)):
+        raise ValueError(
+            f"OSM layer configured as output={output_mode!r} has zero clipped "
+            "features. Refusing to build an all-empty raster."
+        )
     presence = _rasterize_presence(gdf, grid)
 
     if output_mode == "presence":

@@ -18,10 +18,18 @@ dependencies = [
   "xarray",
   "geopandas",
   "fiona",
+  "pyogrio",
   "shapely",
   "pyproj",
   "netcdf4",
-  "hda"
+  "hda",
+  "scikit-learn",
+  "xgboost",
+  "optuna",
+  "shap",
+  "joblib",
+  "papermill",
+  "jupyter"
 ]
 
 [project.scripts]

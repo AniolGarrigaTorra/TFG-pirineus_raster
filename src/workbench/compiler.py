@@ -2292,6 +2292,67 @@ def _source_input_value_semantics(input_cfg: dict[str, Any]) -> str | None:
     return None
 
 
+def _source_input_unit(input_cfg: dict[str, Any]) -> str | None:
+    explicit = input_cfg.get("unit")
+    if explicit not in [None, ""]:
+        return str(explicit)
+
+    if isinstance(input_cfg.get("category_fraction"), dict):
+        return "fraction"
+
+    config = input_cfg.get("config")
+    if not config:
+        return None
+
+    try:
+        source_cfg = expand_source_config(load_yaml(resolve_path(config, must_exist=True)))
+    except Exception:
+        return None
+
+    variable_names = []
+    for candidate in [
+        input_cfg.get("variable"),
+        (input_cfg.get("query") or {}).get("variable")
+        if isinstance(input_cfg.get("query"), dict)
+        else None,
+        _source_input_variable_name(input_cfg),
+    ]:
+        if candidate not in [None, ""]:
+            variable_names.append(_normalise_variable_group_reference(candidate))
+
+    variables_cfg = source_cfg.get("variables", {}) or {}
+    for variable in dict.fromkeys(variable_names):
+        variable_cfg = variables_cfg.get(variable)
+        if isinstance(variable_cfg, dict) and variable_cfg.get("unit") not in [None, ""]:
+            return str(variable_cfg["unit"])
+
+        generated_units = {
+            str(cfg["unit"])
+            for key, cfg in variables_cfg.items()
+            if isinstance(cfg, dict)
+            and str(key).startswith(f"{variable}_")
+            and cfg.get("unit") not in [None, ""]
+        }
+        if len(generated_units) == 1:
+            return next(iter(generated_units))
+
+    layer_name = input_cfg.get("layer")
+    for dataset_name, dataset_cfg in (source_cfg.get("datasets", {}) or {}).items():
+        layers = dataset_cfg.get("layers", {}) or {}
+        for candidate_name, layer_cfg in layers.items():
+            if not isinstance(layer_cfg, dict):
+                continue
+            layer_key = f"{dataset_name}.{candidate_name}"
+            if layer_name is not None and str(layer_name) == layer_key:
+                if layer_cfg.get("unit") not in [None, ""]:
+                    return str(layer_cfg["unit"])
+            if candidate_name in variable_names:
+                if layer_cfg.get("unit") not in [None, ""]:
+                    return str(layer_cfg["unit"])
+
+    return None
+
+
 def _feature_input_value_semantics(
     input_cfg: Any,
     known_feature_semantics: dict[str, str],
@@ -2310,6 +2371,24 @@ def _feature_input_value_semantics(
     return None
 
 
+def _feature_input_unit(
+    input_cfg: Any,
+    known_feature_units: dict[str, str],
+) -> str | None:
+    if not isinstance(input_cfg, dict):
+        return None
+
+    input_kind = str(input_cfg.get("kind") or input_cfg.get("type") or "source")
+    if input_kind == "feature":
+        variable = str(input_cfg.get("output") or input_cfg.get("feature") or "").strip()
+        return known_feature_units.get(variable)
+
+    if input_kind == "source":
+        return _source_input_unit(input_cfg)
+
+    return None
+
+
 def _feature_raw_inputs(feature: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
     inputs = deepcopy(output.get("inputs") or feature.get("inputs") or {})
     build_type = _feature_build_type(feature)
@@ -2318,6 +2397,70 @@ def _feature_raw_inputs(feature: dict[str, Any], output: dict[str, Any]) -> dict
         if isinstance(source_input, dict):
             inputs = {"x": source_input}
     return inputs if isinstance(inputs, dict) else {}
+
+
+def _infer_expression_unit(
+    expression: str,
+    input_units: dict[str, str | None],
+) -> str | None:
+    compact = str(expression or "").replace(" ", "")
+    if compact == "x":
+        return input_units.get("x")
+    if compact.startswith("log10(") and compact.endswith(")"):
+        unit = input_units.get("x")
+        return f"log10({unit})" if unit else None
+    if compact.startswith("log(") and compact.endswith(")"):
+        unit = input_units.get("x")
+        return f"log({unit})" if unit else None
+    if any(op in compact for op in [">=", "<=", "==", "!=", ">", "<"]):
+        return "binary"
+    units = {unit for unit in input_units.values() if unit}
+    if len(units) == 1 and next(iter(units)) in {"binary", "fraction", "percent"}:
+        if any(name in compact for name in ["clip(", "minimum(", "maximum("]):
+            return next(iter(units))
+    return None
+
+
+def _infer_feature_unit(
+    feature: dict[str, Any],
+    output: dict[str, Any],
+    known_feature_units: dict[str, str],
+) -> str | None:
+    explicit = output.get("unit")
+    if explicit not in [None, ""]:
+        return str(explicit)
+    explicit = feature.get("unit")
+    if explicit not in [None, ""]:
+        return str(explicit)
+
+    build_type = _feature_build_type(feature)
+    raw_inputs = _feature_raw_inputs(feature, output)
+    input_units = {
+        str(alias): _feature_input_unit(input_cfg, known_feature_units)
+        for alias, input_cfg in raw_inputs.items()
+    }
+
+    if build_type == "source_layer":
+        return input_units.get("x")
+
+    if build_type == "expression":
+        return _infer_expression_unit(
+            str(output.get("expression") or feature.get("expression") or ""),
+            input_units,
+        )
+
+    if build_type in {"terrain", "spatial"}:
+        operation = str(output.get("operation") or feature.get("operation") or "")
+        if build_type != "spatial":
+            operation = build_type
+        method = str(output.get("method") or feature.get("method") or "")
+        if operation == "terrain":
+            if method in {"slope", "aspect"}:
+                return "degrees"
+            if method in {"tpi", "ruggedness", "roughness"}:
+                return input_units.get("dem") or input_units.get("x")
+
+    return None
 
 
 def _infer_expression_value_semantics(
@@ -2542,6 +2685,7 @@ def _derived_feature_from_feature_output(
     alias_counts: dict[str, int],
     known_feature_outputs: set[str],
     known_feature_semantics: dict[str, str],
+    known_feature_units: dict[str, str],
 ) -> dict[str, Any]:
     build_type = _feature_build_type(feature)
     output_name = _feature_output_name(feature, output)
@@ -2561,11 +2705,12 @@ def _derived_feature_from_feature_output(
         known_feature_semantics,
     )
     inferred_dtype = _infer_feature_output_dtype(feature, output, inferred_semantics)
+    inferred_unit = _infer_feature_unit(feature, output, known_feature_units)
 
     derived: dict[str, Any] = {
         "name": output_name,
         "description": output.get("description") or feature.get("description"),
-        "unit": output.get("unit") or feature.get("unit"),
+        "unit": inferred_unit,
         "value_semantics": inferred_semantics,
         "output_dtype": inferred_dtype,
         "inputs": inputs,
@@ -2659,6 +2804,7 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
     alias_counts: dict[str, int] = {}
     known_outputs: set[str] = set()
     known_output_semantics: dict[str, str] = {}
+    known_output_units: dict[str, str] = {}
     warnings: list[str] = []
 
     for feature in features:
@@ -2675,6 +2821,7 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
                 alias_counts=alias_counts,
                 known_feature_outputs=known_outputs,
                 known_feature_semantics=known_output_semantics,
+                known_feature_units=known_output_units,
             )
             if derived["name"] in known_outputs:
                 raise ConfigValidationError(
@@ -2689,6 +2836,8 @@ def _compile_feature_run_config(run_cfg: dict[str, Any]) -> dict[str, Any]:
             known_outputs.add(str(derived["name"]))
             if derived.get("value_semantics"):
                 known_output_semantics[str(derived["name"])] = str(derived["value_semantics"])
+            if derived.get("unit"):
+                known_output_units[str(derived["name"])] = str(derived["unit"])
 
     if not compiled_sources:
         raise ConfigValidationError("At least one final feature must depend on a source input.")
