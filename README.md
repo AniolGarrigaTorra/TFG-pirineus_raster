@@ -1,59 +1,112 @@
 # Pirineus Raster
 
-Pirineus Raster is a configurable Python pipeline for building homogeneous
-environmental raster datasets for the Pyrenees and smaller areas of interest.
+Pirineus Raster is a configuration-driven Python pipeline for creating
+homogeneous environmental raster datasets for the Pyrenees. It takes source
+layers from different providers, formats, coordinate systems and resolutions,
+then produces aligned GeoTIFF features with JSON metadata and a dataset
+manifest.
 
-The project is designed for researchers who need reproducible raster layers
-with a common CRS, extent, resolution, transform and naming convention. Source
-data can come from different providers, formats and coordinate systems, but the
-final dataset is written as aligned GeoTIFF layers plus JSON metadata.
+The main goal is reproducibility: every final raster in a dataset should share
+the same CRS, extent, resolution, affine transform and naming convention.
 
-## Core Idea
+## What The Project Does
 
-Each source follows the same pipeline stages:
+The pipeline has three source stages:
 
-1. `download`: download or locate raw source data.
-2. `clip`: prepare intermediate files clipped to a configured AOI.
-3. `build`: align final features to the project grid and write metadata.
+1. `download`: download or locate raw provider data.
+2. `clip`: clip or prepare source data for the selected area of interest.
+3. `build`: align requested outputs to the target grid and write metadata.
 
-The target grid is explicit. Every final raster is validated against it for CRS,
-shape and affine transform.
+Dataset runs use researcher-facing YAML files in `configs/runs/`. These files
+list the final features wanted by the user. The compiler expands those final
+features into the internal source layers and derived operations needed to build
+the dataset.
+
+Final outputs are written under `data_processed/datasets/<run_name>/` and
+normally include:
+
+- `rasters/`: final GeoTIFF features and sidecar JSON metadata.
+- `metadata/manifest.json`: dataset index.
+- `metadata/run_summary.json`: execution summary.
+- `metadata/validation_report.json`: written by dataset validation.
+- `config/`: copies of the configs used for the run.
 
 ## Repository Layout
 
-- `configs/project.yaml`: global CRS, paths, grid resolutions and naming defaults.
-- `configs/aoi/`: areas of interest in project CRS.
-- `configs/sources/`: provider/product source configurations.
-- `configs/runs/`: complete dataset recipes combining several sources.
-- `src/`: Python package and CLI implementation.
-- `ui/`: React configuration workbench for building researcher-facing run YAMLs.
-- `data_raw/`: original downloaded files.
-- `data_interim/`: extracted, clipped or prepared intermediate data.
-- `data_processed/features/`: provider-level final feature rasters.
-- `data_processed/datasets/`: packaged run outputs with manifests.
+- `configs/project.yaml`: global paths, CRS, grid defaults and naming settings.
+- `configs/aoi/`: area-of-interest definitions.
+- `configs/sources/`: provider and product source configurations.
+- `configs/runs/`: complete dataset recipes.
+- `src/`: Python package, CLI, pipeline, source connectors and validation code.
+- `tests/`: fast Python tests for compiler, pipeline contracts and validation.
+- `ui/`: React workbench for building and validating run YAML files.
+- `data_raw/`: downloaded or manually supplied raw source files.
+- `data_interim/`: clipped, extracted or intermediate processing files.
+- `data_processed/features/`: provider-level built feature rasters.
+- `data_processed/datasets/`: packaged dataset outputs.
 
-## Environment
+## Installation
 
-The project requires Python 3.11 or newer.
+The project expects Python 3.11 or newer. Conda is recommended because the
+geospatial stack depends on compiled libraries such as GDAL, PROJ, rasterio,
+geopandas and pyogrio.
 
-On the UPC/CSL system, the expected environment is usually:
+Create the environment the first time:
+
+```bash
+conda env create -f environment.yml
+```
+
+Activate it:
 
 ```bash
 conda activate pirineus-raster
 ```
 
-For local development:
+Install the package in editable mode from the repository root:
 
 ```bash
 pip install -e .
 ```
 
-The tracked `environment.yml` is intended to be portable. If a fully locked
-machine-specific environment is needed, keep it as a separate lock/export file
-rather than committing a local `prefix`.
+Check that the CLI is available:
 
-Copernicus WEkEO downloads require HDA credentials, normally through `~/.hdarc`
-or `HDA_USER` and `HDA_PASSWORD`.
+```bash
+pirineus-raster --help
+```
+
+For the UI, install Node dependencies once:
+
+```bash
+cd ui
+npm install
+```
+
+Then return to the repository root before running Python commands:
+
+```bash
+cd ..
+```
+
+## Credentials
+
+Some Copernicus products use the WEkEO HDA service. Those downloads require
+credentials through `~/.hdarc` or the `HDA_USER` and `HDA_PASSWORD`
+environment variables.
+
+Check the local setup:
+
+```bash
+pirineus-raster check-credentials
+```
+
+Create or refresh `~/.hdarc` interactively:
+
+```bash
+pirineus-raster check-credentials --setup
+```
+
+Runs that do not use authenticated sources do not need these credentials.
 
 ## Basic Workflow
 
@@ -62,38 +115,35 @@ Create the reference grid for an AOI and resolution:
 ```bash
 pirineus-raster make-grid \
   --project-config configs/project.yaml \
-  --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
+  --aoi-config configs/aoi/ursus_arctos_pyrenees.yaml \
   --resolution 100
 ```
 
-Validate the grid:
+Validate a run config before processing data:
 
 ```bash
-python -m src.validation.validate_grid \
-  --project-config configs/project.yaml \
-  --aoi-config configs/aoi/experimental_pallars_sobira.yaml \
-  --resolution 100
+pirineus-raster validate-config configs/runs/ursus_arctos_pyrenees_100m.yaml
 ```
 
-Run a complete dataset recipe:
+Run the complete dataset recipe:
 
 ```bash
 pirineus-raster run configs/runs/ursus_arctos_pyrenees_100m.yaml
 ```
 
-Inspect the generated manifest:
+Inspect the generated dataset:
 
 ```bash
 pirineus-raster inspect data_processed/datasets/ursus_arctos_pyrenees_100m
 ```
 
-Validate all rasters in a generated dataset:
+Validate all raster outputs against the dataset grid:
 
 ```bash
 pirineus-raster validate-dataset data_processed/datasets/ursus_arctos_pyrenees_100m
 ```
 
-Use strict metadata validation for newly regenerated datasets:
+Use strict metadata checks for regenerated datasets:
 
 ```bash
 pirineus-raster validate-dataset \
@@ -101,48 +151,65 @@ pirineus-raster validate-dataset \
   --strict-metadata
 ```
 
-Run one source directly while developing:
+## CLI Commands
+
+List available commands:
 
 ```bash
-pirineus-raster run-source \
-  --project-config configs/project.yaml \
-  --source-config configs/sources/worldclim/worldclim_v2_1_climate_normals.yaml \
-  --stage build
+pirineus-raster --help
 ```
 
-Inspect source catalogs and validate a run config before processing data:
+Useful commands:
+
+- `make-grid`: create a reference raster grid for an AOI and resolution.
+- `validate-config`: validate a run YAML and estimate source/derived layers.
+- `render-run`: print the compiled run YAML after feature expansion.
+- `run`: execute a full dataset recipe.
+- `inspect`: summarize a generated dataset manifest.
+- `validate-dataset`: check generated rasters against their reference grid.
+- `catalog`: print source or workbench catalog information as JSON.
+- `list-sources`: list registered source providers.
+- `run-source`: developer command for running one source stage directly.
+- `serve-config-api`: start the local API used by the React workbench.
+- `serve-ui`: start the API and UI together.
+- `check-credentials`: check or configure WEkEO/HDA credentials.
+
+Examples:
 
 ```bash
-pirineus-raster catalog \
-  --source-config configs/sources/worldclim/worldclim_cmip6_future.yaml
-
-pirineus-raster validate-config \
-  configs/runs/ursus_arctos_pyrenees_100m.yaml
-
-pirineus-raster render-run \
-  configs/runs/ursus_arctos_pyrenees_100m.yaml
+pirineus-raster catalog
+pirineus-raster catalog --source-config configs/sources/worldclim/worldclim_v2_1_bioclim.yaml
+pirineus-raster render-run configs/runs/ursus_arctos_pyrenees_100m.yaml
+pirineus-raster list-sources
 ```
 
-`validate-config` checks the effective source selections used by the runner. It
-also reports pre-run warnings such as missing target grids, so a recipe can be
-structurally valid while still needing `make-grid` before `build`.
-
-Check local WEkEO/HDA credentials before launching Copernicus downloads:
+For low-memory machines, reduce dataset-run memory pressure:
 
 ```bash
-pirineus-raster check-credentials
-pirineus-raster check-credentials --setup
+pirineus-raster run configs/runs/ursus_arctos_pyrenees_100m.yaml \
+  --num-workers 1 \
+  --max-rasters-in-memory 2
 ```
 
-## React Workbench
+## UI Workbench
 
-The React workbench is a visual editor for run configurations. It reads source
-catalogs from the Python API, builds and validates YAML run recipes, can create
-new AOI config files, and can create the target grid for the selected AOI,
-CRS and resolution. Full raster dataset execution is still done through the
-CLI, the detached local helper, or Slurm.
+The UI is a local configuration workbench. Its purpose is to help users build,
+inspect and validate run YAMLs without manually editing every source and
+feature block.
 
-Start the config API:
+The UI can:
+
+- browse the source catalog exposed by the Python API.
+- select AOIs, CRS and resolution.
+- select source layers, temporal options, dimensions and resampling choices.
+- define derived features and advanced expressions.
+- create or validate run YAML content.
+- request grid creation through the local API.
+
+The UI does not replace the pipeline runner. Full dataset execution is still
+done with the CLI command `pirineus-raster run <run_config>`.
+
+Start the Python config API:
 
 ```bash
 pirineus-raster serve-config-api --host 127.0.0.1 --port 8765
@@ -152,223 +219,214 @@ Start the frontend in another terminal:
 
 ```bash
 cd ui
-npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api` requests to `http://127.0.0.1:8765`.
+Open the Vite URL printed by the frontend, normally:
 
-Alternatively, start both processes with one command:
+```text
+http://127.0.0.1:5173
+```
+
+The Vite server proxies `/api` requests to `http://127.0.0.1:8765`.
+
+Alternatively, start both API and UI with:
 
 ```bash
 pirineus-raster serve-ui
 ```
 
+Build or test the UI:
+
+```bash
+cd ui
+npm run build
+npm test
+```
+
 ## Configuration Model
 
-Run configs define the final dataset:
+Run configs define the final dataset. The main keys are:
 
 - `run.name`: dataset name.
-- `run.project_config`: project YAML.
-- `run.aoi_config`: final AOI/grid config.
-- `run.clip_aoi_config`: optional larger clipping AOI.
-- `run.resolution_m`: final output resolution.
-- `run.crs`: optional output CRS override such as `EPSG:3035` or `EPSG:25831`.
-- `features`: final dataset features requested by the user.
-- `outputs.dataset_dir`: packaged dataset output directory.
+- `run.project_config`: project YAML, usually `configs/project.yaml`.
+- `run.aoi_config`: AOI used by the final output grid.
+- `run.clip_aoi_config`: optional larger AOI used for clipping.
+- `run.resolution_m`: target output resolution in metres.
+- `run.crs`: optional CRS override, such as `EPSG:3035`.
+- `run.stages`: stages to run, usually `all` or `build`.
+- `features`: final user-facing features.
+- `outputs.dataset_dir`: output dataset directory.
 
-The `features` list is the researcher-facing source of truth. Legacy run
-configs with top-level `sources` or `derived_features` are intentionally
-rejected by validation. The compiler expands final features into the internal
-source requirements and derived outputs needed by the runner, then the dataset
-manifest is pruned so only the final feature rasters remain visible.
+The `features` list is the source of truth for dataset contents. Legacy
+top-level `sources` or `derived_features` blocks are internal concepts and
+should not be used in researcher-facing run configs.
 
-Each final feature has:
+Each final feature usually declares:
 
-- `name`: stable output name used for the GeoTIFF filename.
-- `build_type`: one of `source_layer`, `recipe`, `masking`, `spatial` or
-  `expression`.
-- optional metadata such as `title`, `description` and `unit`. The compiler
-  infers `value_semantics` and `output_dtype` from the source metadata and the
-  selected operation unless an advanced override is provided.
-- one or more inputs. Inputs can point to official source layers or to earlier
-  final features created in the same run.
+- `name`: stable output name.
+- `title` and `description`: human-readable metadata.
+- `unit`: measurement unit when known, otherwise blank.
+- `value_semantics`: how values should be interpreted.
+- `output_dtype`: expected raster dtype.
+- `build_type`: `source_layer`, `recipe`, `masking`, `spatial` or `expression`.
+- `inputs`: source or feature inputs needed by the operation.
+- `parameters`: operation-specific options.
 
-Official source inputs can define:
+Source inputs declare:
 
-- `source_id` and `config`: the provider/product source config.
-- `variable`, `layer` or `category_fraction`: the requested source output.
-- `dimensions`: selected non-temporal dimensions such as GCM, SSP, period,
-  season or product year, depending on the source.
-- `temporal`: source-aware temporal choices.
-- `source_resolution` and `resampling`: how the source should become the
-  project grid.
+- `source_id`: stable source identifier.
+- `config`: source config YAML.
+- `variable`, `layer` or `category_fraction`: requested source output.
+- `dimensions`: non-temporal selections such as model, scenario, period or year.
+- `temporal`: temporal output mode and selected dates or aggregations.
+- `source_resolution`: native/provider resolution choice where applicable.
+- `resampling`: method used to align the source to the target grid.
 
-Category fractions are the preferred way to turn categorical land-cover classes
-into target-cell proportions. They are computed before target-grid resampling,
-so `average` resampling gives a 0-1 coverage fraction at 100 m or any other
-target resolution. A class mask, by contrast, tests an already aligned raster
-and cannot recover sub-cell composition lost during categorical resampling.
+## Derived Features
 
-Derived/processed features can also declare `evaluation_stage`:
+Derived features are built after source layers are prepared. Supported derived
+families include expressions, terrain operations, focal/spatial operations,
+masks, distances and recipes.
 
-- `target_grid`: the default cheap path. Source inputs are first aligned to the
-  project grid, then the expression/recipe/spatial operation is evaluated.
-- `native_then_resample`: inputs are reprojected to a metric intermediate grid
-  using the best native resolution recorded in metadata, the operation is
-  evaluated there, and the result is then aggregated/resampled to the final
-  project grid. This is recommended for DEM terrain derivatives, focal windows
-  and distance surfaces when the target resolution is coarser than the source.
+Expression features use a restricted numeric expression engine. Common
+functions include `where`, `log`, `log1p`, `sqrt`, `minimum`, `maximum`,
+`clip`, comparisons and arithmetic. Unsafe Python calls are rejected.
 
-For example, `target_grid` slope at 100 m means "slope of the DEM already
-smoothed to 100 m"; `native_then_resample` slope means "native-scale slope
-aggregated to the 100 m cells". The latter is usually more informative but can
-be slower and depends on source builders exposing `source_clipped_path`
-metadata.
+Spatial and terrain features can use:
 
-`value_semantics` is Pirineus Raster metadata that describes how raster values
-should be interpreted. It is not a GeoTIFF standard field, but it follows common
-GIS/statistical concepts and is used for UI filtering, validation and resampling
-guidance. In normal workbench use it is inferred automatically; set it manually
-only when an advanced expression creates a genuinely ambiguous output:
+- `target_grid`: inputs are aligned first, then the operation is evaluated.
+- `native_then_resample`: the operation is evaluated near native resolution,
+  then resampled to the final grid. This is often better for slope,
+  ruggedness, focal windows and distance surfaces, but it can be slower and
+  requires source metadata that points to clipped native inputs.
 
-- `categorical`: nominal class codes such as land cover or geology.
-- `ordinal`: ordered class codes where rank matters but numeric spacing may not.
-- `binary`: 0/1 masks for presence/absence.
-- `intensive`: continuous local values such as elevation, temperature, distance
-  or biomass per hectare.
+## Value Semantics
+
+`value_semantics` is metadata used by the UI, validation and resampling logic.
+It is not a GeoTIFF standard field, but it gives the pipeline a consistent way
+to understand raster values.
+
+Common values:
+
+- `categorical`: nominal class codes such as land cover.
+- `ordinal`: ordered class codes.
+- `binary`: 0/1 presence or mask values.
+- `intensive`: local continuous values such as elevation or temperature.
 - `intensive_depth`: depth-like accumulated fields such as precipitation in mm.
-- `percentage`: 0-100 values such as tree cover density.
-- `fraction`: 0-1 proportions such as category coverage fractions.
-- `ratio`: unitless ratios that are not necessarily limited to 0-1.
+- `percentage`: 0-100 values.
+- `fraction`: 0-1 proportions.
+- `ratio`: unitless ratios.
 - `extensive`: cell totals such as built-up square metres per cell.
-- `count`: discrete counts such as population or snow days.
-- `circular`: angles such as aspect where 0 and 360 degrees are neighbours.
-
-Temporal selections are explicit because sources do not all behave the same:
-
-- static and vector sources use `output_mode: static`.
-- WorldClim monthly climatologies and CMIP6 can use `output_mode: aggregate`
-  with named/custom aggregations, or `output_mode: raw_slices` to write one
-  output per selected month.
-- CRU-TS year-month series can aggregate with year/month ranges, two-step
-  yearly summaries, or `raw_slices` for one output per selected year-month.
-- PDCA uses `output_mode: supplied_layers` because annual, monthly and
-  seasonal layers are supplied by the source rather than computed here.
-- yearly static collections such as GHSL GHS-POP, GHS-BUILT-S, GHS-SMOD,
-  ESA CCI Biomass and Copernicus HR-VPP expose base variables in the variable
-  picker and let the Temporal tab select years or define year-range
-  aggregations.
-- HRSI snow uses `output_mode: postprocess_aggregate` because temporal outputs
-  are generated during the Copernicus download/postprocess stage.
-
-Feature-oriented configs may request multiple temporal aggregations for the
-same final feature family. Multi-input derived features only combine temporal
-outputs that share the same temporal label; non-temporal dimensions expand by
-cartesian product.
-
-Resampling is variable-aware. Source configs expose defaults per variable and
-the UI can override them for a run. Standard raster reprojection methods include
-`nearest`, `bilinear`, `cubic`, `average`, `mode`, `sum` and related GDAL/rasterio
-methods. `conservative_sum` is reserved for truly extensive variables whose cell
-values are totals/counts and should be redistributed by target/source pixel area.
-Precipitation in `mm` is treated as `intensive_depth`, not as an extensive cell
-total. Kriging-style and point-interpolation methods are not exposed as runnable
-options until a geostatistical backend exists.
-
-Source configs define provider-specific details:
-
-- source identity, citation and product metadata.
-- source domains under `domains.clip_aoi_config` and
-  `domains.output_aoi_config`.
-- raw file structure and download mode.
-- source CRS and native resolution.
-- enabled variables or indices.
-- resampling method per variable.
-- temporal capability and aggregation presets where the source supports them.
-- output format and dtype.
-
-Relative config paths are resolved robustly from the declaring config file, the
-current working directory, and the repository root. This helps when jobs are
-submitted from a different directory.
+- `count`: discrete counts.
+- `circular`: angles such as aspect.
 
 ## Current Providers
 
 - `worldclim`: climate normals, bioclimatic variables, elevation, CRU-TS
-  historical monthly data and CMIP6 future projections.
-- `copernicus`: CLMS static layers and temporal products downloaded through
-  WEkEO HDA, including DEM, HRLs, CLC, CLC+ Backbone, HR-VPP and HRSI snow.
+  monthly data and CMIP6 future projections.
+- `copernicus`: CLMS and related products, including DEM, land cover, forest,
+  grasslands, imperviousness, water/wetness, HR-VPP and HRSI snow.
 - `pdca`: Pyrenean Digital Climate Atlas topoclimate rasters.
 - `igme_brgm`: transboundary Pyrenees geology vectors rasterized to the grid.
-- `openstreetmap`: Geofabrik PBF extracts filtered into anthropic vector
-  layers and rasterized as presence or distance features.
-- `ghsl`: GHSL GHS-POP population, GHS-BUILT-S built-up surface and GHS-SMOD
-  settlement model grids with selectable native resolution and temporal years.
-- `esa_cci`: ESA CCI Biomass above-ground biomass and uncertainty rasters.
-- `esa_worldcover`: ESA WorldCover 10 m global land-cover tiles mosaicked for
-  the Pyrenees.
+- `openstreetmap`: Geofabrik extracts filtered into anthropic vector layers.
+- `ghsl`: population, built-up surface and settlement model grids.
+- `esa_cci`: above-ground biomass and uncertainty rasters.
+- `esa_worldcover`: ESA WorldCover land-cover rasters.
 
-List available providers:
+## Testing
 
-```bash
-pirineus-raster list-sources
-```
-
-## Metadata and Validation
-
-Final GeoTIFFs are written with embedded tags and sidecar JSON metadata. New
-outputs include:
-
-- provider, product, source ID and source config path.
-- variable, units, valid range and scale factor.
-- native resolution and resolution unit where known.
-- output CRS, resolution, shape, transform, bounds, nodata and dtype.
-- resampling method.
-- grid path and AOI name.
-- generation timestamp.
-
-The dataset manifest in `data_processed/datasets/<run>/metadata/manifest.json`
-indexes all generated rasters. `pirineus-raster validate-dataset` checks every
-manifest raster against the declared reference grid and writes
-`metadata/validation_report.json`.
-
-## Resolution Notes
-
-The project CRS is EPSG:3035 by default. Output resolution is configurable, but
-it should not be interpreted as increased source precision.
-
-WorldClim source resolutions are written as `30arcs`, `2.5arcmin`, `5arcmin`
-and `10arcmin` in user-facing configs and metadata. Provider download URLs
-still use the original WorldClim tokens such as `30s`, `2.5m`, `5m` and `10m`.
-The pipeline can align such layers to a 100 m grid for modelling convenience,
-but metadata must preserve the original source resolution semantics.
-
-Continuous variables generally use `bilinear` or `average` resampling.
-Categorical variables should use `nearest` or another category-preserving
-method.
-
-## HPC Usage
-
-Reusable Slurm scripts live in `jobs/`.
-
-Example:
+Run the Python tests from the repository root:
 
 ```bash
-sbatch jobs/run_raster_features.sh configs/runs/ursus_arctos_pyrenees_100m.yaml
+python -m unittest discover tests
 ```
 
-The job helpers switch to the repository directory, activate the conda
-environment and print the Python/CLI context at the start of each job.
+Run one test module:
 
-## Recommended Final Proof of Concept
+```bash
+python -m unittest tests.test_pipeline_contract
+```
 
-For the thesis demonstration, a strong minimal proof of concept is:
+Run UI tests:
 
-1. Create the 100 m grid for `pyrenees_pdca_full`.
-2. Run `configs/runs/pyrenees_pdca_topoclimate_100m.yaml`.
-3. Validate the generated dataset.
-4. Combine a smaller Pallars dataset with selected WorldClim and Copernicus
-   layers for ecological modelling or habitat suitability experiments.
+```bash
+cd ui
+npm test
+```
 
-This shows the central goal of the project: heterogeneous sources converted
-into coherent, traceable and pixel-aligned environmental raster databases.
+The Python tests are designed to be fast and mostly synthetic. They validate
+configuration compilation, derived expressions, source selection logic,
+metadata contracts and tiny raster validation cases. They should not download
+remote data.
+
+## Validation And Metadata
+
+Every final raster should have:
+
+- a GeoTIFF file.
+- a sidecar JSON file.
+- manifest entries under `metadata/manifest.json`.
+- CRS, transform, shape and resolution matching the declared grid.
+- nodata, dtype, provider, product, source ID and variable metadata.
+- source config and resampling metadata where applicable.
+- operation and input metadata for derived layers.
+
+`validate-dataset` checks the manifest rasters against the reference grid and
+writes a validation report:
+
+```bash
+pirineus-raster validate-dataset data_processed/datasets/<dataset_name>
+```
+
+Strict mode also fails missing standardized metadata keys:
+
+```bash
+pirineus-raster validate-dataset data_processed/datasets/<dataset_name> --strict-metadata
+```
+
+## Important Warnings
+
+- Output resolution does not increase source precision. A 100 m output built
+  from a coarse source is still limited by the original data.
+- Create the target grid before running build stages. Missing grids are a
+  preflight warning and will become a build-time problem.
+- Use category fractions for land-cover proportions. A categorical mask after
+  coarse resampling cannot recover sub-cell composition.
+- Use category-preserving resampling such as `nearest` or `mode` for class
+  codes. Use `average`, `bilinear` or similar methods for continuous values.
+- `conservative_sum` is only appropriate for true extensive cell totals.
+- Authenticated Copernicus downloads need valid HDA credentials.
+- Large source downloads and high-resolution native operations can require a
+  lot of disk space and memory.
+- Existing outputs may be skipped or overwritten depending on source builder
+  logic and run settings. Validate manifests and sidecar metadata after
+  important reruns.
+- Relative config paths are resolved from the declaring config file, the
+  current working directory and the repository root. Prefer repository-relative
+  paths in committed configs.
+
+## Recommended Development Loop
+
+For config or pipeline changes:
+
+```bash
+python -m unittest discover tests
+pirineus-raster validate-config configs/runs/ursus_arctos_pyrenees_100m.yaml
+pirineus-raster render-run configs/runs/ursus_arctos_pyrenees_100m.yaml
+```
+
+For UI changes:
+
+```bash
+cd ui
+npm test
+npm run build
+```
+
+For regenerated datasets:
+
+```bash
+pirineus-raster inspect data_processed/datasets/<dataset_name>
+pirineus-raster validate-dataset data_processed/datasets/<dataset_name> --strict-metadata
+```
