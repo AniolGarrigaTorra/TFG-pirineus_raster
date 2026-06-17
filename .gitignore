@@ -18,10 +18,11 @@ ui/vite.config.d.ts
 *.xlsx
 *.csv
 .venv/
-ui/public/*
 use_cases_info/*
 outputs/*
 notebooks/ursus_arctos_project/ursus_arctos_habitat_modelling.ipynb
 notebooks/ursus_arctos_project/habitat_modelling_workflow.py
 jobs/
 commands.txt
+.vscode/
+notebooks/
