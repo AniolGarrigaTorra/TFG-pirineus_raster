@@ -29,6 +29,7 @@ dependencies = [
   "shap",
   "joblib",
   "papermill",
+  "contextily",
   "jupyter"
 ]
 
