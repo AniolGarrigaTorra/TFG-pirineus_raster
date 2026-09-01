@@ -9,6 +9,8 @@ manifest.
 The main goal is reproducibility: every final raster in a dataset should share
 the same CRS, extent, resolution, affine transform and naming convention.
 
+The full documentation of the project is available at the following link: 
+
 ## What The Project Does
 
 The pipeline has three source stages:
