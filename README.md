@@ -9,7 +9,7 @@ manifest.
 The main goal is reproducibility: every final raster in a dataset should share
 the same CRS, extent, resolution, affine transform and naming convention.
 
-The full documentation of the project is available at the following link: https://github.com/AniolGarrigaTorra/pirineus-raster/blob/main/PirineusRaster-Memoria_catala.pdf
+The full documentation of the project is available at the following link: https://aniolgarrigatorra.cat/memoria.pdf
 
 ## What The Project Does
 
